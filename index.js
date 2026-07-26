@@ -191,6 +191,10 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("How to use the Guild Help Board bot"),
+
+  new SlashCommandBuilder()
     .setName("helped")
     .setDescription("Mark a member as sorted / helped")
     .addUserOption((opt) =>
@@ -310,6 +314,44 @@ client.on("interactionCreate", async (interaction) => {
         flags: MessageFlags.Ephemeral,
       });
       await refreshBoard(client, data);
+    }
+
+    if (interaction.commandName === "help") {
+      const embed = new EmbedBuilder()
+        .setColor(0x5ac9a1)
+        .setTitle("🛡️ Guild Help Board — how it works")
+        .setDescription(
+          "Tracks who needs help hitting **Season Run 5K** or **MVP 5K** this " +
+            "season, and lets officers mark them as sorted once helped. The board " +
+            "message updates automatically."
+        )
+        .addFields(
+          {
+            name: "🟢 Everyone",
+            value:
+              "`/needhelp` — add yourself to the board (pick a category, optional note)\n" +
+              "`/help` — show this message",
+          },
+          {
+            name: "🛡️ Officers (Manage Server, or a manager role)",
+            value:
+              "`/helped @member <category>` — mark them as sorted ✅\n" +
+              "`/remove @member <category>` — remove an entry (fixes mistakes)\n" +
+              "`/board` — post & pin the live board in this channel\n" +
+              "`/reset` — clear the board for a new season",
+          },
+          {
+            name: "⚙️ Admins (Manage Server)",
+            value:
+              "`/config addrole @role` — let a role manage the board\n" +
+              "`/config removerole @role` — remove a role\n" +
+              "`/config roles` — list the manager roles",
+          }
+        );
+      await respond(interaction, {
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     if (interaction.commandName === "helped") {
