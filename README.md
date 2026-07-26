@@ -1,22 +1,35 @@
-# Guild Help Board Bot
+# 🛡️ Guild Help Board Bot
 
 Tracks members who need help hitting **Season Run 5K** or **MVP 5K**, and
 lets officers mark them as sorted once helped. Posts a live, auto-updating
 board message in a channel of your choice.
+
+For a player-facing guide to the commands, see **[USAGE.md](USAGE.md)** (or
+run `/help` in Discord).
 
 ## Commands
 
 | Command | Who can use it | What it does |
 |---|---|---|
 | `/needhelp category:[seasonrun5k/mvp5k] note:optional` | Anyone | Adds you to the board |
-| `/helped member:@user category:[seasonrun5k/mvp5k]` | Officers (Manage Server perm) | Marks that member as sorted |
-| `/remove member:@user category:[seasonrun5k/mvp5k]` | Officers | Removes an entry without marking it done (fixes mistakes) |
+| `/help` | Anyone | Shows the command list (private reply) |
+| `/helped member:@user category:[…]` | Officers | Marks that member as sorted |
+| `/remove member:@user category:[…]` | Officers | Removes an entry without marking it done (fixes mistakes) |
 | `/board` | Officers | Posts the live board in the current channel and pins it |
 | `/reset` | Officers | Clears the whole board for a new season |
+| `/config addrole\|removerole\|roles` | Admins (Manage Server) | Chooses which roles count as officers |
 
-By default, `/helped`, `/remove`, `/board`, and `/reset` require the
-**Manage Server** permission. Anyone with that permission on your server can
-run them (typically your officers). `/needhelp` is open to everyone.
+### Who counts as an "officer"
+
+The officer commands (`/helped`, `/remove`, `/board`, `/reset`) can be used by:
+
+- anyone with the **Manage Server** permission, **or**
+- anyone holding a role that an admin added with `/config addrole @Role`.
+
+So an admin runs `/config addrole @Officers` and `/config addrole @LEADER`
+once, and those roles can manage the board without needing Manage Server.
+Until at least one manager role is set, only Manage Server can manage — you
+can't lock yourself out. `/needhelp` and `/help` are open to everyone.
 
 ## 1. Create the Discord application
 
@@ -24,10 +37,13 @@ run them (typically your officers). `/needhelp` is open to everyone.
 2. Name it (e.g. "Guild Help Board"), create it
 3. Left sidebar → **Bot** → **Add Bot**
 4. Under **Privileged Gateway Intents**, you don't need to enable any of them
-   for this bot (it doesn't read messages)
+   for this bot (it doesn't read message content)
 5. Click **Reset Token** → copy the token → this is your `DISCORD_TOKEN`
 6. Left sidebar → **General Information** → copy the **Application ID** →
    this is your `CLIENT_ID`
+
+Optional: under **General Information** you can upload `assets/icon.png` as the
+app icon and `assets/banner.png` (Bot tab) as the banner.
 
 ## 2. Get your server (guild) ID
 
@@ -39,13 +55,13 @@ Mode), then right-click your server icon → **Copy Server ID**. This is your
 
 Go to **OAuth2 → URL Generator** in the developer portal:
 - Scopes: `bot`, `applications.commands`
-- Bot permissions: `Send Messages`, `Embed Links`, `Read Message History`,
-  `Manage Messages` (needed to pin the board)
+- Bot permissions: `View Channel`, `Send Messages`, `Embed Links`,
+  `Read Message History`, `Manage Messages` (the last is needed to pin the board)
 
 Copy the generated URL, open it in your browser, and add the bot to your
 server.
 
-## 4. Configure and run
+## 4. Run it locally (for testing)
 
 ```bash
 cd guild-bot
@@ -56,39 +72,79 @@ npm start
 ```
 
 You should see `Slash commands registered.` and `Logged in as ...` in the
-console.
+console. If an environment variable is missing, the bot exits with a clear
+message telling you which one.
 
-## 5. Set up the board
-
-In the Discord channel you want the board in, run `/board`. The bot posts
-and pins an embed there — this message updates automatically every time
-someone runs `/needhelp`, `/helped`, `/remove`, or `/reset`.
+Then, in the Discord channel you want the board in, run `/board`. The bot
+posts and pins an embed there — it updates automatically from then on.
 
 ## Keep your token safe
 
 Your `DISCORD_TOKEN` is a password for the bot — anyone who has it can take it
 over. The included `.gitignore` keeps `.env` (your token) and `data.json` out
-of Git, so following the GitHub-based hosting steps below is safe. Do **not**
-remove those lines from `.gitignore`, and never paste your token into a
-message, issue, or commit. If it ever leaks, click **Reset Token** in the
-Discord developer portal immediately.
+of Git, so pushing this folder to GitHub is safe. Do **not** remove those
+lines from `.gitignore`, and never paste your token into a message, issue, or
+commit. If it ever leaks, click **Reset Token** in the Discord developer
+portal immediately.
 
 ## Hosting it 24/7
 
-Running `npm start` on your own computer only works while that computer is
-on. To keep the bot running all the time, deploy it to a small always-on
-host:
+`npm start` on your own computer only runs while that computer is on. To keep
+the bot up all the time, deploy it to an always-on host.
 
-- **Railway** (https://railway.app) — connect this folder as a GitHub repo,
-  set the same environment variables in its dashboard, deploy. Free tier
-  covers a bot this size.
-- **Render** (https://render.com) — similar flow, "Background Worker" service.
-- A cheap VPS with `pm2` (`npm i -g pm2 && pm2 start index.js`) also works if
-  you're comfortable with that.
+### Option A — TrueNAS SCALE (Docker custom app)
+
+This is the setup this repo is deployed with. It clones the code fresh on each
+start (so restarting the app = pulling the latest code) and keeps `data.json`
+on a dataset so it survives restarts.
+
+1. **Create a dataset** for the bot, e.g. `Tank/guild-bot` (mountpoint
+   `/mnt/Tank/guild-bot`). This holds `data.json`.
+2. **Apps → Discover Apps → (⋮) → Install via YAML**, name it `guild-bot`,
+   and paste the compose below. Replace the three `PASTE_…` values with your
+   real token/IDs, and fix the pool path and repo URL if yours differ:
+
+   ```yaml
+   services:
+     guild-bot:
+       image: node:20
+       container_name: guild-help-board-bot
+       restart: unless-stopped
+       environment:
+         DISCORD_TOKEN: "PASTE_YOUR_TOKEN_HERE"
+         CLIENT_ID: "PASTE_YOUR_CLIENT_ID_HERE"
+         GUILD_ID: "PASTE_YOUR_GUILD_ID_HERE"
+         DATA_DIR: "/data"
+       volumes:
+         - /mnt/Tank/guild-bot:/data
+       command:
+         - sh
+         - -c
+         - "rm -rf /app && git clone --depth 1 https://github.com/damndotrun/guild-help-board-bot /app && cd /app && npm install --omit=dev && node index.js"
+   ```
+
+3. **Install**, then check the container **Logs** for `Slash commands
+   registered.` and `Logged in as …`.
+4. **To update later:** push new code to the repo, then **Restart** the app —
+   it re-clones the latest `main`. `data.json` is untouched on the dataset.
+
+> Run only **one** instance of the bot. Multiple instances sharing one
+> `data.json` (e.g. `pm2` cluster mode, or a second copy elsewhere) can
+> overwrite each other.
+
+### Option B — Railway / Render / VPS
+
+- **Railway** (https://railway.app) — connect the GitHub repo, set
+  `DISCORD_TOKEN` / `CLIENT_ID` / `GUILD_ID` as variables, deploy.
+- **Render** (https://render.com) — "Background Worker" service, same variables.
+- A cheap VPS with `pm2` (`npm i -g pm2 && pm2 start index.js`) also works.
+
+On hosts with an ephemeral filesystem, set `DATA_DIR` to a persistent volume
+so `data.json` survives restarts.
 
 ## Data
 
-Entries are stored in `data.json` next to `index.js`. If you redeploy on a
-host with an ephemeral filesystem (some free tiers wipe disk on restart),
-back that file up or switch to a small database — happy to help adapt this
-if you hit that.
+Entries are stored in `data.json`. By default it sits next to `index.js`; set
+the `DATA_DIR` environment variable to keep it on a persistent volume instead
+(as the TrueNAS setup above does). Writes are atomic, and a corrupt file is
+detected and recovered from rather than crashing the bot.
