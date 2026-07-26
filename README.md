@@ -1,4 +1,8 @@
-# 🛡️ Guild Help Board Bot
+<p align="center">
+  <img src="assets/banner.png" alt="Guild Help Board" width="680">
+</p>
+
+# Guild Help Board Bot
 
 Tracks members who need help hitting **Season Run 5K** or **MVP 5K**, and
 lets officers mark them as sorted once helped. Posts a live, auto-updating
