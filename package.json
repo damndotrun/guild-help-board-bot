@@ -1,0 +1,13 @@
+{
+  "name": "guild-help-board-bot",
+  "version": "1.0.0",
+  "description": "Discord bot to track members needing help with guild constructions/trophies for season rewards and MVP.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}

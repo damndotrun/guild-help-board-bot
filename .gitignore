@@ -1,0 +1,14 @@
+# Secrets — never commit these
+.env
+
+# Local runtime data (contains member user IDs)
+data.json
+
+# Dependencies
+node_modules/
+
+# Logs / OS cruft
+npm-debug.log*
+*.log
+.DS_Store
+Thumbs.db
