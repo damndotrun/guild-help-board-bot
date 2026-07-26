@@ -16,8 +16,11 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
-const DATA_FILE = path.join(__dirname, "data.json");
-const TMP_FILE = path.join(__dirname, "data.json.tmp");
+// Data lives next to the code by default; set DATA_DIR to keep data.json on a
+// persistent volume when the code itself is ephemeral (e.g. re-cloned on boot).
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const DATA_FILE = path.join(DATA_DIR, "data.json");
+const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 
 // ---------- env validation ----------
 const REQUIRED_ENV = ["DISCORD_TOKEN", "CLIENT_ID", "GUILD_ID"];
