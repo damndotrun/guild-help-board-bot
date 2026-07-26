@@ -34,7 +34,12 @@ if (missingEnv.length > 0) {
 }
 
 // ---------- storage ----------
-const EMPTY_DATA = { boardChannelId: null, boardMessageId: null, entries: [] };
+const EMPTY_DATA = {
+  boardChannelId: null,
+  boardMessageId: null,
+  entries: [],
+  managerRoleIds: [],
+};
 
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
@@ -47,6 +52,9 @@ function loadData() {
       boardChannelId: parsed.boardChannelId ?? null,
       boardMessageId: parsed.boardMessageId ?? null,
       entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+      managerRoleIds: Array.isArray(parsed.managerRoleIds)
+        ? parsed.managerRoleIds
+        : [],
     };
   } catch (err) {
     console.error(
@@ -62,6 +70,19 @@ function loadData() {
 function saveData(data) {
   fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
   fs.renameSync(TMP_FILE, DATA_FILE);
+}
+
+// Who may run the officer commands: anyone with Manage Server, OR anyone holding
+// a role that an admin added via /config. With no manager roles set, it falls
+// back to Manage Server only — so you can never lock yourself out.
+function isManager(interaction, data) {
+  const perms = interaction.memberPermissions;
+  if (perms && perms.has(PermissionFlagsBits.ManageGuild)) return true;
+  const roleIds = data.managerRoleIds || [];
+  if (roleIds.length === 0) return false;
+  const cache = interaction.member?.roles?.cache;
+  if (cache) return roleIds.some((id) => cache.has(id));
+  return false;
 }
 
 const CATEGORIES = {
@@ -184,8 +205,7 @@ const commands = [
           { name: "Season Run 5K", value: "seasonrun5k" },
           { name: "MVP 5K", value: "mvp5k" }
         )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    ),
 
   new SlashCommandBuilder()
     .setName("remove")
@@ -202,18 +222,40 @@ const commands = [
           { name: "Season Run 5K", value: "seasonrun5k" },
           { name: "MVP 5K", value: "mvp5k" }
         )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    ),
 
   new SlashCommandBuilder()
     .setName("board")
-    .setDescription("Post the help board in this channel (becomes the live board)")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Post the help board in this channel (becomes the live board)"),
 
   new SlashCommandBuilder()
     .setName("reset")
-    .setDescription("Clear the board for a new season")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Clear the board for a new season"),
+
+  // Admin-only: bootstrap which roles may run the officer commands above.
+  new SlashCommandBuilder()
+    .setName("config")
+    .setDescription("Configure which roles can manage the help board")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((sub) =>
+      sub
+        .setName("addrole")
+        .setDescription("Allow a role to manage the board")
+        .addRoleOption((opt) =>
+          opt.setName("role").setDescription("Role to allow").setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("removerole")
+        .setDescription("Stop a role from managing the board")
+        .addRoleOption((opt) =>
+          opt.setName("role").setDescription("Role to remove").setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName("roles").setDescription("List roles that can manage the board")
+    ),
 ].map((c) => c.toJSON());
 
 // ---------- register commands ----------
@@ -271,6 +313,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "helped") {
+      if (!isManager(interaction, data)) {
+        await respond(interaction, {
+          content:
+            "You need the **Manage Server** permission or a manager role to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
       const entry = data.entries.find(
@@ -294,6 +344,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "remove") {
+      if (!isManager(interaction, data)) {
+        await respond(interaction, {
+          content:
+            "You need the **Manage Server** permission or a manager role to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
       const before = data.entries.length;
@@ -316,6 +374,14 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "board") {
+      if (!isManager(interaction, data)) {
+        await respond(interaction, {
+          content:
+            "You need the **Manage Server** permission or a manager role to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       // Multiple REST calls follow — defer so we never miss the 3-second window.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -361,10 +427,76 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "reset") {
+      if (!isManager(interaction, data)) {
+        await respond(interaction, {
+          content:
+            "You need the **Manage Server** permission or a manager role to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       data.entries = [];
       saveData(data);
       await respond(interaction, "Board cleared for the new season. 🌱");
       await refreshBoard(client, data);
+    }
+
+    if (interaction.commandName === "config") {
+      // Discord already restricts this command to Manage Server via
+      // setDefaultMemberPermissions, so no extra check is needed here.
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "addrole") {
+        const role = interaction.options.getRole("role");
+        if (data.managerRoleIds.includes(role.id)) {
+          await respond(interaction, {
+            content: `**${role.name}** is already a manager role.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        data.managerRoleIds.push(role.id);
+        saveData(data);
+        await respond(interaction, {
+          content: `Added **${role.name}** as a manager role. Members with it can now run the officer commands.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "removerole") {
+        const role = interaction.options.getRole("role");
+        const before = data.managerRoleIds.length;
+        data.managerRoleIds = data.managerRoleIds.filter((id) => id !== role.id);
+        if (data.managerRoleIds.length === before) {
+          await respond(interaction, {
+            content: `**${role.name}** isn't a manager role.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        saveData(data);
+        await respond(interaction, {
+          content: `Removed **${role.name}** from manager roles.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "roles") {
+        if (data.managerRoleIds.length === 0) {
+          await respond(interaction, {
+            content:
+              "No manager roles set yet — only members with **Manage Server** can manage the board. Add one with `/config addrole`.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        const list = data.managerRoleIds.map((id) => `<@&${id}>`).join(", ");
+        await respond(interaction, {
+          content: `Manager roles: ${list}\n(Members with **Manage Server** can always manage too.)`,
+          flags: MessageFlags.Ephemeral,
+          allowedMentions: { parse: [] },
+        });
+      }
     }
   } catch (err) {
     console.error(err);
