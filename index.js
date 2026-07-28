@@ -131,8 +131,9 @@ function buildBoardEmbed(data) {
     const lines = pending.map((e) => {
       const cat = CATEGORIES[e.category];
       const note = e.note ? ` — _${e.note}_` : "";
-      // Mentions render as the member's CURRENT name and do not ping inside an embed.
-      return `${cat.emoji} <@${e.userId}> (${cat.label})${note}`;
+      // Plain stored name: always readable. (A mention <@id> would show a raw ID
+      // for anyone the viewer can't resolve, e.g. members who left the server.)
+      return `${cat.emoji} **${e.username || "someone"}** (${cat.label})${note}`;
     });
     embed.addFields({ name: "Waiting", value: renderField(lines) });
   }
@@ -140,7 +141,7 @@ function buildBoardEmbed(data) {
   if (done.length > 0) {
     const lines = done.slice(-10).map((e) => {
       const cat = CATEGORIES[e.category];
-      return `${cat.emoji} ~~<@${e.userId}>~~ (${cat.label})`;
+      return `${cat.emoji} ~~${e.username || "someone"}~~ (${cat.label})`;
     });
     embed.addFields({ name: "Sorted (last 10)", value: renderField(lines) });
   }
