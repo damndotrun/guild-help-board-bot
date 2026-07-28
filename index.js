@@ -355,6 +355,11 @@ function closeSeason(data, now) {
     if (data.seasons.length > 12) data.seasons = data.seasons.slice(-12);
   }
   data.entries = [];
+  // The archived season's identity is now history; the board is a fresh cycle.
+  // Reset to an unnamed current season (name it via /season, or /season "New
+  // season" immediately overwrites this via beginSeason). Prevents /reset from
+  // leaving the old name + a stale start date showing as "current".
+  data.currentSeason = { name: null, startedTs: now };
   return archived;
 }
 
@@ -405,7 +410,7 @@ function seasonPanelEmbed(data, sortedNow) {
     .setTitle("📅 Seasons")
     .addFields(
       { name: "Current season", value: `**${seasonLabel(cur)}**${since}\n${sortedNow} sorted so far` },
-      { name: "Past seasons", value: pastLines.length ? pastLines.join("\n") : "None yet." }
+      { name: "Past seasons", value: pastLines.length ? renderField(pastLines) : "None yet." }
     );
 }
 
@@ -1042,7 +1047,11 @@ async function handleSeasonButton(interaction) {
   if (action === "rename" || action === "renamepick") {
     const target = action === "rename" ? "current" : parts[2]; // "current" or "<endedTs>"
     const season = target === "current" ? data.currentSeason : (data.seasons || []).find((s) => String(s.endedTs) === String(target));
-    const input = new TextInputBuilder().setCustomId("name").setLabel("Season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setValue(seasonLabel(season) === "(unnamed)" ? "" : seasonLabel(season));
+    const input = new TextInputBuilder().setCustomId("name").setLabel("Season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true);
+    // Only prefill when there is a real name — Discord rejects an empty setValue
+    // on a text input (unnamed is the day-one state, so this path is common).
+    const prefill = seasonLabel(season);
+    if (prefill && prefill !== "(unnamed)") input.setValue(prefill);
     const modal = new ModalBuilder().setCustomId(`season:renamemodal:${target}`).setTitle("Rename season").addComponents(new ActionRowBuilder().addComponents(input));
     await interaction.showModal(modal);
     return;
@@ -1057,10 +1066,11 @@ async function handleSeasonModal(interaction) {
 
   if (interaction.customId === "season:newmodal") {
     const pending = data.entries.filter((e) => !e.done);
-    closeSeason(data, Date.now());
+    const archived = closeSeason(data, Date.now());
     beginSeason(data, name, Date.now());
     saveData(data);                 // persist BEFORE slow REST
-    await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. Previous season archived, board cleared. 🌱`, flags: MessageFlags.Ephemeral });
+    const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
+    await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
     for (const e of pending) await resolveCard(client, e, "Season reset — this request is closed.");
     await refreshBoard(client, data);
     return;

@@ -435,6 +435,9 @@ test("closeSeason: archives done entries with the current season's name, clears,
   assert.deepEqual(archived.byCategory, { a: 2 });
   assert.equal(data.seasons.length, 1);
   assert.equal(data.entries.length, 0);          // cleared
+  // The current season's identity is history now; a fresh unnamed cycle begins
+  // (prevents /reset from showing the archived name + stale start date).
+  assert.deepEqual(data.currentSeason, { name: null, startedTs: 999 });
 });
 
 test("closeSeason: no done entries → no archive, still clears pending", () => {
@@ -506,4 +509,17 @@ test("seasonPanelEmbed: shows current season label and past count, no raw null",
   assert.match(json, /\(unnamed\)/);   // current unnamed
   assert.match(json, /S1/);            // past season listed
   assert.doesNotMatch(json, /null/);   // no raw null leaked
+});
+
+test("seasonPanelEmbed: past-seasons field stays under Discord's 1024 limit with many long names", () => {
+  const longName = "x".repeat(80); // the rename modal's max length
+  const data = {
+    currentSeason: { name: "Now", startedTs: 1 },
+    seasons: Array.from({ length: 12 }, (_, i) => ({ name: longName, endedTs: 1000 + i, sortedTotal: 5 })),
+    categories: [],
+    entries: [],
+  };
+  const embed = bot.seasonPanelEmbed(data, 0);
+  const pastField = embed.data.fields.find((f) => f.name === "Past seasons");
+  assert.ok(pastField.value.length <= 1024, `field is ${pastField.value.length} chars`);
 });
