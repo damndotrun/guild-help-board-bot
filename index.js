@@ -147,6 +147,7 @@ function emptyData() {
     managerRoleIds: [],
     notifyRoleId: null,
     seasons: [],
+    currentSeason: { name: null, startedTs: null },
     categories: defaultCategories(),
   };
 }
@@ -160,6 +161,13 @@ function readAndShape(raw) {
     managerRoleIds: Array.isArray(parsed.managerRoleIds) ? parsed.managerRoleIds : [],
     notifyRoleId: parsed.notifyRoleId ?? null,
     seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
+    currentSeason:
+      parsed.currentSeason && typeof parsed.currentSeason === "object"
+        ? {
+            name: parsed.currentSeason.name ?? null,
+            startedTs: parsed.currentSeason.startedTs ?? null,
+          }
+        : { name: null, startedTs: null },
     categories:
       Array.isArray(parsed.categories) && parsed.categories.length
         ? parsed.categories
@@ -318,6 +326,56 @@ function tallyHelpers(entries) {
     if (e.done && e.helpedBy) tally[e.helpedBy] = (tally[e.helpedBy] || 0) + 1;
   }
   return Object.entries(tally).sort((a, b) => b[1] - a[1]);
+}
+
+// The display name of a season (archived or current). Never a raw null.
+function seasonLabel(season) {
+  return (season && season.name) || "(unnamed)";
+}
+
+// Archive the current season (only if it has sorted entries) and clear the
+// board. Mutates data. `now` is injected for determinism. Returns the archived
+// season object, or null when there was nothing to archive.
+function closeSeason(data, now) {
+  const done = (data.entries || []).filter((e) => e.done);
+  let archived = null;
+  if (done.length > 0) {
+    const cur = data.currentSeason || { name: null, startedTs: null };
+    archived = {
+      name: cur.name ?? null,
+      startedTs: cur.startedTs ?? null,
+      endedTs: now,
+      sortedTotal: done.length,
+      byCategory: countByCategory(done),
+    };
+    data.seasons.push(archived);
+    if (data.seasons.length > 12) data.seasons = data.seasons.slice(-12);
+  }
+  data.entries = [];
+  return archived;
+}
+
+// Begin a new current season with a name (trimmed; blank → null). Mutates data.
+function beginSeason(data, name, now) {
+  const trimmed = (name || "").trim();
+  data.currentSeason = { name: trimmed || null, startedTs: now };
+}
+
+// Rename the current season ("current") or a past one (its endedTs). Mutates
+// data. Blank name or unknown target → { ok: false }.
+function renameSeason(data, target, newName) {
+  const trimmed = (newName || "").trim();
+  if (!trimmed) return { ok: false };
+  if (target === "current") {
+    const oldName = data.currentSeason?.name ?? null;
+    data.currentSeason = { ...(data.currentSeason || { startedTs: null }), name: trimmed };
+    return { ok: true, oldName };
+  }
+  const season = (data.seasons || []).find((s) => s.endedTs === target);
+  if (!season) return { ok: false };
+  const oldName = season.name ?? null;
+  season.name = trimmed;
+  return { ok: true, oldName };
 }
 
 // ---------- board rendering ----------
@@ -1225,17 +1283,8 @@ client.on("interactionCreate", async (interaction) => {
         await respond(interaction, NO_PERM);
         return;
       }
-      const done = data.entries.filter((e) => e.done);
       const pending = data.entries.filter((e) => !e.done);
-      if (done.length > 0) {
-        data.seasons.push({
-          endedTs: Date.now(),
-          sortedTotal: done.length,
-          byCategory: countByCategory(done),
-        });
-        if (data.seasons.length > 12) data.seasons = data.seasons.slice(-12);
-      }
-      data.entries = [];
+      closeSeason(data, Date.now());
       saveData(data);
       await respond(interaction, "Board cleared for the new season. 🌱");
       // Close any open request cards so they don't linger looking actionable.
@@ -1412,6 +1461,10 @@ module.exports = {
   categorySelectOptions,
   toggleClaim,
   resolveNames,
+  seasonLabel,
+  closeSeason,
+  beginSeason,
+  renameSeason,
 };
 
 if (require.main === module) {

@@ -408,3 +408,73 @@ test("resolveNames: resolves the claimer on a user's second open entry (not skip
   assert.equal(names.o1, "Bob Fresh"); // the claimer — absent under the old buggy code
   assert.ok(fetched.has("u1") && fetched.has("o1"));
 });
+
+test("seasonLabel: name or (unnamed)", () => {
+  assert.equal(bot.seasonLabel({ name: "Winter" }), "Winter");
+  assert.equal(bot.seasonLabel({ name: null }), "(unnamed)");
+  assert.equal(bot.seasonLabel({}), "(unnamed)");
+  assert.equal(bot.seasonLabel(undefined), "(unnamed)");
+});
+
+test("closeSeason: archives done entries with the current season's name, clears, caps at 12", () => {
+  const data = {
+    entries: [
+      { userId: "u1", category: "a", done: true },
+      { userId: "u2", category: "a", done: true },
+      { userId: "u3", category: "b", done: false },
+    ],
+    seasons: [],
+    currentSeason: { name: "Season 4", startedTs: 100 },
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }, { id: "b", label: "B", emoji: "🅱", archived: false }],
+  };
+  const archived = bot.closeSeason(data, 999);
+  assert.equal(archived.name, "Season 4");
+  assert.equal(archived.startedTs, 100);
+  assert.equal(archived.endedTs, 999);
+  assert.equal(archived.sortedTotal, 2);
+  assert.deepEqual(archived.byCategory, { a: 2 });
+  assert.equal(data.seasons.length, 1);
+  assert.equal(data.entries.length, 0);          // cleared
+});
+
+test("closeSeason: no done entries → no archive, still clears pending", () => {
+  const data = { entries: [{ userId: "u1", category: "a", done: false }], seasons: [], currentSeason: { name: "X", startedTs: 1 }, categories: [] };
+  const archived = bot.closeSeason(data, 5);
+  assert.equal(archived, null);
+  assert.equal(data.seasons.length, 0);
+  assert.equal(data.entries.length, 0);
+});
+
+test("closeSeason: caps archive history at 12", () => {
+  const data = {
+    entries: [{ userId: "u1", category: "a", done: true }],
+    seasons: Array.from({ length: 12 }, (_, i) => ({ name: `S${i}`, endedTs: i })),
+    currentSeason: { name: "S12", startedTs: 1 },
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }],
+  };
+  bot.closeSeason(data, 100);
+  assert.equal(data.seasons.length, 12);          // still 12
+  assert.equal(data.seasons[11].name, "S12");     // newest kept
+  assert.equal(data.seasons[0].name, "S1");       // oldest dropped
+});
+
+test("beginSeason: sets current season name + startedTs, trims, empty → null", () => {
+  const data = { currentSeason: { name: null, startedTs: null } };
+  bot.beginSeason(data, "  Spring Run  ", 42);
+  assert.deepEqual(data.currentSeason, { name: "Spring Run", startedTs: 42 });
+  bot.beginSeason(data, "   ", 43);
+  assert.deepEqual(data.currentSeason, { name: null, startedTs: 43 });
+});
+
+test("renameSeason: current, past by endedTs, and not-found", () => {
+  const data = {
+    currentSeason: { name: "Old", startedTs: 1 },
+    seasons: [{ name: "Past", endedTs: 500 }],
+  };
+  assert.deepEqual(bot.renameSeason(data, "current", "  New  "), { ok: true, oldName: "Old" });
+  assert.equal(data.currentSeason.name, "New");
+  assert.deepEqual(bot.renameSeason(data, 500, "Renamed Past"), { ok: true, oldName: "Past" });
+  assert.equal(data.seasons[0].name, "Renamed Past");
+  assert.deepEqual(bot.renameSeason(data, 999, "Nope"), { ok: false });
+  assert.equal(bot.renameSeason(data, "current", "   ").ok, false); // empty name rejected
+});
