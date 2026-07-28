@@ -112,7 +112,8 @@ function renderField(lines) {
   return `${out.join("\n")}\n_…and ${hidden} more_`;
 }
 
-function buildBoardEmbed(data) {
+function buildBoardEmbed(data, names = {}) {
+  const nameOf = (e) => names[e.userId] || e.username || "someone";
   const pending = data.entries.filter((e) => !e.done);
   const done = data.entries.filter((e) => e.done);
 
@@ -131,9 +132,7 @@ function buildBoardEmbed(data) {
     const lines = pending.map((e) => {
       const cat = CATEGORIES[e.category];
       const note = e.note ? ` — _${e.note}_` : "";
-      // Plain stored name: always readable. (A mention <@id> would show a raw ID
-      // for anyone the viewer can't resolve, e.g. members who left the server.)
-      return `${cat.emoji} **${e.username || "someone"}** (${cat.label})${note}`;
+      return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}`;
     });
     embed.addFields({ name: "Waiting", value: renderField(lines) });
   }
@@ -141,7 +140,7 @@ function buildBoardEmbed(data) {
   if (done.length > 0) {
     const lines = done.slice(-10).map((e) => {
       const cat = CATEGORIES[e.category];
-      return `${cat.emoji} ~~${e.username || "someone"}~~ (${cat.label})`;
+      return `${cat.emoji} ~~${nameOf(e)}~~ (${cat.label})`;
     });
     embed.addFields({ name: "Sorted (last 10)", value: renderField(lines) });
   }
@@ -149,12 +148,46 @@ function buildBoardEmbed(data) {
   return embed;
 }
 
+// Resolve each entry's CURRENT display name from its stored user id, and refresh
+// the stored name when we can. A single-member fetch needs no privileged intent
+// and is cached by discord.js. If a member can't be fetched (e.g. they left the
+// guild), we keep the last stored name — so the board never shows a raw id.
+async function resolveNames(guild, data) {
+  const names = {};
+  let changed = false;
+  // Only resolve what the board actually shows: all pending + the last 10 sorted.
+  const pending = data.entries.filter((e) => !e.done);
+  const done = data.entries.filter((e) => e.done).slice(-10);
+  for (const e of [...pending, ...done]) {
+    if (names[e.userId]) continue; // already resolved this user
+    let name = e.username || "someone";
+    if (guild) {
+      try {
+        const member =
+          guild.members.cache.get(e.userId) ||
+          (await guild.members.fetch(e.userId));
+        name = member.displayName;
+        if (e.username !== name) {
+          e.username = name;
+          changed = true;
+        }
+      } catch {
+        // member left the guild or couldn't be fetched — keep the stored name
+      }
+    }
+    names[e.userId] = name;
+  }
+  if (changed) saveData(data);
+  return names;
+}
+
 async function refreshBoard(client, data) {
   if (!data.boardChannelId || !data.boardMessageId) return;
   try {
     const channel = await client.channels.fetch(data.boardChannelId);
+    const names = await resolveNames(channel.guild, data);
     const message = await channel.messages.fetch(data.boardMessageId);
-    await message.edit({ embeds: [buildBoardEmbed(data)] });
+    await message.edit({ embeds: [buildBoardEmbed(data, names)] });
   } catch (err) {
     console.error("Could not refresh board message:", err.message);
   }
@@ -428,7 +461,8 @@ client.on("interactionCreate", async (interaction) => {
       // Multiple REST calls follow — defer so we never miss the 3-second window.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const embed = buildBoardEmbed(data);
+      const names = await resolveNames(interaction.guild, data);
+      const embed = buildBoardEmbed(data, names);
       const message = await interaction.channel.send({ embeds: [embed] });
       try {
         await message.pin();
