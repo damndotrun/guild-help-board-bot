@@ -366,7 +366,8 @@ function buildBoardEmbed(data, names = {}) {
       const cat = catOf(data, e.category);
       const note = e.note ? ` — _${e.note}_` : "";
       const since = e.ts ? ` · <t:${Math.floor(e.ts / 1000)}:R>` : "";
-      return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}${since}`;
+      const claim = e.claimedBy && names[e.claimedBy] ? ` · 🙌 ${names[e.claimedBy]}` : "";
+      return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}${since}${claim}`;
     });
     embed.addFields({ name: "Waiting", value: renderField(lines) });
   }
@@ -407,6 +408,14 @@ async function resolveNames(guild, data) {
       }
     }
     names[e.userId] = name;
+    if (e.claimedBy && !names[e.claimedBy] && guild) {
+      try {
+        const m = guild.members.cache.get(e.claimedBy) || (await guild.members.fetch(e.claimedBy));
+        names[e.claimedBy] = m.displayName;
+      } catch {
+        // unresolvable claimer — leave it out so the board shows no marker (never a raw id)
+      }
+    }
   }
   return names;
 }
@@ -492,9 +501,20 @@ function needHelpRow() {
   );
 }
 
+function toggleClaim(entry, officerId) {
+  if (!entry.claimedBy) { entry.claimedBy = officerId; return { action: "claimed", by: officerId }; }
+  if (entry.claimedBy === officerId) { entry.claimedBy = null; return { action: "released", by: officerId }; }
+  return { action: "blocked", by: entry.claimedBy };
+}
+
 // ---------- help-request cards (one-click officer actions) ----------
 function requestButtons(entryId) {
   return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`help:claim:${entryId}`)
+      .setLabel("Claim")
+      .setEmoji("🙌")
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`help:sorted:${entryId}`)
       .setLabel("Sorted")
@@ -797,6 +817,22 @@ async function handleButton(interaction) {
     await interaction.update({
       content: `🗑️ Removed by ${byName}`,
       components: [],
+      allowedMentions: { parse: [] },
+    });
+    await refreshBoard(client, data);
+  } else if (action === "claim") {
+    const byName = interaction.member?.displayName || interaction.user.username;
+    const r = toggleClaim(entry, interaction.user.id);
+    if (r.action === "blocked") {
+      const holder = await memberName(interaction.guild, r.by);
+      await respond(interaction, { content: `🙌 **${holder || "Another officer"}** is already on this.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    saveData(data);
+    const cat = catOf(data, entry.category);
+    await interaction.update({
+      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, entry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp()],
+      components: [requestButtons(entry.id)],
       allowedMentions: { parse: [] },
     });
     await refreshBoard(client, data);
@@ -1367,6 +1403,7 @@ module.exports = {
   newHelpEntry,
   cardDescription,
   categorySelectOptions,
+  toggleClaim,
 };
 
 if (require.main === module) {

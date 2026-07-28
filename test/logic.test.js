@@ -345,3 +345,24 @@ test("categorySelectOptions: active only, ≤25, emoji-in-label", () => {
   assert.deepEqual(opts.map((o) => o.value), ["a"]);      // active only
   assert.equal(opts[0].label, "🅰 Alpha");                 // emoji folded into label text
 });
+
+test("toggleClaim: claim, release, blocked", () => {
+  const e = {};
+  assert.deepEqual(bot.toggleClaim(e, "o1"), { action: "claimed", by: "o1" });
+  assert.equal(e.claimedBy, "o1");
+  assert.deepEqual(bot.toggleClaim(e, "o1"), { action: "released", by: "o1" });
+  assert.equal(e.claimedBy, null);
+  e.claimedBy = "o2";
+  assert.deepEqual(bot.toggleClaim(e, "o1"), { action: "blocked", by: "o2" });
+  assert.equal(e.claimedBy, "o2"); // unchanged
+});
+
+test("buildBoardEmbed: claim marker when name resolvable, no raw id otherwise", () => {
+  const data = { entries: [
+    { userId: "u1", username: "Ann", category: "a", done: false, ts: 1, claimedBy: "o1" },
+  ], categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }] };
+  const withName = bot.buildBoardEmbed(data, { u1: "Ann", o1: "Bob" });
+  assert.match(JSON.stringify(withName.data.fields), /🙌 Bob/);
+  const noName = bot.buildBoardEmbed(data, { u1: "Ann" }); // o1 unresolved
+  assert.doesNotMatch(JSON.stringify(noName.data.fields), /o1/); // no raw id leak
+});
