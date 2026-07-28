@@ -410,6 +410,46 @@ async function resolveNames(guild, data) {
   return names;
 }
 
+function hasOpenEntry(data, userId, categoryId) {
+  return (data.entries || []).some(
+    (e) => e.userId === userId && e.category === categoryId && !e.done
+  );
+}
+
+function newHelpEntry(userId, username, categoryId, note) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    userId,
+    username,
+    category: categoryId,
+    note: note || "",
+    done: false,
+    ts: Date.now(),
+  };
+}
+
+// Shared request-card description (used by postRequestCard, rerenderCard, claim).
+function cardDescription(cat, entry, claimerName) {
+  const note = entry.note ? `\n📝 _${entry.note}_` : "";
+  const claim = entry.claimedBy && claimerName ? `\n🙌 Claimed by ${claimerName}` : "";
+  return `🙋 **${entry.username}** needs help with **${cat.label}** ${cat.emoji}${note}${claim}`;
+}
+
+// Post the request card, persist its message ids without clobbering concurrent
+// writes, and refresh the board. Slow REST — call AFTER acking the user.
+async function announceEntry(client, entry, fallbackChannelId) {
+  const data = loadData();
+  await postRequestCard(client, data, entry, fallbackChannelId);
+  const fresh = loadData();
+  const target = fresh.entries.find((e) => e.id === entry.id);
+  if (target) {
+    target.requestChannelId = entry.requestChannelId;
+    target.requestMessageId = entry.requestMessageId;
+    saveData(fresh);
+  }
+  await refreshBoard(client, fresh);
+}
+
 // Look up one member's current display name (for the /stats leaderboard).
 async function memberName(guild, userId) {
   if (!guild) return null;
@@ -458,12 +498,9 @@ async function postRequestCard(client, data, entry, fallbackChannelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     const cat = catOf(data, entry.category);
-    const note = entry.note ? `\n📝 _${entry.note}_` : "";
     const embed = new EmbedBuilder()
       .setColor(0x5ac9a1)
-      .setDescription(
-        `🙋 **${entry.username}** needs help with **${cat.label}** ${cat.emoji}${note}`
-      )
+      .setDescription(cardDescription(cat, entry, null))
       .setFooter({ text: "Officers: use the buttons below when it's handled" })
       .setTimestamp();
     const message = await channel.send({
@@ -507,10 +544,9 @@ async function rerenderCard(client, data, entry) {
     const channel = await client.channels.fetch(entry.requestChannelId);
     const message = await channel.messages.fetch(entry.requestMessageId);
     const cat = catOf(data, entry.category);
-    const note = entry.note ? `\n📝 _${entry.note}_` : "";
     const embed = new EmbedBuilder()
       .setColor(0x5ac9a1)
-      .setDescription(`🙋 **${entry.username}** needs help with **${cat.label}** ${cat.emoji}${note}`)
+      .setDescription(cardDescription(cat, entry, null))
       .setFooter({ text: "Officers: use the buttons below when it's handled" })
       .setTimestamp();
     await message.edit({
@@ -790,42 +826,26 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      const existing = data.entries.find(
-        (e) => e.userId === interaction.user.id && e.category === category && !e.done
-      );
-      if (existing) {
+      if (hasOpenEntry(data, interaction.user.id, category)) {
         await respond(interaction, {
           content: `You're already on the board for ${catOf(data, category).label}.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      const entry = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        userId: interaction.user.id,
-        username: interaction.member?.displayName || interaction.user.username,
+      const entry = newHelpEntry(
+        interaction.user.id,
+        interaction.member?.displayName || interaction.user.username,
         category,
-        note,
-        done: false,
-        ts: Date.now(),
-      };
+        note
+      );
       data.entries.push(entry);
       saveData(data);
-      // Acknowledge the user FIRST (3-second window), then do the slow work.
       await respond(interaction, {
         content: `Added you to the board for **${catOf(data, category).label}**. ${catOf(data, category).emoji}`,
         flags: MessageFlags.Ephemeral,
       });
-      await postRequestCard(client, data, entry, interaction.channelId);
-      // Persist the card ids without clobbering any concurrent write.
-      const fresh = loadData();
-      const target = fresh.entries.find((e) => e.id === entry.id);
-      if (target) {
-        target.requestChannelId = entry.requestChannelId;
-        target.requestMessageId = entry.requestMessageId;
-        saveData(fresh);
-      }
-      await refreshBoard(client, fresh);
+      await announceEntry(client, entry, interaction.channelId);
     }
 
     if (interaction.commandName === "imsorted") {
@@ -1279,6 +1299,9 @@ module.exports = {
   addCategory,
   removeCategory,
   categorySuggestions,
+  hasOpenEntry,
+  newHelpEntry,
+  cardDescription,
 };
 
 if (require.main === module) {

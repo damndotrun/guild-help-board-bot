@@ -303,3 +303,35 @@ test("stats aggregation is category-agnostic and back-compatible", () => {
   assert.equal(bot.catOf(data, "seasonrun5k").label, "Season Run 5K");
   assert.equal(bot.catOf(data, "mvp5k").label, "MVP 5K");
 });
+
+test("hasOpenEntry: matches pending same user+category only", () => {
+  const data = { entries: [
+    { userId: "u1", category: "a", done: false },
+    { userId: "u1", category: "b", done: false },
+    { userId: "u2", category: "a", done: false },
+    { userId: "u1", category: "a", done: true },
+  ] };
+  assert.equal(bot.hasOpenEntry(data, "u1", "a"), true);
+  assert.equal(bot.hasOpenEntry(data, "u1", "c"), false);
+  assert.equal(bot.hasOpenEntry(data, "u3", "a"), false);
+});
+
+test("newHelpEntry: shape", () => {
+  const e = bot.newHelpEntry("u1", "Ann", "a", "note");
+  assert.equal(e.userId, "u1");
+  assert.equal(e.username, "Ann");
+  assert.equal(e.category, "a");
+  assert.equal(e.note, "note");
+  assert.equal(e.done, false);
+  assert.equal(typeof e.ts, "number");
+  assert.ok(e.id);
+  assert.equal(bot.newHelpEntry("u1", "Ann", "a").note, ""); // note defaults to ""
+});
+
+test("cardDescription: claim line only when claimed AND name given", () => {
+  const cat = { label: "Season Run 5K", emoji: "🏃" };
+  assert.match(bot.cardDescription(cat, { username: "Ann", note: "" }, null), /needs help with \*\*Season Run 5K\*\*/);
+  assert.doesNotMatch(bot.cardDescription(cat, { username: "Ann" }, null), /Claimed by/);
+  assert.match(bot.cardDescription(cat, { username: "Ann", claimedBy: "o1" }, "Bob"), /🙌 Claimed by Bob/);
+  assert.match(bot.cardDescription(cat, { username: "Ann", note: "3 hammers" }, null), /📝 _3 hammers_/);
+});
