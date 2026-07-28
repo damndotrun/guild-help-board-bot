@@ -4,7 +4,8 @@
   "description": "Discord bot to track members needing help with guild constructions/trophies for season rewards and MVP.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "discord.js": "^14.15.3",
