@@ -11,6 +11,11 @@ It keeps a single live board message in a channel that updates automatically.
 
 ## For everyone
 
+### 🙋 Need help (button on the board)
+The quickest way: click **🙋 Need help** on the pinned board, pick your category
+from the menu, and you're added instantly — same as `/needhelp` but without
+typing. Use `/needhelp` instead when you want to add a note.
+
 ### `/needhelp`
 Add yourself to the board when you need help this season.
 - **category** (required): start typing and pick from the list your guild has set
@@ -41,7 +46,11 @@ Usable by anyone with the **Manage Server** permission, **or** any role an
 admin added as a manager role (see `/config` below).
 
 ### The one-click way (easiest)
-Every `/needhelp` posts a **request card** with two buttons:
+Every request posts a **request card** with these buttons:
+- **🙌 Claim** — flag that you're handling this one (optional). Your name shows on
+  the card and next to the member's name on the board, so two officers don't
+  double up. Click again to un-claim. It's informational only — it never blocks
+  Sorted or Remove, and another officer can't steal an active claim.
 - **✅ Sorted** — marks that member sorted. The card updates to show who sorted
   them, the board updates, and the member gets a DM.
 - **🗑️ Remove** — removes the entry (e.g. posted by mistake).

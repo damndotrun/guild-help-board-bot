@@ -179,6 +179,35 @@ adapts to any guild goal without a code change.
   `activeCategories`, `categoryMap`, `countByCategory`, `defaultCategories`,
   `emptyData`, `rerenderCard` (re-renders a moved entry's card keeping its buttons).
 
+## Self-service & claim UX (latest round)
+
+- **`🙋 Need help` board button** — the pinned board now carries a button. It
+  opens an ephemeral category picker (a `StringSelectMenu` — v14 modals can't
+  hold a select) and picking a category adds you instantly, no note, same result
+  as `/needhelp`. Existing boards gain the button on their next refresh.
+- **`🙌 Claim` button on request cards** — an officer can flag that they're
+  handling a request. It's **informational**: it shows who claimed it on the card
+  and in the board's waiting line, but never blocks Sorted/Remove. Clicking again
+  releases it; another officer can't steal an active claim. `toggleClaim` is the
+  pure toggle; state is one optional field `entry.claimedBy` (additive, no
+  migration — absent on existing entries).
+- **Shared entry-creation path** — `/needhelp` and the board button now run
+  through the same helpers: `hasOpenEntry`, `newHelpEntry`, `cardDescription`
+  (the single source of a card's text — used by both card builders and the claim
+  re-render), and `async announceEntry` (posts the card, reload-patches its
+  message ids by `id`, refreshes the board).
+- `resolveNames` now also resolves `claimedBy` for pending entries — still
+  strictly read-only, never leaks a raw id (an unresolvable claimer just shows no
+  marker), and it resolves per-entry so a user waiting in two categories still
+  gets the claimer resolved on the second one.
+- New `board:` `customId` namespace (`board:needhelp`, `board:pick`) routed ahead
+  of `help:`; claim is `help:claim:<id>`. Select-option labels fold the emoji into
+  the text (never the option `emoji` field), so an admin's free-text emoji can't
+  throw a builder validation error.
+- Key helpers: `hasOpenEntry`, `newHelpEntry`, `cardDescription`, `announceEntry`,
+  `categorySelectOptions`, `needHelpRow`, `handleBoardButton`, `handleBoardSelect`,
+  `toggleClaim`.
+
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 
 1. **No `await` between `loadData()` and `saveData()` in a handler.** The whole
