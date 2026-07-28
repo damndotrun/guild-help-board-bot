@@ -335,3 +335,13 @@ test("cardDescription: claim line only when claimed AND name given", () => {
   assert.match(bot.cardDescription(cat, { username: "Ann", claimedBy: "o1" }, "Bob"), /🙌 Claimed by Bob/);
   assert.match(bot.cardDescription(cat, { username: "Ann", note: "3 hammers" }, null), /📝 _3 hammers_/);
 });
+
+test("categorySelectOptions: active only, ≤25, emoji-in-label", () => {
+  const data = { categories: [
+    { id: "a", label: "Alpha", emoji: "🅰", archived: false },
+    { id: "b", label: "Beta", emoji: "🅱", archived: true },
+  ] };
+  const opts = bot.categorySelectOptions(data);
+  assert.deepEqual(opts.map((o) => o.value), ["a"]);      // active only
+  assert.equal(opts[0].label, "🅰 Alpha");                 // emoji folded into label text
+});

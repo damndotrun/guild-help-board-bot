@@ -12,6 +12,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
   PermissionFlagsBits,
   MessageFlags,
 } = require("discord.js");
@@ -468,10 +469,27 @@ async function refreshBoard(client, data) {
     const channel = await client.channels.fetch(data.boardChannelId);
     const names = await resolveNames(channel.guild, data);
     const message = await channel.messages.fetch(data.boardMessageId);
-    await message.edit({ embeds: [buildBoardEmbed(data, names)] });
+    await message.edit({ embeds: [buildBoardEmbed(data, names)], components: [needHelpRow()] });
   } catch (err) {
     console.error("Could not refresh board message:", err.message);
   }
+}
+
+// ---------- self-service board button ----------
+function categorySelectOptions(data) {
+  return activeCategories(data)
+    .slice(0, 25)
+    .map((c) => ({ label: `${c.emoji} ${c.label}`.slice(0, 100), value: c.id }));
+}
+
+function needHelpRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("board:needhelp")
+      .setLabel("Need help")
+      .setEmoji("🙋")
+      .setStyle(ButtonStyle.Primary)
+  );
 }
 
 // ---------- help-request cards (one-click officer actions) ----------
@@ -791,6 +809,47 @@ async function handleButton(interaction) {
   }
 }
 
+async function handleBoardButton(interaction) {
+  if (interaction.customId !== "board:needhelp") return;
+  const data = loadData();
+  const opts = categorySelectOptions(data);
+  if (opts.length === 0) {
+    await respond(interaction, { content: "No categories are set up yet — ask an admin.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const row = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("board:pick")
+      .setPlaceholder("What do you need help with?")
+      .addOptions(opts)
+  );
+  await respond(interaction, { content: "Pick a category:", components: [row], flags: MessageFlags.Ephemeral });
+}
+
+async function handleBoardSelect(interaction) {
+  const data = loadData();
+  const category = interaction.values[0];
+  const cats = categoryMap(data);
+  if (!cats[category] || cats[category].archived) {
+    await interaction.update({ content: "That category isn't available anymore.", components: [] });
+    return;
+  }
+  if (hasOpenEntry(data, interaction.user.id, category)) {
+    await interaction.update({ content: `You're already on the board for **${catOf(data, category).label}**.`, components: [] });
+    return;
+  }
+  const entry = newHelpEntry(
+    interaction.user.id,
+    interaction.member?.displayName || interaction.user.username,
+    category,
+    ""
+  );
+  data.entries.push(entry);
+  saveData(data);
+  await interaction.update({ content: `Added you to the board for **${catOf(data, category).label}** ${catOf(data, category).emoji} ✅`, components: [] });
+  await announceEntry(client, entry, interaction.channelId);
+}
+
 client.on("interactionCreate", async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
@@ -808,7 +867,12 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith("board:")) { await handleBoardButton(interaction); return; }
       await handleButton(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === "board:pick") {
+      await handleBoardSelect(interaction);
       return;
     }
     if (!interaction.isChatInputCommand()) return;
@@ -1073,7 +1137,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const names = await resolveNames(interaction.guild, data);
       const embed = buildBoardEmbed(data, names);
-      const message = await interaction.channel.send({ embeds: [embed] });
+      const message = await interaction.channel.send({ embeds: [embed], components: [needHelpRow()] });
       try {
         await message.pin();
       } catch (e) {
@@ -1302,6 +1366,7 @@ module.exports = {
   hasOpenEntry,
   newHelpEntry,
   cardDescription,
+  categorySelectOptions,
 };
 
 if (require.main === module) {
