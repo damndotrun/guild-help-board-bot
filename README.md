@@ -15,17 +15,24 @@ run `/help` in Discord).
 
 | Command | Who can use it | What it does |
 |---|---|---|
-| `/needhelp category:[seasonrun5k/mvp5k] note:optional` | Anyone | Adds you to the board |
+| `/needhelp category:[seasonrun5k/mvp5k] note:optional` | Anyone | Adds you to the board (and posts a request card officers can action) |
+| `/imsorted category:[optional]` | Anyone | Removes yourself once you've been helped |
+| `/stats` | Anyone | Season stats: waiting, sorted, average wait, top helpers |
 | `/help` | Anyone | Shows the command list (private reply) |
-| `/helped member:@user category:[…]` | Officers | Marks that member as sorted |
+| `/helped member:@user category:[…]` | Officers | Marks that member as sorted (also DMs them) |
 | `/remove member:@user category:[…]` | Officers | Removes an entry without marking it done (fixes mistakes) |
 | `/board` | Officers | Posts the live board in the current channel and pins it |
-| `/reset` | Officers | Clears the whole board for a new season |
-| `/config addrole\|removerole\|roles` | Admins (Manage Server) | Chooses which roles count as officers |
+| `/reset` | Officers | Clears the board for a new season (archives the totals for `/stats`) |
+| `/config addrole\|removerole\|roles\|notify` | Admins (Manage Server) | Manager roles + request-ping settings |
+
+Officers can also resolve a request without typing: every `/needhelp` posts a
+card with **✅ Sorted** / **🗑️ Remove** buttons. Clicking updates the card, the
+board, and DMs the member.
 
 ### Who counts as an "officer"
 
-The officer commands (`/helped`, `/remove`, `/board`, `/reset`) can be used by:
+The officer actions (the buttons, `/helped`, `/remove`, `/board`, `/reset`) can
+be used by:
 
 - anyone with the **Manage Server** permission, **or**
 - anyone holding a role that an admin added with `/config addrole @Role`.
