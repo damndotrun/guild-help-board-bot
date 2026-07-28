@@ -97,6 +97,9 @@ const CATEGORIES = {
   mvp5k: { label: "MVP 5K", emoji: "⭐" },
 };
 
+// Never throw while rendering a stored entry whose category we no longer know.
+const catOf = (c) => CATEGORIES[c] || { label: c, emoji: "❓" };
+
 const NO_PERM = {
   content:
     "You need the **Manage Server** permission or a manager role to do that.",
@@ -155,7 +158,7 @@ function buildBoardEmbed(data, names = {}) {
     embed.addFields({ name: "Waiting", value: "Nobody's waiting right now 🎉" });
   } else {
     const lines = pending.map((e) => {
-      const cat = CATEGORIES[e.category];
+      const cat = catOf(e.category);
       const note = e.note ? ` — _${e.note}_` : "";
       const since = e.ts ? ` · <t:${Math.floor(e.ts / 1000)}:R>` : "";
       return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}${since}`;
@@ -165,7 +168,7 @@ function buildBoardEmbed(data, names = {}) {
 
   if (done.length > 0) {
     const lines = done.slice(-10).map((e) => {
-      const cat = CATEGORIES[e.category];
+      const cat = catOf(e.category);
       return `${cat.emoji} ~~${nameOf(e)}~~ (${cat.label})`;
     });
     embed.addFields({ name: "Sorted (last 10)", value: renderField(lines) });
@@ -174,13 +177,14 @@ function buildBoardEmbed(data, names = {}) {
   return embed;
 }
 
-// Resolve each entry's CURRENT display name from its stored user id, and refresh
-// the stored name when we can. A single-member fetch needs no privileged intent
-// and is cached by discord.js. If a member can't be fetched (e.g. they left the
-// guild), we keep the last stored name — so the board never shows a raw id.
+// Resolve each entry's CURRENT display name from its stored user id. A single
+// member fetch needs no privileged intent and is cached by discord.js. If a
+// member can't be fetched (e.g. they left the guild), we fall back to the last
+// stored name — so the board never shows a raw id. READ-ONLY on purpose: it must
+// never write data.json, or it could clobber a concurrent write with the stale
+// snapshot it was handed (this runs after other awaits in every handler).
 async function resolveNames(guild, data) {
   const names = {};
-  let changed = false;
   // Only resolve what the board actually shows: all pending + the last 10 sorted.
   const pending = data.entries.filter((e) => !e.done);
   const done = data.entries.filter((e) => e.done).slice(-10);
@@ -193,17 +197,12 @@ async function resolveNames(guild, data) {
           guild.members.cache.get(e.userId) ||
           (await guild.members.fetch(e.userId));
         name = member.displayName;
-        if (e.username !== name) {
-          e.username = name;
-          changed = true;
-        }
       } catch {
         // member left the guild or couldn't be fetched — keep the stored name
       }
     }
     names[e.userId] = name;
   }
-  if (changed) saveData(data);
   return names;
 }
 
@@ -254,7 +253,7 @@ async function postRequestCard(client, data, entry, fallbackChannelId) {
   if (!channelId) return;
   try {
     const channel = await client.channels.fetch(channelId);
-    const cat = CATEGORIES[entry.category];
+    const cat = catOf(entry.category);
     const note = entry.note ? `\n📝 _${entry.note}_` : "";
     const embed = new EmbedBuilder()
       .setColor(0x5ac9a1)
@@ -298,7 +297,7 @@ async function resolveCard(client, entry, statusLine) {
 async function dmSorted(client, userId, category) {
   try {
     const user = await client.users.fetch(userId);
-    const cat = CATEGORIES[category];
+    const cat = catOf(category);
     await user.send(
       `✅ You've been sorted for **${cat.label}** ${cat.emoji} on the Guild Help Board. Thanks for your patience!`
     );
@@ -439,7 +438,13 @@ async function registerCommands() {
 }
 
 // ---------- client ----------
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// parse: [] by default means no message ever pings anyone unless a specific call
+// opts in (the request card explicitly allows the notify role). This neutralises
+// mention injection via user-controlled nicknames in replies.
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+  allowedMentions: { parse: [] },
+});
 
 client.once("clientReady", () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -493,6 +498,12 @@ async function handleButton(interaction) {
       allowedMentions: { parse: [] },
     });
     await refreshBoard(client, data);
+  } else {
+    // Unknown / future action — acknowledge so Discord doesn't show "failed".
+    await respond(interaction, {
+      content: "Unknown action.",
+      flags: MessageFlags.Ephemeral,
+    });
   }
 }
 
@@ -796,6 +807,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       const done = data.entries.filter((e) => e.done);
+      const pending = data.entries.filter((e) => !e.done);
       if (done.length > 0) {
         data.seasons.push({
           endedTs: Date.now(),
@@ -810,12 +822,24 @@ client.on("interactionCreate", async (interaction) => {
       data.entries = [];
       saveData(data);
       await respond(interaction, "Board cleared for the new season. 🌱");
+      // Close any open request cards so they don't linger looking actionable.
+      for (const e of pending) {
+        await resolveCard(client, e, "Season reset — this request is closed.");
+      }
       await refreshBoard(client, data);
     }
 
     if (interaction.commandName === "config") {
-      // Discord already restricts this command to Manage Server via
-      // setDefaultMemberPermissions, so no extra check is needed here.
+      // Defense in depth: setDefaultMemberPermissions can be relaxed by admins in
+      // Discord's Integration settings, so re-check Manage Server in code too.
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        await respond(interaction, {
+          content:
+            "Only members with **Manage Server** can change bot settings.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const sub = interaction.options.getSubcommand();
 
       if (sub === "addrole") {
