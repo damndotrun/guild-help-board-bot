@@ -59,8 +59,25 @@ Every request posts a **request card** with these buttons:
 - `/helped @member <category>` — mark a member as sorted (also DMs them).
 - `/remove @member <category>` — remove an entry without marking it done.
 - `/board` — post the live board in the current channel and pin it.
-- `/reset` — clear the board for a new season (archives the season's totals for
-  `/stats`).
+- `/reset` — quick-close the board for a new season (archives the season's totals
+  for `/stats`). The new season starts unnamed — give it a name with `/season`.
+
+---
+
+## For officers — seasons
+`/season` opens a private control panel for the seasons your board tracks.
+
+- **Start a new season** — archives the current season (its totals stay in
+  `/stats`), clears the board, and asks you to type a name for the fresh season
+  (e.g. `Season 5 — Winter`). This is the same close-and-reset as `/reset`, but
+  it names the new season in one step.
+- **Rename current** — give the running season a name, or fix a typo, without
+  closing anything.
+- **View a past season** — pick any archived season from the dropdown to see its
+  totals; you can rename it from there too.
+
+`/reset` still works as the quick close if you don't need to name the season
+right away.
 
 ---
 

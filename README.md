@@ -22,8 +22,9 @@ run `/help` in Discord).
 | `/helped member:@user category:[…]` | Officers | Marks that member as sorted (also DMs them) |
 | `/remove member:@user category:[…]` | Officers | Removes an entry without marking it done (fixes mistakes) |
 | `/board` | Officers | Posts the live board in the current channel and pins it |
-| `/reset` | Officers | Clears the board for a new season (archives the totals for `/stats`) |
-| `/config addrole\|removerole\|roles\|notify` | Admins (Manage Server) | Manager roles + request-ping settings |
+| `/reset` | Officers | Quick-closes the board for a new season (archives the totals for `/stats`) |
+| `/season` | Officers | Season control panel: start a new **named** season, rename the current or a past one |
+| `/config addrole\|removerole\|roles\|notify\|category` | Admins (Manage Server) | Manager roles, request-ping settings, board categories |
 
 Officers can also resolve a request without typing: every `/needhelp` posts a
 card with **✅ Sorted** / **🗑️ Remove** buttons. Clicking updates the card, the

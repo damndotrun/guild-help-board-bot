@@ -208,6 +208,44 @@ adapts to any guild goal without a code change.
   `categorySelectOptions`, `needHelpRow`, `handleBoardButton`, `handleBoardSelect`,
   `toggleClaim`.
 
+## Named seasons + `/season` panel (latest round)
+
+- **Seasons have names.** `data.currentSeason = { name, startedTs }` (additive,
+  migration-free — absent → `{ name: null, startedTs: null }`, coerced defensively
+  in `readAndShape`), and archived seasons carry a `name` + `startedTs`. Anything
+  without a name renders as **`(unnamed)`** — never a raw `null` — via `seasonLabel`.
+- **Four pure, `now`-injected lifecycle helpers** (deterministic, exported,
+  unit-tested): `seasonLabel(season)`, `closeSeason(data, now)` (archive current
+  if it has sorted entries, cap history at 12, clear the board, **reset
+  `currentSeason` to unnamed/`now`**), `beginSeason(data, name, now)`,
+  `renameSeason(data, target, newName)` (`target` = `"current"` or a numeric
+  `endedTs`). Both `/reset` and the `/season` panel route through these.
+- **`/reset` is now name-aware** but otherwise unchanged: it captures `pending`
+  before `closeSeason` clears entries, archives with the season's name, and starts
+  a fresh **unnamed** season (so the panel never shows the archived name + a stale
+  start date as "current").
+- **`/season` panel** — an ephemeral, manager-only embed + `StringSelectMenu` +
+  buttons. `seasonPanelEmbed` / `seasonSelectOptions` / `seasonPanelComponents`
+  build it; the select (`season:view`) re-renders a season's detail via
+  `interaction.update()`. The "Past seasons" field is capped through the shared
+  `renderField` 1024-char helper (long names can't brick the panel).
+- **First modal usage.** `season:new` / `season:rename` / `season:renamepick:<target>`
+  buttons open a `ModalBuilder` (text-only — v14 modals can't hold a select) for
+  the name; `isModalSubmit()` is routed ahead of the chat-command guard to
+  `handleSeasonModal`, which acks with `interaction.reply()` (a modal submit is
+  **not** a component `update()`), saves **before** the slow card-close/board REST,
+  and keeps the no-`await`-between-load/save rule. Rename prefills the current
+  name, and skips an empty `setValue` (day-one unnamed state).
+- **Known follow-up (D12):** after a modal submit the originating panel is left as
+  its prior render (a separate ephemeral reply confirms the change); stale select
+  values resolve to a graceful "that season is gone". Live in-place panel refresh
+  on submit is deferred (see `DECISIONS.md`).
+- Key helpers/handlers: `seasonLabel`, `closeSeason`, `beginSeason`, `renameSeason`,
+  `seasonPanelEmbed`, `seasonSelectOptions`, `seasonPanelComponents`,
+  `handleSeasonCommand`, `handleSeasonButton`, `handleSeasonSelect`,
+  `handleSeasonModal`. Namespace: `season:*` buttons/select + `season:newmodal` /
+  `season:renamemodal:<target>` modals.
+
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 
 1. **No `await` between `loadData()` and `saveData()` in a handler.** The whole
