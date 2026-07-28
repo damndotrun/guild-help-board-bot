@@ -1411,6 +1411,7 @@ module.exports = {
   cardDescription,
   categorySelectOptions,
   toggleClaim,
+  resolveNames,
 };
 
 if (require.main === module) {

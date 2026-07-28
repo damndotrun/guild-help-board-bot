@@ -380,3 +380,31 @@ test("buildBoardEmbed: claim marker still renders for a user's second open entry
   const embed = bot.buildBoardEmbed(data, { u1: "Ann", o1: "Bob" });
   assert.match(JSON.stringify(embed.data.fields), /🙌 Bob/);
 });
+
+test("resolveNames: resolves the claimer on a user's second open entry (not skipped by the userId cache)", async () => {
+  // Reproduces the exact state that hid the original bug: a `continue` guarding
+  // the userId-cache lookup used to sit ABOVE the claimedBy-resolution block, so
+  // once u1's name was cached from entry 1, entry 2 (same user, different
+  // category, claimed) never reached the claimedBy lookup at all. Calling
+  // resolveNames directly — not buildBoardEmbed with a pre-built names map —
+  // is what actually exercises that code path.
+  const data = { entries: [
+    { userId: "u1", username: "Ann", category: "a", done: false, ts: 1 },
+    { userId: "u1", username: "Ann", category: "b", done: false, ts: 2, claimedBy: "o1" },
+  ] };
+  const fetched = new Set();
+  const displayNames = { u1: "Ann Fresh", o1: "Bob Fresh" };
+  const guild = {
+    members: {
+      cache: { get: () => undefined }, // force every lookup through fetch()
+      fetch: async (id) => {
+        fetched.add(id);
+        return { displayName: displayNames[id] };
+      },
+    },
+  };
+  const names = await bot.resolveNames(guild, data);
+  assert.equal(names.u1, "Ann Fresh");
+  assert.equal(names.o1, "Bob Fresh"); // the claimer — absent under the old buggy code
+  assert.ok(fetched.has("u1") && fetched.has("o1"));
+});
