@@ -107,3 +107,11 @@ test("loadData falls back to empty when both files are corrupt", () => {
   assert.deepEqual(loaded.entries, []);
   assert.equal(loaded.boardChannelId, null);
 });
+
+test("isLockFresh: fresh, stale, and missing", () => {
+  const now = 1_000_000;
+  assert.equal(bot.isLockFresh({ heartbeat: now - 1000 }, now), true);
+  assert.equal(bot.isLockFresh({ heartbeat: now - 100_000 }, now), false);
+  assert.equal(bot.isLockFresh(null, now), false);
+  assert.equal(bot.isLockFresh({}, now), false);
+});

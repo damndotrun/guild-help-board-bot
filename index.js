@@ -87,6 +87,61 @@ function saveData(data) {
   fs.renameSync(TMP_FILE, DATA_FILE);
 }
 
+// ---------- lock (single-instance advisory) ----------
+const LOCK_FILE = path.join(DATA_DIR, "bot.lock");
+const LOCK_STALE_MS = 90_000; // treat a lock older than this as abandoned
+const LOCK_REFRESH_MS = 30_000; // heartbeat cadence (well under the stale window)
+
+function readLock() {
+  try {
+    return JSON.parse(fs.readFileSync(LOCK_FILE, "utf8"));
+  } catch {
+    return null; // no lock, or unreadable — treat as absent
+  }
+}
+
+// Advisory only: a fresh heartbeat means another instance is probably alive.
+function isLockFresh(lock, now) {
+  return (
+    !!lock &&
+    typeof lock.heartbeat === "number" &&
+    now - lock.heartbeat < LOCK_STALE_MS
+  );
+}
+
+// Write the lock and keep a heartbeat. NEVER blocks startup: on a fresh lock we
+// only warn (the deploy model is a clean swap, so a real double-run is a local
+// accident, and a stale lock must never wedge the "restart = update" path).
+function acquireLock() {
+  const now = Date.now();
+  const existing = readLock();
+  if (isLockFresh(existing, now)) {
+    console.warn(
+      `WARNING: bot.lock heartbeat is fresh (pid ${existing.pid}); another ` +
+        `instance may be running against ${DATA_FILE}. Starting anyway.`
+    );
+  }
+  const write = (ts) =>
+    fs.writeFileSync(
+      LOCK_FILE,
+      JSON.stringify({ pid: process.pid, startedTs: now, heartbeat: ts })
+    );
+  try {
+    write(now);
+  } catch (err) {
+    console.error("Could not write bot.lock:", err.message);
+  }
+  const timer = setInterval(() => {
+    try {
+      write(Date.now());
+    } catch {
+      // transient FS error — the next tick will retry
+    }
+  }, LOCK_REFRESH_MS);
+  timer.unref(); // never keep the process alive for the heartbeat alone
+  return timer;
+}
+
 // Who may run the officer commands: anyone with Manage Server, OR anyone holding
 // a role that an admin added via /config. With no manager roles set, it falls
 // back to Manage Server only — so you can never lock yourself out.
@@ -933,6 +988,7 @@ module.exports = {
   loadData,
   saveData,
   tallyHelpers,
+  isLockFresh,
 };
 
 if (require.main === module) {
@@ -945,6 +1001,7 @@ if (require.main === module) {
     );
     process.exit(1);
   }
+  acquireLock();
   (async () => {
     try {
       await registerCommands();
