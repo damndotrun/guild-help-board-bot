@@ -19,8 +19,8 @@ tricky bits don't get re-broken.
 - **Config lives in `data.json`** (no database): manager roles, notify role,
   board location, season history.
 - **Secrets:** `DISCORD_TOKEN` / `CLIENT_ID` / `GUILD_ID` come from env (compose
-  env vars on the NAS, `.env` locally). `.gitignore` keeps `.env` + `data.json`
-  out of git.
+  env vars on the NAS, `.env` locally). `.gitignore` keeps `.env`, `data.json`
+  (and its `.bak`/`.tmp`) and `bot.lock` out of git — the repo is public.
 
 ## Data model (`data.json`)
 
@@ -70,8 +70,15 @@ Manage-Server check).
 ## Where to look (key functions)
 
 - `loadData()` / `saveData()` — storage. `saveData` writes a temp file then
-  `renameSync`s over the target (**atomic** — a crash mid-write can't corrupt it).
-  `loadData` normalises shape and recovers from a corrupt file instead of throwing.
+  `renameSync`s over the target (**atomic** — a crash mid-write can't corrupt it),
+  and first copies the current file to `data.json.bak` **only if it's still valid**
+  (a last-known-good copy that a corrupt primary can't clobber). `loadData`
+  normalises shape (`readAndShape`) and, on a corrupt `data.json`, **restores from
+  `data.json.bak`** before falling back to an empty board instead of throwing.
+- `acquireLock()` / `readLock()` / `isLockFresh(lock, now)` — a **log-only**
+  single-instance advisory: on startup it writes a `bot.lock` heartbeat and warns
+  (never blocks) if a fresh one already exists; a `SIGTERM`/`SIGINT` handler removes
+  the lock on graceful shutdown so a fast redeploy doesn't false-warn.
 - `isManager(interaction, data)` — permission gate for officer actions.
 - `buildBoardEmbed(data, names)` / `renderField(lines)` / `catOf(category)` —
   board rendering. `renderField` keeps each field ≤1024 chars and appends
@@ -118,6 +125,27 @@ Manage-Server check).
   login IIFE is wrapped so failures exit cleanly instead of an unhandled
   rejection. Uses the `clientReady` event (v14 renamed `ready`).
 
+## Ops safety net (latest round)
+
+Operational hardening for the file-based storage and the clone-to-deploy repo —
+no command or board behaviour changed.
+
+- **`data.json.bak` backup + auto-restore.** `saveData` keeps one last-known-good
+  copy; `loadData` restores from it when `data.json` is corrupt (previously it
+  silently started from an empty board — i.e. lost everything). The backup is only
+  taken when the current file is valid, so a corrupt primary never overwrites a
+  good `.bak`.
+- **Log-only single-instance advisory.** A `bot.lock` heartbeat warns (never blocks
+  startup) if another instance looks alive, and is cleaned up on `SIGTERM`/`SIGINT`.
+  Chosen over a hard lock because the deploy model is a clean container swap — a
+  hard lock could wedge the "restart = update" path for no real gain.
+- **Tests + CI.** `index.js` is now importable (its startup is guarded by
+  `require.main === module`, and the pure helpers are `module.exports`ed), so
+  `test/logic.test.js` (Node's built-in `node --test`, zero deps) can exercise the
+  storage/lock/render logic. `npm test` runs the suite; a GitHub Actions workflow
+  (`.github/workflows/ci.yml`) runs `node --check` + `npm test` on every push/PR to
+  `main`. The bot is still one file — `test/` and `.github/` are the only additions.
+
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 
 1. **No `await` between `loadData()` and `saveData()` in a handler.** The whole
@@ -131,7 +159,12 @@ Manage-Server check).
 3. **Button `customId` format is `help:<action>:<entryId>`.** `entryId` has no
    colon, so `split(":")` is safe.
 4. **Run only one instance.** Multiple processes on one `data.json` will
-   overwrite each other (no file locking).
+   overwrite each other (no file locking). The `bot.lock` heartbeat is a
+   **log-only advisory** — it warns but does not enforce, so this still holds.
+5. **Requiring `index.js` must stay inert.** The startup side effects (env
+   validation, `acquireLock`, `registerCommands`, `login`, signal handlers) live
+   inside `if (require.main === module)`, so `node --test` can `require` the module
+   without connecting to Discord or exiting. Keep new startup code inside that guard.
 
 ## Updating
 
