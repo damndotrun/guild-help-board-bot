@@ -366,3 +366,17 @@ test("buildBoardEmbed: claim marker when name resolvable, no raw id otherwise", 
   const noName = bot.buildBoardEmbed(data, { u1: "Ann" }); // o1 unresolved
   assert.doesNotMatch(JSON.stringify(noName.data.fields), /o1/); // no raw id leak
 });
+
+test("buildBoardEmbed: claim marker still renders for a user's second open entry", () => {
+  // Same user waiting in two different categories (allowed — dup-check is per-category).
+  // Regression guard for the resolveNames `continue`-before-claim-resolution bug.
+  const data = { entries: [
+    { userId: "u1", username: "Ann", category: "a", done: false, ts: 1 },
+    { userId: "u1", username: "Ann", category: "b", done: false, ts: 2, claimedBy: "o1" },
+  ], categories: [
+    { id: "a", label: "A", emoji: "🅰", archived: false },
+    { id: "b", label: "B", emoji: "🅱", archived: false },
+  ] };
+  const embed = bot.buildBoardEmbed(data, { u1: "Ann", o1: "Bob" });
+  assert.match(JSON.stringify(embed.data.fields), /🙌 Bob/);
+});

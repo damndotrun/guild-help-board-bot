@@ -395,19 +395,20 @@ async function resolveNames(guild, data) {
   const pending = data.entries.filter((e) => !e.done);
   const done = data.entries.filter((e) => e.done).slice(-10);
   for (const e of [...pending, ...done]) {
-    if (names[e.userId]) continue; // already resolved this user
-    let name = e.username || "someone";
-    if (guild) {
-      try {
-        const member =
-          guild.members.cache.get(e.userId) ||
-          (await guild.members.fetch(e.userId));
-        name = member.displayName;
-      } catch {
-        // member left the guild or couldn't be fetched — keep the stored name
+    if (!names[e.userId]) {
+      let name = e.username || "someone";
+      if (guild) {
+        try {
+          const member =
+            guild.members.cache.get(e.userId) ||
+            (await guild.members.fetch(e.userId));
+          name = member.displayName;
+        } catch {
+          // member left the guild or couldn't be fetched — keep the stored name
+        }
       }
+      names[e.userId] = name;
     }
-    names[e.userId] = name;
     if (e.claimedBy && !names[e.claimedBy] && guild) {
       try {
         const m = guild.members.cache.get(e.claimedBy) || (await guild.members.fetch(e.claimedBy));
@@ -582,11 +583,12 @@ async function rerenderCard(client, data, entry) {
     const channel = await client.channels.fetch(entry.requestChannelId);
     const message = await channel.messages.fetch(entry.requestMessageId);
     const cat = catOf(data, entry.category);
+    const claimer = entry.claimedBy ? await memberName(channel.guild, entry.claimedBy) : null;
     const embed = new EmbedBuilder()
       .setColor(0x5ac9a1)
-      .setDescription(cardDescription(cat, entry, null))
+      .setDescription(cardDescription(cat, entry, claimer))
       .setFooter({ text: "Officers: use the buttons below when it's handled" })
-      .setTimestamp();
+      .setTimestamp(entry.ts ? new Date(entry.ts) : null);
     await message.edit({
       embeds: [embed],
       components: [requestButtons(entry.id)],
@@ -831,7 +833,7 @@ async function handleButton(interaction) {
     saveData(data);
     const cat = catOf(data, entry.category);
     await interaction.update({
-      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, entry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp()],
+      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, entry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(entry.ts ? new Date(entry.ts) : null)],
       components: [requestButtons(entry.id)],
       allowedMentions: { parse: [] },
     });
@@ -846,7 +848,11 @@ async function handleButton(interaction) {
 }
 
 async function handleBoardButton(interaction) {
-  if (interaction.customId !== "board:needhelp") return;
+  if (interaction.customId !== "board:needhelp") {
+    // Unknown / future board action — acknowledge so Discord doesn't show "failed".
+    await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+    return;
+  }
   const data = loadData();
   const opts = categorySelectOptions(data);
   if (opts.length === 0) {
@@ -1194,6 +1200,7 @@ client.on("interactionCreate", async (interaction) => {
             .edit({
               content: "_This board has been retired; a newer one was posted._",
               embeds: [],
+              components: [],
             })
             .catch(() => {});
         } catch (e) {
