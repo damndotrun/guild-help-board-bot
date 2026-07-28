@@ -76,3 +76,15 @@ test("tallyHelpers: counts done+helpedBy, sorted desc", () => {
   ];
   assert.deepEqual(bot.tallyHelpers(entries), [["a", 2], ["b", 1]]);
 });
+
+test("saveData keeps last-known-good in data.json.bak", () => {
+  // saveData/loadData bind to DATA_DIR captured at module load (= TMP, set at
+  // the top of this file). No earlier test writes data.json, so the FIRST save
+  // finds no prior file and writes no .bak; the SECOND save backs up the first.
+  bot.saveData({ entries: [{ id: "A" }] });
+  bot.saveData({ entries: [{ id: "A" }, { id: "B" }] });
+  const bak = JSON.parse(fs.readFileSync(path.join(TMP, "data.json.bak"), "utf8"));
+  assert.equal(bak.entries.length, 1); // previous good state
+  const live = JSON.parse(fs.readFileSync(path.join(TMP, "data.json"), "utf8"));
+  assert.equal(live.entries.length, 2);
+});

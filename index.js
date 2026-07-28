@@ -24,6 +24,7 @@ require("dotenv").config();
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
+const BAK_FILE = path.join(DATA_DIR, "data.json.bak");
 
 // ---------- storage ----------
 const EMPTY_DATA = {
@@ -65,6 +66,13 @@ function loadData() {
 // mid-write can never leave a truncated / corrupt data.json.
 function saveData(data) {
   fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
+  // Keep one last-known-good copy: back up the current file before replacing it.
+  // Best-effort — a backup failure must never block the actual save.
+  try {
+    if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, BAK_FILE);
+  } catch (err) {
+    console.error("Could not write data.json.bak:", err.message);
+  }
   fs.renameSync(TMP_FILE, DATA_FILE);
 }
 
