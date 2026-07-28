@@ -77,12 +77,20 @@ function loadData() {
 // mid-write can never leave a truncated / corrupt data.json.
 function saveData(data) {
   fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
-  // Keep one last-known-good copy: back up the current file before replacing it.
-  // Best-effort — a backup failure must never block the actual save.
+  // Keep one last-known-good copy: back up the current file before replacing it —
+  // but ONLY if it's valid JSON. Never overwrite a good .bak with a corrupt
+  // data.json (which would otherwise happen on the first save after a restore).
+  // Best-effort: a backup failure must never block the actual save.
   try {
-    if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, BAK_FILE);
+    if (fs.existsSync(DATA_FILE)) {
+      JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); // throws if corrupt → skip backup
+      fs.copyFileSync(DATA_FILE, BAK_FILE);
+    }
   } catch (err) {
-    console.error("Could not write data.json.bak:", err.message);
+    console.error(
+      "Skipped data.json.bak (current data.json unreadable or copy failed):",
+      err.message
+    );
   }
   fs.renameSync(TMP_FILE, DATA_FILE);
 }

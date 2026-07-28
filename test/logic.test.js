@@ -108,6 +108,29 @@ test("loadData falls back to empty when both files are corrupt", () => {
   assert.equal(loaded.boardChannelId, null);
 });
 
+test("saveData skips backup when current data.json is corrupt, but still saves", () => {
+  fs.rmSync(path.join(TMP, "data.json"), { force: true });
+  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  // Seed a GOOD backup and a CORRUPT primary (the post-restore situation).
+  fs.writeFileSync(path.join(TMP, "data.json.bak"), JSON.stringify({ entries: [{ id: "GOOD" }] }));
+  fs.writeFileSync(path.join(TMP, "data.json"), "{ corrupt");
+  bot.saveData({ entries: [{ id: "NEW" }] });
+  // The good .bak must be preserved (NOT overwritten by the corrupt primary)...
+  const bak = JSON.parse(fs.readFileSync(path.join(TMP, "data.json.bak"), "utf8"));
+  assert.equal(bak.entries[0].id, "GOOD");
+  // ...and the save still happened.
+  const live = JSON.parse(fs.readFileSync(path.join(TMP, "data.json"), "utf8"));
+  assert.equal(live.entries[0].id, "NEW");
+});
+
+test("loadData falls back to empty when data.json is corrupt and no .bak exists", () => {
+  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  fs.writeFileSync(path.join(TMP, "data.json"), "not json {");
+  const loaded = bot.loadData();
+  assert.deepEqual(loaded.entries, []);
+  assert.equal(loaded.boardChannelId, null);
+});
+
 test("isLockFresh: fresh, stale, and missing", () => {
   const now = 1_000_000;
   assert.equal(bot.isLockFresh({ heartbeat: now - 1000 }, now), true);
