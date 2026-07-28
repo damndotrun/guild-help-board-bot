@@ -71,9 +71,13 @@ function addCategory(data, label, emoji) {
   if (!id) return { ok: false, error: "Give the category a name with letters or numbers." };
   if (label.length > MAX_LABEL)
     return { ok: false, error: `Category name must be ${MAX_LABEL} characters or fewer.` };
+  if (emoji && emoji.length > 32)
+    return { ok: false, error: "Emoji must be 32 characters or fewer." };
   const cats = data.categories || (data.categories = []);
   const existing = cats.find((c) => c.id === id || slugify(c.label) === id);
   if (existing) {
+    if (existing.archived && cats.filter((c) => !c.archived).length >= MAX_ACTIVE_CATEGORIES)
+      return { ok: false, error: `You can have at most ${MAX_ACTIVE_CATEGORIES} active categories.` };
     existing.label = label;
     existing.emoji = emoji || existing.emoji || "📌";
     existing.archived = false;
@@ -954,7 +958,10 @@ client.on("interactionCreate", async (interaction) => {
               "`/config addrole @role` — let a role manage the board\n" +
               "`/config removerole @role` — remove a role\n" +
               "`/config notify @role` — ping a role on new requests\n" +
-              "`/config roles` — show current settings",
+              "`/config roles` — show current settings\n" +
+              "`/config category add <label> [emoji]` — add/update a category\n" +
+              "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
+              "`/config category list` — list categories",
           }
         );
       await respond(interaction, {
@@ -1138,6 +1145,7 @@ client.on("interactionCreate", async (interaction) => {
             content: `Category **${r.category.label}** ${r.category.emoji} is ready.`,
             flags: MessageFlags.Ephemeral,
           });
+          await refreshBoard(client, data);
           return;
         }
 

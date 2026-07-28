@@ -169,6 +169,26 @@ test("loadData falls back to empty when data.json is corrupt and no .bak exists"
   assert.equal(loaded.boardChannelId, null);
 });
 
+test("loadData seeds categories when the field is absent (live-data migration)", () => {
+  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [] })); // no categories field
+  const d = bot.loadData();
+  assert.deepEqual(d.categories.map((c) => c.id).sort(), ["mvp5k", "seasonrun5k"]);
+});
+
+test("loadData seeds categories when the array is empty", () => {
+  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: [] }));
+  assert.equal(bot.loadData().categories.length, 2);
+});
+
+test("loadData preserves a non-empty categories array as-is", () => {
+  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  const custom = [{ id: "boss", label: "Boss", emoji: "👹", archived: false }];
+  fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: custom }));
+  assert.deepEqual(bot.loadData().categories, custom);
+});
+
 test("isLockFresh: fresh, stale, and missing", () => {
   const now = 1_000_000;
   assert.equal(bot.isLockFresh({ heartbeat: now - 1000 }, now), true);
