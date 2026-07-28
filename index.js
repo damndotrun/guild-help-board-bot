@@ -83,7 +83,7 @@ function saveData(data) {
   // Best-effort: a backup failure must never block the actual save.
   try {
     if (fs.existsSync(DATA_FILE)) {
-      JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); // throws if corrupt → skip backup
+      readAndShape(fs.readFileSync(DATA_FILE, "utf8")); // throws if corrupt or mis-shaped → skip backup
       fs.copyFileSync(DATA_FILE, BAK_FILE);
     }
   } catch (err) {
@@ -1010,6 +1010,23 @@ if (require.main === module) {
     process.exit(1);
   }
   acquireLock();
+
+  // Remove the advisory lock on graceful shutdown (Docker sends SIGTERM on stop)
+  // so a fast redeploy doesn't see our own stale heartbeat and false-warn.
+  const releaseLock = () => {
+    try {
+      fs.unlinkSync(LOCK_FILE);
+    } catch {
+      // already gone or unremovable — nothing to do
+    }
+  };
+  for (const sig of ["SIGTERM", "SIGINT"]) {
+    process.on(sig, () => {
+      releaseLock();
+      process.exit(0);
+    });
+  }
+
   (async () => {
     try {
       await registerCommands();

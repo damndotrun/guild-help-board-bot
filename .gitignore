@@ -3,6 +3,9 @@
 
 # Local runtime data (contains member user IDs)
 data.json
+data.json.bak
+data.json.tmp
+bot.lock
 
 # Dependencies
 node_modules/
@@ -17,3 +20,4 @@ Thumbs.db
 CLAUDE.md
 PROGRESS.md
 DECISIONS.md
+docs/superpowers/
