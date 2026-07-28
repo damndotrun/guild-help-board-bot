@@ -15,6 +15,9 @@ const {
   StringSelectMenuBuilder,
   PermissionFlagsBits,
   MessageFlags,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
@@ -1024,9 +1027,55 @@ async function handleSeasonSelect(interaction) {
   await interaction.update({ embeds: [detail], components: [seasonPanelComponents(data)[0], rename] });
 }
 
-// Placeholder until Task 3 wires new/rename; keeps unknown season buttons from failing silently.
 async function handleSeasonButton(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) { await respond(interaction, { content: "Managers only.", flags: MessageFlags.Ephemeral }); return; }
+  const parts = interaction.customId.split(":"); // season:new | season:rename | season:renamepick:<target>
+  const action = parts[1];
+
+  if (action === "new") {
+    const input = new TextInputBuilder().setCustomId("name").setLabel("New season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setPlaceholder("e.g. Season 5 — Winter");
+    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season").addComponents(new ActionRowBuilder().addComponents(input));
+    await interaction.showModal(modal);
+    return;
+  }
+  if (action === "rename" || action === "renamepick") {
+    const target = action === "rename" ? "current" : parts[2]; // "current" or "<endedTs>"
+    const season = target === "current" ? data.currentSeason : (data.seasons || []).find((s) => String(s.endedTs) === String(target));
+    const input = new TextInputBuilder().setCustomId("name").setLabel("Season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setValue(seasonLabel(season) === "(unnamed)" ? "" : seasonLabel(season));
+    const modal = new ModalBuilder().setCustomId(`season:renamemodal:${target}`).setTitle("Rename season").addComponents(new ActionRowBuilder().addComponents(input));
+    await interaction.showModal(modal);
+    return;
+  }
   await respond(interaction, { content: "That action isn't available.", flags: MessageFlags.Ephemeral });
+}
+
+async function handleSeasonModal(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) { await respond(interaction, { content: "Managers only.", flags: MessageFlags.Ephemeral }); return; }
+  const name = interaction.fields.getTextInputValue("name");
+
+  if (interaction.customId === "season:newmodal") {
+    const pending = data.entries.filter((e) => !e.done);
+    closeSeason(data, Date.now());
+    beginSeason(data, name, Date.now());
+    saveData(data);                 // persist BEFORE slow REST
+    await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. Previous season archived, board cleared. 🌱`, flags: MessageFlags.Ephemeral });
+    for (const e of pending) await resolveCard(client, e, "Season reset — this request is closed.");
+    await refreshBoard(client, data);
+    return;
+  }
+
+  if (interaction.customId.startsWith("season:renamemodal:")) {
+    const rawTarget = interaction.customId.slice("season:renamemodal:".length);
+    const target = rawTarget === "current" ? "current" : Number(rawTarget);
+    const r = renameSeason(data, target, name);
+    if (!r.ok) { await respond(interaction, { content: "Couldn't rename that season (it may be gone, or the name was blank).", flags: MessageFlags.Ephemeral }); return; }
+    saveData(data);
+    await interaction.reply({ content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
+    if (target === "current") await refreshBoard(client, data); // board may show the season name later; safe no-op otherwise
+    return;
+  }
 }
 
 client.on("interactionCreate", async (interaction) => {
@@ -1057,6 +1106,10 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId === "season:view") {
       await handleSeasonSelect(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId.startsWith("season:")) { await handleSeasonModal(interaction); return; }
       return;
     }
     if (!interaction.isChatInputCommand()) return;
