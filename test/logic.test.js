@@ -478,3 +478,32 @@ test("renameSeason: current, past by endedTs, and not-found", () => {
   assert.deepEqual(bot.renameSeason(data, 999, "Nope"), { ok: false });
   assert.equal(bot.renameSeason(data, "current", "   ").ok, false); // empty name rejected
 });
+
+test("seasonSelectOptions: current first then past (newest first), value = current|endedTs", () => {
+  const data = {
+    currentSeason: { name: "Now", startedTs: 1 },
+    seasons: [
+      { name: "S1", endedTs: 100, sortedTotal: 3 },
+      { name: null, endedTs: 200, sortedTotal: 1 },
+    ],
+  };
+  const opts = bot.seasonSelectOptions(data);
+  assert.equal(opts[0].value, "current");
+  assert.match(opts[0].label, /Now/);
+  assert.deepEqual(opts.slice(1).map((o) => o.value), ["200", "100"]); // newest past first
+  assert.match(opts[1].label, /\(unnamed\)/);                          // null name rendered
+});
+
+test("seasonPanelEmbed: shows current season label and past count, no raw null", () => {
+  const data = {
+    currentSeason: { name: null, startedTs: 1 },
+    seasons: [{ name: "S1", endedTs: 100, sortedTotal: 3, byCategory: { a: 3 } }],
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }],
+    entries: [{ userId: "u1", category: "a", done: true }],
+  };
+  const embed = bot.seasonPanelEmbed(data, 1);
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /\(unnamed\)/);   // current unnamed
+  assert.match(json, /S1/);            // past season listed
+  assert.doesNotMatch(json, /null/);   // no raw null leaked
+});

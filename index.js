@@ -378,6 +378,46 @@ function renameSeason(data, target, newName) {
   return { ok: true, oldName };
 }
 
+// Options for the season picker: current first, then past seasons newest-first.
+function seasonSelectOptions(data) {
+  const opts = [{ label: `▶ ${seasonLabel(data.currentSeason)} (current)`.slice(0, 100), value: "current" }];
+  const past = [...(data.seasons || [])].sort((a, b) => (b.endedTs || 0) - (a.endedTs || 0));
+  for (const s of past.slice(0, 24)) {
+    opts.push({ label: `${seasonLabel(s)} — ${s.sortedTotal || 0} sorted`.slice(0, 100), value: String(s.endedTs) });
+  }
+  return opts;
+}
+
+// The panel embed: current season summary + a compact past-seasons list.
+function seasonPanelEmbed(data, sortedNow) {
+  const cur = data.currentSeason || { name: null, startedTs: null };
+  const since = cur.startedTs ? ` · started ${new Date(cur.startedTs).toISOString().slice(0, 10)}` : "";
+  const past = [...(data.seasons || [])].sort((a, b) => (b.endedTs || 0) - (a.endedTs || 0));
+  const pastLines = past.slice(0, 10).map((s) => {
+    const ended = s.endedTs ? new Date(s.endedTs).toISOString().slice(0, 10) : "—";
+    return `• **${seasonLabel(s)}** — ${s.sortedTotal || 0} sorted · ${ended}`;
+  });
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle("📅 Seasons")
+    .addFields(
+      { name: "Current season", value: `**${seasonLabel(cur)}**${since}\n${sortedNow} sorted so far` },
+      { name: "Past seasons", value: pastLines.length ? pastLines.join("\n") : "None yet." }
+    );
+}
+
+function seasonPanelComponents(data) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("season:view")
+    .setPlaceholder("View a season…")
+    .addOptions(seasonSelectOptions(data));
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("season:new").setLabel("New season").setEmoji("▶️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("season:rename").setLabel("Rename current").setEmoji("✏️").setStyle(ButtonStyle.Secondary)
+  );
+  return [new ActionRowBuilder().addComponents(select), buttons];
+}
+
 // ---------- board rendering ----------
 // Join lines into a single embed-field value, staying under Discord's 1024-char
 // limit and clearly flagging any entries that had to be hidden.
@@ -712,6 +752,10 @@ const commands = [
     .setDescription("Season stats: waiting, sorted, wait time, and top helpers"),
 
   new SlashCommandBuilder()
+    .setName("season")
+    .setDescription("Manage seasons: start a new named season, rename current or past ones"),
+
+  new SlashCommandBuilder()
     .setName("help")
     .setDescription("How to use the Guild Help Board bot"),
 
@@ -950,6 +994,41 @@ async function handleBoardSelect(interaction) {
   await announceEntry(client, entry, interaction.channelId);
 }
 
+async function handleSeasonCommand(interaction, data) {
+  if (!isManager(interaction, data)) { await respond(interaction, NO_PERM); return; }
+  const sortedNow = data.entries.filter((e) => e.done).length;
+  await respond(interaction, {
+    embeds: [seasonPanelEmbed(data, sortedNow)],
+    components: seasonPanelComponents(data),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleSeasonSelect(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) { await interaction.update({ content: "Managers only.", embeds: [], components: [] }); return; }
+  const value = interaction.values[0];
+  const target = value === "current" ? "current" : Number(value);
+  const season = target === "current"
+    ? data.currentSeason
+    : (data.seasons || []).find((s) => s.endedTs === target);
+  if (!season) { await interaction.update({ content: "That season is gone.", embeds: [], components: [] }); return; }
+  const sortedNow = target === "current" ? data.entries.filter((e) => e.done).length : (season.sortedTotal || 0);
+  const detail = new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle(`📅 ${seasonLabel(season)}${target === "current" ? " (current)" : ""}`)
+    .setDescription(`${sortedNow} sorted${season.byCategory ? " · " + Object.entries(season.byCategory).map(([id, n]) => `${catOf(data, id).emoji} ${n}`).join(" · ") : ""}`);
+  const rename = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`season:renamepick:${value}`).setLabel("Rename this season").setEmoji("✏️").setStyle(ButtonStyle.Secondary)
+  );
+  await interaction.update({ embeds: [detail], components: [seasonPanelComponents(data)[0], rename] });
+}
+
+// Placeholder until Task 3 wires new/rename; keeps unknown season buttons from failing silently.
+async function handleSeasonButton(interaction) {
+  await respond(interaction, { content: "That action isn't available.", flags: MessageFlags.Ephemeral });
+}
+
 client.on("interactionCreate", async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
@@ -968,11 +1047,16 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("board:")) { await handleBoardButton(interaction); return; }
+      if (interaction.customId.startsWith("season:")) { await handleSeasonButton(interaction); return; }
       await handleButton(interaction);
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === "board:pick") {
       await handleBoardSelect(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === "season:view") {
+      await handleSeasonSelect(interaction);
       return;
     }
     if (!interaction.isChatInputCommand()) return;
@@ -1107,6 +1191,10 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [embed],
         flags: MessageFlags.Ephemeral,
       });
+    }
+
+    if (interaction.commandName === "season") {
+      await handleSeasonCommand(interaction, data);
     }
 
     if (interaction.commandName === "help") {
@@ -1465,6 +1553,8 @@ module.exports = {
   closeSeason,
   beginSeason,
   renameSeason,
+  seasonPanelEmbed,
+  seasonSelectOptions,
 };
 
 if (require.main === module) {
