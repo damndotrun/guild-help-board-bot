@@ -126,6 +126,14 @@ function removeCategory(data, id, moveto) {
   return { ok: true, moved, dropped };
 }
 
+function categorySuggestions(data, typed) {
+  const q = (typed || "").toLowerCase();
+  return activeCategories(data)
+    .filter((c) => c.label.toLowerCase().includes(q))
+    .slice(0, 25)
+    .map((c) => ({ name: `${c.emoji} ${c.label}`.slice(0, 100), value: c.id }));
+}
+
 function emptyData() {
   return {
     boardChannelId: null,
@@ -483,6 +491,31 @@ async function resolveCard(client, entry, statusLine) {
   }
 }
 
+// Re-render a request card in place, KEEPING its buttons (unlike resolveCard,
+// which finalizes and strips them). Used when an entry is reassigned to another
+// category. Best-effort REST; failures are ignored like the other card helpers.
+async function rerenderCard(client, data, entry) {
+  if (!entry.requestChannelId || !entry.requestMessageId) return;
+  try {
+    const channel = await client.channels.fetch(entry.requestChannelId);
+    const message = await channel.messages.fetch(entry.requestMessageId);
+    const cat = catOf(data, entry.category);
+    const note = entry.note ? `\n📝 _${entry.note}_` : "";
+    const embed = new EmbedBuilder()
+      .setColor(0x5ac9a1)
+      .setDescription(`🙋 **${entry.username}** needs help with **${cat.label}** ${cat.emoji}${note}`)
+      .setFooter({ text: "Officers: use the buttons below when it's handled" })
+      .setTimestamp();
+    await message.edit({
+      embeds: [embed],
+      components: [requestButtons(entry.id)],
+      allowedMentions: { parse: [] },
+    });
+  } catch {
+    // card gone / not editable — nothing to do
+  }
+}
+
 async function dmSorted(client, data, userId, categoryId) {
   try {
     const user = await client.users.fetch(userId);
@@ -613,6 +646,30 @@ const commands = [
         .addRoleOption((opt) =>
           opt.setName("role").setDescription("Role to ping (empty = off)")
         )
+    )
+    .addSubcommandGroup((g) =>
+      g
+        .setName("category")
+        .setDescription("Manage help categories")
+        .addSubcommand((sub) =>
+          sub
+            .setName("add")
+            .setDescription("Add or update a category")
+            .addStringOption((o) => o.setName("label").setDescription("Category name").setRequired(true))
+            .addStringOption((o) => o.setName("emoji").setDescription("Emoji (optional)"))
+        )
+        .addSubcommand((sub) =>
+          sub
+            .setName("remove")
+            .setDescription("Archive a category (move its open requests first if needed)")
+            .addStringOption((o) =>
+              o.setName("category").setDescription("Category to archive").setRequired(true).setAutocomplete(true)
+            )
+            .addStringOption((o) =>
+              o.setName("moveto").setDescription("Move open requests here").setAutocomplete(true)
+            )
+        )
+        .addSubcommand((sub) => sub.setName("list").setDescription("List categories"))
     ),
 ].map((c) => c.toJSON());
 
@@ -698,6 +755,20 @@ async function handleButton(interaction) {
 
 client.on("interactionCreate", async (interaction) => {
   try {
+    if (interaction.isAutocomplete()) {
+      try {
+        const focused = interaction.options.getFocused(true);
+        if (focused.name === "category" || focused.name === "moveto") {
+          const data = loadData();
+          await interaction.respond(categorySuggestions(data, focused.value));
+        } else {
+          await interaction.respond([]);
+        }
+      } catch {
+        try { await interaction.respond([]); } catch {}
+      }
+      return;
+    }
     if (interaction.isButton()) {
       await handleButton(interaction);
       return;
@@ -1025,6 +1096,62 @@ client.on("interactionCreate", async (interaction) => {
       }
       const sub = interaction.options.getSubcommand();
 
+      const group = interaction.options.getSubcommandGroup(false);
+      if (group === "category") {
+        const catSub = interaction.options.getSubcommand();
+
+        if (catSub === "add") {
+          const label = interaction.options.getString("label");
+          const emoji = interaction.options.getString("emoji") || "";
+          const r = addCategory(data, label, emoji);
+          if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+          saveData(data);
+          await respond(interaction, {
+            content: `Category **${r.category.label}** ${r.category.emoji} is ready.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (catSub === "remove") {
+          const id = interaction.options.getString("category");
+          const moveto = interaction.options.getString("moveto") || undefined;
+          const r = removeCategory(data, id, moveto);
+          if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+          saveData(data);
+          const label = catOf(data, id).label;
+          const extra = r.moved?.length
+            ? ` Moved ${r.moved.length} open request(s) to **${catOf(data, moveto).label}**.`
+            : "";
+          const merged = r.dropped?.length ? ` Merged ${r.dropped.length} duplicate(s).` : "";
+          await respond(interaction, {
+            content: `Archived **${label}**.${extra}${merged}`,
+            flags: MessageFlags.Ephemeral,
+          });
+          // Slow REST after the ack: finalize dropped cards, re-render moved ones, refresh board.
+          for (const e of r.dropped || []) await resolveCard(client, e, `Merged into ${catOf(data, moveto).label}.`);
+          for (const e of r.moved || []) await rerenderCard(client, data, e);
+          await refreshBoard(client, data);
+          return;
+        }
+
+        if (catSub === "list") {
+          const active = activeCategories(data)
+            .map((c) => `${c.emoji} **${c.label}** \`${c.id}\``)
+            .join("\n") || "_none_";
+          const archived = (data.categories || [])
+            .filter((c) => c.archived)
+            .map((c) => `${c.emoji} ~~${c.label}~~ \`${c.id}\``)
+            .join("\n");
+          await respond(interaction, {
+            content: `**Active categories:**\n${active}${archived ? `\n\n**Archived:**\n${archived}` : ""}`,
+            flags: MessageFlags.Ephemeral,
+            allowedMentions: { parse: [] },
+          });
+          return;
+        }
+      }
+
       if (sub === "addrole") {
         const role = interaction.options.getRole("role");
         if (data.managerRoleIds.includes(role.id)) {
@@ -1089,6 +1216,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   } catch (err) {
     console.error(err);
+    if (interaction.isAutocomplete()) return;
     await respond(interaction, {
       content: "Something went wrong running that command.",
       flags: MessageFlags.Ephemeral,
@@ -1114,6 +1242,7 @@ module.exports = {
   slugify,
   addCategory,
   removeCategory,
+  categorySuggestions,
 };
 
 if (require.main === module) {

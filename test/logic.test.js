@@ -257,3 +257,16 @@ test("removeCategory: archive when empty; reassign+dedup; guards", () => {
   // moveto not active / equal to category -> error
   assert.equal(bot.removeCategory(base(), "a", "a").ok, false);
 });
+
+test("categorySuggestions: active only, substring, ≤25, {name,value}", () => {
+  const data = { categories: [
+    { id: "guild-boss", label: "Guild Boss", emoji: "👹", archived: false },
+    { id: "mvp5k", label: "MVP 5K", emoji: "⭐", archived: false },
+    { id: "old", label: "Old Boss", emoji: "🎯", archived: true },
+  ] };
+  const all = bot.categorySuggestions(data, "");
+  assert.deepEqual(all.map((c) => c.value).sort(), ["guild-boss", "mvp5k"]); // no archived
+  const boss = bot.categorySuggestions(data, "boss");
+  assert.deepEqual(boss.map((c) => c.value), ["guild-boss"]);                // substring, active
+  assert.equal(all.find((c) => c.value === "mvp5k").name, "⭐ MVP 5K");       // emoji + label
+});
