@@ -51,6 +51,81 @@ function countByCategory(entries) {
   return out;
 }
 
+// ---------- category CRUD ----------
+
+function slugify(label) {
+  return String(label)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
+const MAX_LABEL = 60;
+const MAX_ACTIVE_CATEGORIES = 25;
+
+// Upsert by NORMALIZED LABEL (seeded ids like "seasonrun5k" are not slugify of
+// their labels, so matching on computed id alone would append a duplicate).
+function addCategory(data, label, emoji) {
+  const id = slugify(label);
+  if (!id) return { ok: false, error: "Give the category a name with letters or numbers." };
+  if (label.length > MAX_LABEL)
+    return { ok: false, error: `Category name must be ${MAX_LABEL} characters or fewer.` };
+  const cats = data.categories || (data.categories = []);
+  const existing = cats.find((c) => c.id === id || slugify(c.label) === id);
+  if (existing) {
+    existing.label = label;
+    existing.emoji = emoji || existing.emoji || "📌";
+    existing.archived = false;
+    return { ok: true, category: existing };
+  }
+  const activeCount = cats.filter((c) => !c.archived).length;
+  if (activeCount >= MAX_ACTIVE_CATEGORIES)
+    return { ok: false, error: `You can have at most ${MAX_ACTIVE_CATEGORIES} active categories.` };
+  const category = { id, label, emoji: emoji || "📌", archived: false };
+  cats.push(category);
+  return { ok: true, category };
+}
+
+// Archive a category. If it has open (pending) entries, moveto is required and
+// must be a different active category: reassign those entries, but DROP any that
+// would duplicate a user's existing open entry in moveto. Never removes the last
+// active category. Mutates data; returns which entries moved vs were dropped.
+function removeCategory(data, id, moveto) {
+  const cats = data.categories || [];
+  const target = cats.find((c) => c.id === id);
+  if (!target) return { ok: false, error: "No such category." };
+  if (target.archived) return { ok: false, error: "That category is already archived." };
+  const active = cats.filter((c) => !c.archived);
+  if (active.length <= 1)
+    return { ok: false, error: "That's the only active category — add a replacement first." };
+
+  if (moveto === id) return { ok: false, error: "`moveto` must be a different category." };
+
+  const open = (data.entries || []).filter((e) => e.category === id && !e.done);
+  const moved = [];
+  const dropped = [];
+  if (open.length > 0) {
+    const dest = cats.find((c) => c.id === moveto && !c.archived);
+    if (!moveto) return { ok: false, error: "That category has open requests — pass `moveto` to move them." };
+    if (!dest) return { ok: false, error: "`moveto` must be an active category." };
+    for (const e of open) {
+      const dup = (data.entries || []).some(
+        (o) => o !== e && o.userId === e.userId && o.category === moveto && !o.done
+      );
+      if (dup) {
+        data.entries = data.entries.filter((o) => o !== e);
+        dropped.push(e);
+      } else {
+        e.category = moveto;
+        moved.push(e);
+      }
+    }
+  }
+  target.archived = true;
+  return { ok: true, moved, dropped };
+}
+
 function emptyData() {
   return {
     boardChannelId: null,
@@ -1036,6 +1111,9 @@ module.exports = {
   categoryMap,
   activeCategories,
   countByCategory,
+  slugify,
+  addCategory,
+  removeCategory,
 };
 
 if (require.main === module) {

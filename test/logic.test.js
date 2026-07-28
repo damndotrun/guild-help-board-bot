@@ -176,3 +176,84 @@ test("isLockFresh: fresh, stale, and missing", () => {
   assert.equal(bot.isLockFresh(null, now), false);
   assert.equal(bot.isLockFresh({}, now), false);
 });
+
+test("slugify: spaces, case, symbols, collapse, empty", () => {
+  assert.equal(bot.slugify("Guild Boss"), "guild-boss");
+  assert.equal(bot.slugify("  Trophy   Push!! "), "trophy-push");
+  assert.equal(bot.slugify("MVP 5K"), "mvp-5k");
+  assert.equal(bot.slugify("💥✨"), "");
+});
+
+test("addCategory: new, upsert-on-seeded-default, revive, guards", () => {
+  const data = { categories: bot.defaultCategories() };
+  // new
+  let r = bot.addCategory(data, "Guild Boss", "👹");
+  assert.equal(r.ok, true);
+  assert.ok(data.categories.find((c) => c.id === "guild-boss" && c.emoji === "👹"));
+  // upsert a SEEDED default by normalized label (id stays "seasonrun5k", no dup)
+  r = bot.addCategory(data, "Season Run 5K", "🎯");
+  assert.equal(r.ok, true);
+  const runs = data.categories.filter((c) => c.label === "Season Run 5K");
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].id, "seasonrun5k");
+  assert.equal(runs[0].emoji, "🎯");
+  // revive an archived one
+  data.categories.push({ id: "old", label: "Old", emoji: "🎯", archived: true });
+  r = bot.addCategory(data, "Old", "🎯");
+  assert.equal(data.categories.find((c) => c.id === "old").archived, false);
+  // empty slug rejected
+  assert.equal(bot.addCategory(data, "💥", "x").ok, false);
+  // label too long rejected
+  assert.equal(bot.addCategory(data, "x".repeat(61), "x").ok, false);
+});
+
+test("addCategory: 25-active cap", () => {
+  const cats = [];
+  for (let i = 0; i < 25; i++) cats.push({ id: `c${i}`, label: `C${i}`, emoji: "•", archived: false });
+  const data = { categories: cats };
+  assert.equal(bot.addCategory(data, "One More", "•").ok, false);
+});
+
+test("removeCategory: archive when empty; reassign+dedup; guards", () => {
+  const base = () => ({
+    categories: [
+      { id: "a", label: "A", emoji: "🅰", archived: false },
+      { id: "b", label: "B", emoji: "🅱", archived: false },
+    ],
+    entries: [],
+  });
+  // no open entries -> archived
+  let d = base();
+  let r = bot.removeCategory(d, "a", undefined);
+  assert.equal(r.ok, true);
+  assert.equal(d.categories.find((c) => c.id === "a").archived, true);
+  // open entries + valid moveto -> reassigned + archived
+  d = base();
+  d.entries = [{ id: "e1", userId: "u1", category: "a", done: false }];
+  r = bot.removeCategory(d, "a", "b");
+  assert.equal(r.ok, true);
+  assert.equal(d.entries[0].category, "b");
+  assert.equal(d.categories.find((c) => c.id === "a").archived, true);
+  assert.deepEqual(r.moved.map((e) => e.id), ["e1"]);
+  // dedup: user already open in moveto -> moved entry DROPPED
+  d = base();
+  d.entries = [
+    { id: "e1", userId: "u1", category: "a", done: false },
+    { id: "e2", userId: "u1", category: "b", done: false },
+  ];
+  r = bot.removeCategory(d, "a", "b");
+  assert.equal(d.entries.find((e) => e.id === "e1"), undefined); // dropped
+  assert.deepEqual(r.dropped.map((e) => e.id), ["e1"]);
+  assert.ok(d.entries.find((e) => e.id === "e2"));
+  // last active category -> error, nothing mutated
+  d = { categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }], entries: [] };
+  r = bot.removeCategory(d, "a", undefined);
+  assert.equal(r.ok, false);
+  assert.equal(d.categories[0].archived, false);
+  // open entries, missing moveto -> error
+  d = base();
+  d.entries = [{ id: "e1", userId: "u1", category: "a", done: false }];
+  assert.equal(bot.removeCategory(d, "a", undefined).ok, false);
+  // moveto not active / equal to category -> error
+  assert.equal(bot.removeCategory(base(), "a", "a").ok, false);
+});
