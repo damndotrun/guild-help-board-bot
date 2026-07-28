@@ -45,7 +45,10 @@ tricky bits don't get re-broken.
   ],
   "managerRoleIds": [],        // roles that can run officer actions (set via /config)
   "notifyRoleId": null,        // pinged on new request cards (/config notify)
-  "seasons": []                // archived summaries pushed by /reset
+  "seasons": [],               // archived summaries pushed by /reset (byCategory now generic)
+  "categories": [              // configurable categories (seeded with the two defaults)
+    { "id": "seasonrun5k", "label": "Season Run 5K", "emoji": "🏃", "archived": false }
+  ]
 }
 ```
 
@@ -62,6 +65,7 @@ tricky bits don't get re-broken.
 | `/board` | officers | post & pin the live board |
 | `/reset` | officers | archive season → clear → close open cards |
 | `/config addrole/removerole/roles/notify` | admins | roles + ping settings |
+| `/config category add/remove/list` | admins | manage categories (add/update, archive+reassign, list) |
 
 "Officers" = Manage Server **or** a role in `managerRoleIds` → see `isManager()`.
 `/config` is admin-only (`setDefaultMemberPermissions` **and** an in-code
@@ -145,6 +149,35 @@ no command or board behaviour changed.
   storage/lock/render logic. `npm test` runs the suite; a GitHub Actions workflow
   (`.github/workflows/ci.yml`) runs `node --check` + `npm test` on every push/PR to
   `main`. The bot is still one file — `test/` and `.github/` are the only additions.
+
+## Configurable categories (latest round)
+
+The two hardcoded categories are now a data-driven, admin-managed list — the bot
+adapts to any guild goal without a code change.
+
+- **`data.categories`** = `[{id,label,emoji,archived}]`. Seeded with the two
+  defaults (`seasonrun5k`, `mvp5k`) when the field is absent **or** empty
+  (`readAndShape`), always deep-copied — so the live `data.json` (which had no
+  `categories`) and old season archives keep working untouched.
+- **`/config category add/remove/list`** (admin). `add` upserts by *normalized
+  label* (so re-adding "Season Run 5K" updates the seeded `seasonrun5k`, never a
+  duplicate); emoji ≤32 chars, label ≤60, max 25 active. `remove` archives (never
+  hard-deletes); if the category has open requests you must pass `moveto` — those
+  entries are reassigned (dropping any that would duplicate a user's existing open
+  entry in the target), then the category is archived. Can't remove the last
+  active category.
+- **Autocomplete, not static choices.** `/needhelp`/`/imsorted`/`/helped`/`/remove`
+  and the `category`/`moveto` options use `.setAutocomplete(true)`, served by one
+  read-only autocomplete handler — so **category edits need no command
+  re-registration**. Handlers still validate the submitted id (an autocomplete
+  value is only a hint).
+- **`catOf(data, id)`** replaced the old const lookup — data-driven, returns a
+  fresh `{label,emoji}`, falls back to the shipped defaults then a generic label.
+  `/stats` and `/reset` iterate categories generically (`countByCategory`); old
+  archives with fixed `byCategory` keys still render.
+- Key helpers: `slugify`, `addCategory`, `removeCategory`, `categorySuggestions`,
+  `activeCategories`, `categoryMap`, `countByCategory`, `defaultCategories`,
+  `emptyData`, `rerenderCard` (re-renders a moved entry's card keeping its buttons).
 
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 

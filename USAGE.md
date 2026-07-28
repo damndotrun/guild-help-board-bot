@@ -1,9 +1,9 @@
 # 🛡️ Guild Help Board — User Guide
 
-A simple bot that tracks who in the guild needs help hitting **Season Run 5K**
-or **MVP 5K** each season, and lets officers mark them as **sorted** once
-they've been helped. It keeps a single live board message in a channel that
-updates automatically.
+A simple bot that tracks who in the guild needs help hitting the guild's season
+goals (**Season Run 5K** and **MVP 5K** by default — admins can add their own
+categories), and lets officers mark them as **sorted** once they've been helped.
+It keeps a single live board message in a channel that updates automatically.
 
 > Tip: type `/help` in Discord any time to see a short version of this.
 
@@ -13,7 +13,8 @@ updates automatically.
 
 ### `/needhelp`
 Add yourself to the board when you need help this season.
-- **category** (required): `Season Run 5K` or `MVP 5K`
+- **category** (required): start typing and pick from the list your guild has set
+  up (`Season Run 5K` / `MVP 5K` by default).
 - **note** (optional): a short detail, e.g. `3 more hammers needed`
 
 You'll get a private confirmation, your name appears in the **Waiting** list on
@@ -70,6 +71,18 @@ with no role to turn pings off.
 
 ### `/config roles`
 Shows the current manager roles and the notify setting.
+
+### `/config category add <label> [emoji]`
+Add a new help category (or update one — same name updates its emoji, and re-adding
+an archived one brings it back). Example: `/config category add Guild Boss 👹`.
+
+### `/config category remove <category> [moveto]`
+Archive a category. If it still has open requests you must pass **moveto** to move
+them to another active category first; the archived category keeps rendering in old
+stats and on already-sorted cards. You can't remove the last active category.
+
+### `/config category list`
+Shows the active and archived categories.
 
 > If no manager roles are set, only members with **Manage Server** can manage
 > the board — so you can never lock yourself out.
