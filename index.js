@@ -25,17 +25,6 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 
-// ---------- env validation ----------
-const REQUIRED_ENV = ["DISCORD_TOKEN", "CLIENT_ID", "GUILD_ID"];
-const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
-if (missingEnv.length > 0) {
-  console.error(
-    `Missing required environment variable(s): ${missingEnv.join(", ")}.\n` +
-      "Copy .env.example to .env and fill them in (see README)."
-  );
-  process.exit(1);
-}
-
 // ---------- storage ----------
 const EMPTY_DATA = {
   boardChannelId: null,
@@ -116,6 +105,15 @@ function formatDuration(ms) {
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m`;
   return "under a minute";
+}
+
+// Tally sorts-per-helper for the /stats leaderboard. Sorted desc by count.
+function tallyHelpers(entries) {
+  const tally = {};
+  for (const e of entries) {
+    if (e.done && e.helpedBy) tally[e.helpedBy] = (tally[e.helpedBy] || 0) + 1;
+  }
+  return Object.entries(tally).sort((a, b) => b[1] - a[1]);
 }
 
 // ---------- board rendering ----------
@@ -599,13 +597,7 @@ client.on("interactionCreate", async (interaction) => {
         ? waits.reduce((a, b) => a + b, 0) / waits.length
         : null;
 
-      const tally = {};
-      for (const e of done) {
-        if (e.helpedBy) tally[e.helpedBy] = (tally[e.helpedBy] || 0) + 1;
-      }
-      const top = Object.entries(tally)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5);
+      const top = tallyHelpers(data.entries).slice(0, 5);
       const medals = ["🥇", "🥈", "🥉"];
       const lbLines = [];
       for (let i = 0; i < top.length; i++) {
@@ -913,17 +905,39 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
+module.exports = {
+  formatDuration,
+  renderField,
+  catOf,
+  isManager,
+  buildBoardEmbed,
+  loadData,
+  saveData,
+  tallyHelpers,
+};
+
+if (require.main === module) {
+  const REQUIRED_ENV = ["DISCORD_TOKEN", "CLIENT_ID", "GUILD_ID"];
+  const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
+  if (missingEnv.length > 0) {
+    console.error(
+      `Missing required environment variable(s): ${missingEnv.join(", ")}.\n` +
+        "Copy .env.example to .env and fill them in (see README)."
+    );
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      await registerCommands();
+      await client.login(process.env.DISCORD_TOKEN);
+    } catch (err) {
+      console.error("Failed to start the bot:", err);
+      process.exit(1);
+    }
+  })();
+}
+
 // Last-resort safety net so a stray rejection is logged, not silently fatal.
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled promise rejection:", reason);
 });
-
-(async () => {
-  try {
-    await registerCommands();
-    await client.login(process.env.DISCORD_TOKEN);
-  } catch (err) {
-    console.error("Failed to start the bot:", err);
-    process.exit(1);
-  }
-})();
