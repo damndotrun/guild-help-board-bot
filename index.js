@@ -9,6 +9,9 @@ const {
   Routes,
   SlashCommandBuilder,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   PermissionFlagsBits,
   MessageFlags,
 } = require("discord.js");
@@ -39,6 +42,8 @@ const EMPTY_DATA = {
   boardMessageId: null,
   entries: [],
   managerRoleIds: [],
+  notifyRoleId: null,
+  seasons: [],
 };
 
 function loadData() {
@@ -55,6 +60,8 @@ function loadData() {
       managerRoleIds: Array.isArray(parsed.managerRoleIds)
         ? parsed.managerRoleIds
         : [],
+      notifyRoleId: parsed.notifyRoleId ?? null,
+      seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
     };
   } catch (err) {
     console.error(
@@ -89,6 +96,24 @@ const CATEGORIES = {
   seasonrun5k: { label: "Season Run 5K", emoji: "🏃" },
   mvp5k: { label: "MVP 5K", emoji: "⭐" },
 };
+
+const NO_PERM = {
+  content:
+    "You need the **Manage Server** permission or a manager role to do that.",
+  flags: MessageFlags.Ephemeral,
+};
+
+// Human-friendly duration, e.g. "2d 3h", "3h 12m", "8m".
+function formatDuration(ms) {
+  const s = Math.round(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m`;
+  return "under a minute";
+}
 
 // ---------- board rendering ----------
 // Join lines into a single embed-field value, staying under Discord's 1024-char
@@ -132,7 +157,8 @@ function buildBoardEmbed(data, names = {}) {
     const lines = pending.map((e) => {
       const cat = CATEGORIES[e.category];
       const note = e.note ? ` — _${e.note}_` : "";
-      return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}`;
+      const since = e.ts ? ` · <t:${Math.floor(e.ts / 1000)}:R>` : "";
+      return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}${since}`;
     });
     embed.addFields({ name: "Waiting", value: renderField(lines) });
   }
@@ -181,6 +207,18 @@ async function resolveNames(guild, data) {
   return names;
 }
 
+// Look up one member's current display name (for the /stats leaderboard).
+async function memberName(guild, userId) {
+  if (!guild) return null;
+  try {
+    const member =
+      guild.members.cache.get(userId) || (await guild.members.fetch(userId));
+    return member.displayName;
+  } catch {
+    return null;
+  }
+}
+
 async function refreshBoard(client, data) {
   if (!data.boardChannelId || !data.boardMessageId) return;
   try {
@@ -190,6 +228,82 @@ async function refreshBoard(client, data) {
     await message.edit({ embeds: [buildBoardEmbed(data, names)] });
   } catch (err) {
     console.error("Could not refresh board message:", err.message);
+  }
+}
+
+// ---------- help-request cards (one-click officer actions) ----------
+function requestButtons(entryId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`help:sorted:${entryId}`)
+      .setLabel("Sorted")
+      .setEmoji("✅")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`help:remove:${entryId}`)
+      .setLabel("Remove")
+      .setEmoji("🗑️")
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+// Post a request card so officers can resolve it with one click. Goes to the
+// board channel if set, otherwise the channel the command was used in.
+async function postRequestCard(client, data, entry, fallbackChannelId) {
+  const channelId = data.boardChannelId || fallbackChannelId;
+  if (!channelId) return;
+  try {
+    const channel = await client.channels.fetch(channelId);
+    const cat = CATEGORIES[entry.category];
+    const note = entry.note ? `\n📝 _${entry.note}_` : "";
+    const embed = new EmbedBuilder()
+      .setColor(0x5ac9a1)
+      .setDescription(
+        `🙋 **${entry.username}** needs help with **${cat.label}** ${cat.emoji}${note}`
+      )
+      .setFooter({ text: "Officers: use the buttons below when it's handled" })
+      .setTimestamp();
+    const message = await channel.send({
+      content: data.notifyRoleId ? `<@&${data.notifyRoleId}>` : undefined,
+      embeds: [embed],
+      components: [requestButtons(entry.id)],
+      allowedMentions: data.notifyRoleId
+        ? { roles: [data.notifyRoleId] }
+        : { parse: [] },
+    });
+    entry.requestChannelId = channel.id;
+    entry.requestMessageId = message.id;
+  } catch (err) {
+    console.error("Could not post request card:", err.message);
+  }
+}
+
+// Finalise a request card (used by the slash commands; button clicks edit the
+// card directly via interaction.update instead).
+async function resolveCard(client, entry, statusLine) {
+  if (!entry.requestChannelId || !entry.requestMessageId) return;
+  try {
+    const channel = await client.channels.fetch(entry.requestChannelId);
+    const message = await channel.messages.fetch(entry.requestMessageId);
+    await message.edit({
+      content: statusLine,
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+  } catch {
+    // card already gone or not editable — nothing to do
+  }
+}
+
+async function dmSorted(client, userId, category) {
+  try {
+    const user = await client.users.fetch(userId);
+    const cat = CATEGORIES[category];
+    await user.send(
+      `✅ You've been sorted for **${cat.label}** ${cat.emoji} on the Guild Help Board. Thanks for your patience!`
+    );
+  } catch {
+    // the member has DMs closed or has left — not a problem
   }
 }
 
@@ -205,6 +319,11 @@ async function respond(interaction, payload) {
   }
 }
 
+const CATEGORY_CHOICES = [
+  { name: "Season Run 5K", value: "seasonrun5k" },
+  { name: "MVP 5K", value: "mvp5k" },
+];
+
 // ---------- slash commands ----------
 const commands = [
   new SlashCommandBuilder()
@@ -215,14 +334,25 @@ const commands = [
         .setName("category")
         .setDescription("What do you need help with?")
         .setRequired(true)
-        .addChoices(
-          { name: "Season Run 5K", value: "seasonrun5k" },
-          { name: "MVP 5K", value: "mvp5k" }
-        )
+        .addChoices(...CATEGORY_CHOICES)
     )
     .addStringOption((opt) =>
       opt.setName("note").setDescription("Optional note (e.g. '3 more hammers needed')")
     ),
+
+  new SlashCommandBuilder()
+    .setName("imsorted")
+    .setDescription("Remove yourself from the board (you got the help you needed)")
+    .addStringOption((opt) =>
+      opt
+        .setName("category")
+        .setDescription("Which one? Leave empty to remove all of yours")
+        .addChoices(...CATEGORY_CHOICES)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("stats")
+    .setDescription("Season stats: waiting, sorted, wait time, and top helpers"),
 
   new SlashCommandBuilder()
     .setName("help")
@@ -239,10 +369,7 @@ const commands = [
         .setName("category")
         .setDescription("Which category")
         .setRequired(true)
-        .addChoices(
-          { name: "Season Run 5K", value: "seasonrun5k" },
-          { name: "MVP 5K", value: "mvp5k" }
-        )
+        .addChoices(...CATEGORY_CHOICES)
     ),
 
   new SlashCommandBuilder()
@@ -256,10 +383,7 @@ const commands = [
         .setName("category")
         .setDescription("Which category")
         .setRequired(true)
-        .addChoices(
-          { name: "Season Run 5K", value: "seasonrun5k" },
-          { name: "MVP 5K", value: "mvp5k" }
-        )
+        .addChoices(...CATEGORY_CHOICES)
     ),
 
   new SlashCommandBuilder()
@@ -273,7 +397,7 @@ const commands = [
   // Admin-only: bootstrap which roles may run the officer commands above.
   new SlashCommandBuilder()
     .setName("config")
-    .setDescription("Configure which roles can manage the help board")
+    .setDescription("Configure roles and notifications for the help board")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addSubcommand((sub) =>
       sub
@@ -292,7 +416,15 @@ const commands = [
         )
     )
     .addSubcommand((sub) =>
-      sub.setName("roles").setDescription("List roles that can manage the board")
+      sub.setName("roles").setDescription("List roles and notification settings")
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("notify")
+        .setDescription("Ping a role on new requests (leave empty to turn off)")
+        .addRoleOption((opt) =>
+          opt.setName("role").setDescription("Role to ping (empty = off)")
+        )
     ),
 ].map((c) => c.toJSON());
 
@@ -313,10 +445,65 @@ client.once("clientReady", () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+// ---------- button handling (one-click officer actions) ----------
+async function handleButton(interaction) {
+  const [ns, action, entryId] = interaction.customId.split(":");
+  if (ns !== "help") return;
 
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await respond(interaction, NO_PERM);
+    return;
+  }
+
+  const entry = data.entries.find((e) => e.id === entryId);
+  if (!entry || entry.done) {
+    // Nothing to act on — just clear the stale buttons.
+    try {
+      await interaction.update({ components: [] });
+    } catch {
+      await respond(interaction, {
+        content: "That request has already been handled.",
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    return;
+  }
+
+  const byName = interaction.member?.displayName || interaction.user.username;
+
+  if (action === "sorted") {
+    entry.done = true;
+    entry.doneTs = Date.now();
+    entry.helpedBy = interaction.user.id;
+    saveData(data);
+    await interaction.update({
+      content: `✅ Sorted by ${byName}`,
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+    await dmSorted(client, entry.userId, entry.category);
+    await refreshBoard(client, data);
+  } else if (action === "remove") {
+    data.entries = data.entries.filter((e) => e.id !== entryId);
+    saveData(data);
+    await interaction.update({
+      content: `🗑️ Removed by ${byName}`,
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+    await refreshBoard(client, data);
+  }
+}
+
+client.on("interactionCreate", async (interaction) => {
   try {
+    if (interaction.isButton()) {
+      await handleButton(interaction);
+      return;
+    }
+    if (!interaction.isChatInputCommand()) return;
+
     const data = loadData();
 
     if (interaction.commandName === "needhelp") {
@@ -332,7 +519,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      data.entries.push({
+      const entry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         userId: interaction.user.id,
         username: interaction.member?.displayName || interaction.user.username,
@@ -340,14 +527,116 @@ client.on("interactionCreate", async (interaction) => {
         note,
         done: false,
         ts: Date.now(),
-      });
+      };
+      data.entries.push(entry);
       saveData(data);
-      // Acknowledge the user FIRST (3-second window), refresh the board after.
+      // Acknowledge the user FIRST (3-second window), then do the slow work.
       await respond(interaction, {
         content: `Added you to the board for **${CATEGORIES[category].label}**. ${CATEGORIES[category].emoji}`,
         flags: MessageFlags.Ephemeral,
       });
+      await postRequestCard(client, data, entry, interaction.channelId);
+      // Persist the card ids without clobbering any concurrent write.
+      const fresh = loadData();
+      const target = fresh.entries.find((e) => e.id === entry.id);
+      if (target) {
+        target.requestChannelId = entry.requestChannelId;
+        target.requestMessageId = entry.requestMessageId;
+        saveData(fresh);
+      }
+      await refreshBoard(client, fresh);
+    }
+
+    if (interaction.commandName === "imsorted") {
+      const category = interaction.options.getString("category");
+      const mine = data.entries.filter(
+        (e) =>
+          e.userId === interaction.user.id &&
+          !e.done &&
+          (!category || e.category === category)
+      );
+      if (mine.length === 0) {
+        await respond(interaction, {
+          content: "You're not on the board right now.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const ids = new Set(mine.map((e) => e.id));
+      data.entries = data.entries.filter((e) => !ids.has(e.id));
+      saveData(data);
+      await respond(interaction, {
+        content: "Took you off the board. Glad you got sorted! 🎉",
+        flags: MessageFlags.Ephemeral,
+      });
+      for (const e of mine) {
+        await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
+      }
       await refreshBoard(client, data);
+    }
+
+    if (interaction.commandName === "stats") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const pending = data.entries.filter((e) => !e.done);
+      const done = data.entries.filter((e) => e.done);
+      const countBy = (arr, c) => arr.filter((e) => e.category === c).length;
+
+      const waits = done
+        .filter((e) => e.ts && e.doneTs && e.doneTs >= e.ts)
+        .map((e) => e.doneTs - e.ts);
+      const avg = waits.length
+        ? waits.reduce((a, b) => a + b, 0) / waits.length
+        : null;
+
+      const tally = {};
+      for (const e of done) {
+        if (e.helpedBy) tally[e.helpedBy] = (tally[e.helpedBy] || 0) + 1;
+      }
+      const top = Object.entries(tally)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+      const medals = ["🥇", "🥈", "🥉"];
+      const lbLines = [];
+      for (let i = 0; i < top.length; i++) {
+        const [id, n] = top[i];
+        const nm = (await memberName(interaction.guild, id)) || "(left the server)";
+        lbLines.push(`${medals[i] || "•"} ${nm} — **${n}**`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5ac9a1)
+        .setTitle("📊 Guild Help Board — season stats")
+        .addFields(
+          {
+            name: "Waiting",
+            value: `🏃 **${countBy(pending, "seasonrun5k")}**  ·  ⭐ **${countBy(pending, "mvp5k")}**`,
+            inline: true,
+          },
+          {
+            name: "Sorted this season",
+            value: `🏃 **${countBy(done, "seasonrun5k")}**  ·  ⭐ **${countBy(done, "mvp5k")}**  (total **${done.length}**)`,
+            inline: true,
+          },
+          {
+            name: "Average wait",
+            value: avg != null ? formatDuration(avg) : "—",
+          },
+          {
+            name: "Top helpers",
+            value: lbLines.length ? lbLines.join("\n") : "No sorts recorded yet.",
+          }
+        );
+      const last = data.seasons[data.seasons.length - 1];
+      if (last) {
+        embed.addFields({
+          name: "Last season",
+          value: `${last.sortedTotal} sorted (🏃 ${last.byCategory.seasonrun5k} · ⭐ ${last.byCategory.mvp5k})`,
+        });
+      }
+      await respond(interaction, {
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     if (interaction.commandName === "help") {
@@ -363,15 +652,18 @@ client.on("interactionCreate", async (interaction) => {
           {
             name: "🟢 Everyone",
             value:
-              "`/needhelp` — add yourself to the board (pick a category, optional note)\n" +
+              "`/needhelp` — add yourself (posts a request officers can action)\n" +
+              "`/imsorted` — remove yourself once you've been helped\n" +
+              "`/stats` — season stats & top helpers\n" +
               "`/help` — show this message",
           },
           {
             name: "🛡️ Officers (Manage Server, or a manager role)",
             value:
-              "`/helped @member <category>` — mark them as sorted ✅\n" +
-              "`/remove @member <category>` — remove an entry (fixes mistakes)\n" +
-              "`/board` — post & pin the live board in this channel\n" +
+              "Click **✅ Sorted** / **🗑️ Remove** on a request card, or:\n" +
+              "`/helped @member <category>` — mark them as sorted\n" +
+              "`/remove @member <category>` — remove an entry\n" +
+              "`/board` — post & pin the live board\n" +
               "`/reset` — clear the board for a new season",
           },
           {
@@ -379,7 +671,8 @@ client.on("interactionCreate", async (interaction) => {
             value:
               "`/config addrole @role` — let a role manage the board\n" +
               "`/config removerole @role` — remove a role\n" +
-              "`/config roles` — list the manager roles",
+              "`/config notify @role` — ping a role on new requests\n" +
+              "`/config roles` — show current settings",
           }
         );
       await respond(interaction, {
@@ -390,11 +683,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.commandName === "helped") {
       if (!isManager(interaction, data)) {
-        await respond(interaction, {
-          content:
-            "You need the **Manage Server** permission or a manager role to use this.",
-          flags: MessageFlags.Ephemeral,
-        });
+        await respond(interaction, NO_PERM);
         return;
       }
       const member = interaction.options.getUser("member");
@@ -411,51 +700,49 @@ client.on("interactionCreate", async (interaction) => {
       }
       entry.done = true;
       entry.doneTs = Date.now();
+      entry.helpedBy = interaction.user.id;
       saveData(data);
       await respond(
         interaction,
         `✅ Marked **${entry.username}** as sorted for ${CATEGORIES[category].label}.`
       );
+      const byName = interaction.member?.displayName || interaction.user.username;
+      await resolveCard(client, entry, `✅ Sorted by ${byName}`);
+      await dmSorted(client, entry.userId, entry.category);
       await refreshBoard(client, data);
     }
 
     if (interaction.commandName === "remove") {
       if (!isManager(interaction, data)) {
-        await respond(interaction, {
-          content:
-            "You need the **Manage Server** permission or a manager role to use this.",
-          flags: MessageFlags.Ephemeral,
-        });
+        await respond(interaction, NO_PERM);
         return;
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
-      const before = data.entries.length;
-      data.entries = data.entries.filter(
-        (e) => !(e.userId === member.id && e.category === category && !e.done)
+      const target = data.entries.find(
+        (e) => e.userId === member.id && e.category === category && !e.done
       );
-      if (data.entries.length === before) {
+      if (!target) {
         await respond(interaction, {
           content: `No pending entry found for ${member.username} in ${CATEGORIES[category].label}.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
+      data.entries = data.entries.filter((e) => e !== target);
       saveData(data);
       await respond(interaction, {
         content: `Removed ${member.username}'s entry.`,
         flags: MessageFlags.Ephemeral,
       });
+      const byName = interaction.member?.displayName || interaction.user.username;
+      await resolveCard(client, target, `🗑️ Removed by ${byName}`);
       await refreshBoard(client, data);
     }
 
     if (interaction.commandName === "board") {
       if (!isManager(interaction, data)) {
-        await respond(interaction, {
-          content:
-            "You need the **Manage Server** permission or a manager role to use this.",
-          flags: MessageFlags.Ephemeral,
-        });
+        await respond(interaction, NO_PERM);
         return;
       }
       // Multiple REST calls follow — defer so we never miss the 3-second window.
@@ -505,12 +792,20 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.commandName === "reset") {
       if (!isManager(interaction, data)) {
-        await respond(interaction, {
-          content:
-            "You need the **Manage Server** permission or a manager role to use this.",
-          flags: MessageFlags.Ephemeral,
-        });
+        await respond(interaction, NO_PERM);
         return;
+      }
+      const done = data.entries.filter((e) => e.done);
+      if (done.length > 0) {
+        data.seasons.push({
+          endedTs: Date.now(),
+          sortedTotal: done.length,
+          byCategory: {
+            seasonrun5k: done.filter((e) => e.category === "seasonrun5k").length,
+            mvp5k: done.filter((e) => e.category === "mvp5k").length,
+          },
+        });
+        if (data.seasons.length > 12) data.seasons = data.seasons.slice(-12);
       }
       data.entries = [];
       saveData(data);
@@ -558,18 +853,28 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      if (sub === "roles") {
-        if (data.managerRoleIds.length === 0) {
-          await respond(interaction, {
-            content:
-              "No manager roles set yet — only members with **Manage Server** can manage the board. Add one with `/config addrole`.",
-            flags: MessageFlags.Ephemeral,
-          });
-          return;
-        }
-        const list = data.managerRoleIds.map((id) => `<@&${id}>`).join(", ");
+      if (sub === "notify") {
+        const role = interaction.options.getRole("role");
+        data.notifyRoleId = role ? role.id : null;
+        saveData(data);
         await respond(interaction, {
-          content: `Manager roles: ${list}\n(Members with **Manage Server** can always manage too.)`,
+          content: role
+            ? `New requests will now ping **${role.name}**.`
+            : "Turned off request pings.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "roles") {
+        const roles =
+          data.managerRoleIds.length > 0
+            ? data.managerRoleIds.map((id) => `<@&${id}>`).join(", ")
+            : "_none_ (only Manage Server can manage)";
+        const notify = data.notifyRoleId
+          ? `<@&${data.notifyRoleId}>`
+          : "_off_";
+        await respond(interaction, {
+          content: `**Manager roles:** ${roles}\n**Request pings:** ${notify}`,
           flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] },
         });
