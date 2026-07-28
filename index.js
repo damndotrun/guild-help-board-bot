@@ -540,11 +540,6 @@ async function respond(interaction, payload) {
   }
 }
 
-const CATEGORY_CHOICES = [
-  { name: "Season Run 5K", value: "seasonrun5k" },
-  { name: "MVP 5K", value: "mvp5k" },
-];
-
 // ---------- slash commands ----------
 const commands = [
   new SlashCommandBuilder()
@@ -555,7 +550,7 @@ const commands = [
         .setName("category")
         .setDescription("What do you need help with?")
         .setRequired(true)
-        .addChoices(...CATEGORY_CHOICES)
+        .setAutocomplete(true)
     )
     .addStringOption((opt) =>
       opt.setName("note").setDescription("Optional note (e.g. '3 more hammers needed')")
@@ -568,7 +563,7 @@ const commands = [
       opt
         .setName("category")
         .setDescription("Which one? Leave empty to remove all of yours")
-        .addChoices(...CATEGORY_CHOICES)
+        .setAutocomplete(true)
     ),
 
   new SlashCommandBuilder()
@@ -590,7 +585,7 @@ const commands = [
         .setName("category")
         .setDescription("Which category")
         .setRequired(true)
-        .addChoices(...CATEGORY_CHOICES)
+        .setAutocomplete(true)
     ),
 
   new SlashCommandBuilder()
@@ -604,7 +599,7 @@ const commands = [
         .setName("category")
         .setDescription("Which category")
         .setRequired(true)
-        .addChoices(...CATEGORY_CHOICES)
+        .setAutocomplete(true)
     ),
 
   new SlashCommandBuilder()
@@ -780,6 +775,14 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "needhelp") {
       const category = interaction.options.getString("category");
       const note = interaction.options.getString("note") || "";
+      const cats = categoryMap(data);
+      if (!cats[category] || cats[category].archived) {
+        await respond(interaction, {
+          content: "That isn't an active category. Pick one from the list.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const existing = data.entries.find(
         (e) => e.userId === interaction.user.id && e.category === category && !e.done
       );
@@ -820,6 +823,13 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.commandName === "imsorted") {
       const category = interaction.options.getString("category");
+      if (category && !categoryMap(data)[category]) {
+        await respond(interaction, {
+          content: "That isn't a known category. Pick one from the list.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const mine = data.entries.filter(
         (e) =>
           e.userId === interaction.user.id &&
@@ -953,6 +963,13 @@ client.on("interactionCreate", async (interaction) => {
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
+      if (!categoryMap(data)[category]) {
+        await respond(interaction, {
+          content: "That isn't a known category. Pick one from the list.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const entry = data.entries.find(
         (e) => e.userId === member.id && e.category === category && !e.done
       );
@@ -984,6 +1001,13 @@ client.on("interactionCreate", async (interaction) => {
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
+      if (!categoryMap(data)[category]) {
+        await respond(interaction, {
+          content: "That isn't a known category. Pick one from the list.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const target = data.entries.find(
         (e) => e.userId === member.id && e.category === category && !e.done
       );
