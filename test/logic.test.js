@@ -88,3 +88,22 @@ test("saveData keeps last-known-good in data.json.bak", () => {
   const live = JSON.parse(fs.readFileSync(path.join(TMP, "data.json"), "utf8"));
   assert.equal(live.entries.length, 2);
 });
+
+test("loadData restores from .bak when data.json is corrupt", () => {
+  const good = { boardChannelId: "c", boardMessageId: "m", entries: [{ id: "X" }],
+    managerRoleIds: [], notifyRoleId: null, seasons: [] };
+  fs.writeFileSync(path.join(TMP, "data.json.bak"), JSON.stringify(good));
+  fs.writeFileSync(path.join(TMP, "data.json"), "{ this is not json");
+  const loaded = bot.loadData();
+  assert.equal(loaded.entries.length, 1);
+  assert.equal(loaded.entries[0].id, "X");
+  assert.equal(loaded.boardChannelId, "c");
+});
+
+test("loadData falls back to empty when both files are corrupt", () => {
+  fs.writeFileSync(path.join(TMP, "data.json.bak"), "also broken {");
+  fs.writeFileSync(path.join(TMP, "data.json"), "broken {");
+  const loaded = bot.loadData();
+  assert.deepEqual(loaded.entries, []);
+  assert.equal(loaded.boardChannelId, null);
+});

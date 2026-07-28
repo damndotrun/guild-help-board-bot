@@ -36,27 +36,38 @@ const EMPTY_DATA = {
   seasons: [],
 };
 
+function readAndShape(raw) {
+  const parsed = JSON.parse(raw);
+  return {
+    boardChannelId: parsed.boardChannelId ?? null,
+    boardMessageId: parsed.boardMessageId ?? null,
+    entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+    managerRoleIds: Array.isArray(parsed.managerRoleIds) ? parsed.managerRoleIds : [],
+    notifyRoleId: parsed.notifyRoleId ?? null,
+    seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
+  };
+}
+
 function loadData() {
-  if (!fs.existsSync(DATA_FILE)) {
-    return { ...EMPTY_DATA };
-  }
+  if (!fs.existsSync(DATA_FILE)) return { ...EMPTY_DATA };
   try {
-    const parsed = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    // Guard against a partially-shaped file.
-    return {
-      boardChannelId: parsed.boardChannelId ?? null,
-      boardMessageId: parsed.boardMessageId ?? null,
-      entries: Array.isArray(parsed.entries) ? parsed.entries : [],
-      managerRoleIds: Array.isArray(parsed.managerRoleIds)
-        ? parsed.managerRoleIds
-        : [],
-      notifyRoleId: parsed.notifyRoleId ?? null,
-      seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
-    };
+    return readAndShape(fs.readFileSync(DATA_FILE, "utf8"));
   } catch (err) {
+    // data.json is unreadable — try the last-known-good backup before giving up.
+    try {
+      if (fs.existsSync(BAK_FILE)) {
+        const restored = readAndShape(fs.readFileSync(BAK_FILE, "utf8"));
+        console.error(
+          `data.json unreadable (${err.message}); restored from data.json.bak.`
+        );
+        return restored;
+      }
+    } catch (bakErr) {
+      console.error(`data.json.bak also unreadable (${bakErr.message}).`);
+    }
     console.error(
       `data.json is unreadable (${err.message}); starting from an empty board. ` +
-        "The old file is left in place for manual inspection."
+        "The old files are left in place for manual inspection."
     );
     return { ...EMPTY_DATA };
   }
