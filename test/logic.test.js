@@ -32,9 +32,47 @@ test("renderField: empty, passthrough, truncation", () => {
   assert.match(out, /_…and \d+ more_$/);
 });
 
-test("catOf: known + unknown fallback", () => {
-  assert.equal(bot.catOf("seasonrun5k").label, "Season Run 5K");
-  assert.deepEqual(bot.catOf("weird"), { label: "weird", emoji: "❓" });
+test("catOf: known/archived/unknown, fresh object", () => {
+  const data = { categories: [
+    { id: "seasonrun5k", label: "Season Run 5K", emoji: "🏃", archived: false },
+    { id: "old", label: "Old Event", emoji: "🎯", archived: true },
+  ] };
+  assert.equal(bot.catOf(data, "seasonrun5k").label, "Season Run 5K");
+  assert.equal(bot.catOf(data, "old").emoji, "🎯");          // archived still resolves
+  assert.deepEqual(bot.catOf(data, "weird"), { label: "weird", emoji: "❓" });
+  const r = bot.catOf(data, "seasonrun5k");
+  r.label = "MUTATED";
+  assert.equal(data.categories[0].label, "Season Run 5K");   // fresh object, no aliasing
+});
+
+test("defaultCategories: deep copy, has the two legacy ids", () => {
+  const a = bot.defaultCategories();
+  const b = bot.defaultCategories();
+  assert.deepEqual(a.map((c) => c.id).sort(), ["mvp5k", "seasonrun5k"]);
+  a[0].label = "X";
+  assert.notEqual(b[0].label, "X");                          // independent copies
+});
+
+test("emptyData seeds the default categories", () => {
+  const d = bot.emptyData();
+  assert.equal(d.categories.length, 2);
+  assert.deepEqual(d.entries, []);
+  assert.equal(d.boardChannelId, null);
+});
+
+test("countByCategory counts per id", () => {
+  const entries = [
+    { category: "a", done: true }, { category: "a", done: false }, { category: "b", done: true },
+  ];
+  assert.deepEqual(bot.countByCategory(entries), { a: 2, b: 1 });
+});
+
+test("activeCategories filters archived", () => {
+  const data = { categories: [
+    { id: "a", label: "A", emoji: "🅰", archived: false },
+    { id: "b", label: "B", emoji: "🅱", archived: true },
+  ] };
+  assert.deepEqual(bot.activeCategories(data).map((c) => c.id), ["a"]);
 });
 
 test("isManager: manage-guild, role match, safe default", () => {

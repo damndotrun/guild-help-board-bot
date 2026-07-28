@@ -27,14 +27,41 @@ const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 const BAK_FILE = path.join(DATA_DIR, "data.json.bak");
 
 // ---------- storage ----------
-const EMPTY_DATA = {
-  boardChannelId: null,
-  boardMessageId: null,
-  entries: [],
-  managerRoleIds: [],
-  notifyRoleId: null,
-  seasons: [],
-};
+// The two categories the bot shipped with. Private — always handed out as a
+// deep copy so a later add/archive never mutates this const.
+const DEFAULT_CATEGORIES = [
+  { id: "seasonrun5k", label: "Season Run 5K", emoji: "🏃", archived: false },
+  { id: "mvp5k", label: "MVP 5K", emoji: "⭐", archived: false },
+];
+function defaultCategories() {
+  return DEFAULT_CATEGORIES.map((c) => ({ ...c }));
+}
+
+function categoryMap(data) {
+  const map = {};
+  for (const c of data.categories || []) map[c.id] = c;
+  return map;
+}
+function activeCategories(data) {
+  return (data.categories || []).filter((c) => !c.archived);
+}
+function countByCategory(entries) {
+  const out = {};
+  for (const e of entries) out[e.category] = (out[e.category] || 0) + 1;
+  return out;
+}
+
+function emptyData() {
+  return {
+    boardChannelId: null,
+    boardMessageId: null,
+    entries: [],
+    managerRoleIds: [],
+    notifyRoleId: null,
+    seasons: [],
+    categories: defaultCategories(),
+  };
+}
 
 function readAndShape(raw) {
   const parsed = JSON.parse(raw);
@@ -45,11 +72,15 @@ function readAndShape(raw) {
     managerRoleIds: Array.isArray(parsed.managerRoleIds) ? parsed.managerRoleIds : [],
     notifyRoleId: parsed.notifyRoleId ?? null,
     seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
+    categories:
+      Array.isArray(parsed.categories) && parsed.categories.length
+        ? parsed.categories
+        : defaultCategories(),
   };
 }
 
 function loadData() {
-  if (!fs.existsSync(DATA_FILE)) return { ...EMPTY_DATA };
+  if (!fs.existsSync(DATA_FILE)) return emptyData();
   try {
     return readAndShape(fs.readFileSync(DATA_FILE, "utf8"));
   } catch (err) {
@@ -69,7 +100,7 @@ function loadData() {
       `data.json is unreadable (${err.message}); starting from an empty board. ` +
         "The old files are left in place for manual inspection."
     );
-    return { ...EMPTY_DATA };
+    return emptyData();
   }
 }
 
@@ -163,13 +194,16 @@ function isManager(interaction, data) {
   return false;
 }
 
-const CATEGORIES = {
-  seasonrun5k: { label: "Season Run 5K", emoji: "🏃" },
-  mvp5k: { label: "MVP 5K", emoji: "⭐" },
-};
-
-// Never throw while rendering a stored entry whose category we no longer know.
-const catOf = (c) => CATEGORIES[c] || { label: c, emoji: "❓" };
+// Resolve a category id to its current {label, emoji}. Returns a FRESH object
+// (never a reference into data.categories / DEFAULT_CATEGORIES). Falls back to
+// the shipped defaults, then to a generic label so rendering never throws.
+function catOf(data, id) {
+  const found =
+    (data.categories || []).find((c) => c.id === id) ||
+    DEFAULT_CATEGORIES.find((c) => c.id === id);
+  if (found) return { label: found.label, emoji: found.emoji };
+  return { label: id, emoji: "❓" };
+}
 
 const NO_PERM = {
   content:
@@ -238,7 +272,7 @@ function buildBoardEmbed(data, names = {}) {
     embed.addFields({ name: "Waiting", value: "Nobody's waiting right now 🎉" });
   } else {
     const lines = pending.map((e) => {
-      const cat = catOf(e.category);
+      const cat = catOf(data, e.category);
       const note = e.note ? ` — _${e.note}_` : "";
       const since = e.ts ? ` · <t:${Math.floor(e.ts / 1000)}:R>` : "";
       return `${cat.emoji} **${nameOf(e)}** (${cat.label})${note}${since}`;
@@ -248,7 +282,7 @@ function buildBoardEmbed(data, names = {}) {
 
   if (done.length > 0) {
     const lines = done.slice(-10).map((e) => {
-      const cat = catOf(e.category);
+      const cat = catOf(data, e.category);
       return `${cat.emoji} ~~${nameOf(e)}~~ (${cat.label})`;
     });
     embed.addFields({ name: "Sorted (last 10)", value: renderField(lines) });
@@ -333,7 +367,7 @@ async function postRequestCard(client, data, entry, fallbackChannelId) {
   if (!channelId) return;
   try {
     const channel = await client.channels.fetch(channelId);
-    const cat = catOf(entry.category);
+    const cat = catOf(data, entry.category);
     const note = entry.note ? `\n📝 _${entry.note}_` : "";
     const embed = new EmbedBuilder()
       .setColor(0x5ac9a1)
@@ -374,10 +408,10 @@ async function resolveCard(client, entry, statusLine) {
   }
 }
 
-async function dmSorted(client, userId, category) {
+async function dmSorted(client, data, userId, categoryId) {
   try {
     const user = await client.users.fetch(userId);
-    const cat = catOf(category);
+    const cat = catOf(data, categoryId);
     await user.send(
       `✅ You've been sorted for **${cat.label}** ${cat.emoji} on the Guild Help Board. Thanks for your patience!`
     );
@@ -567,7 +601,7 @@ async function handleButton(interaction) {
       components: [],
       allowedMentions: { parse: [] },
     });
-    await dmSorted(client, entry.userId, entry.category);
+    await dmSorted(client, data, entry.userId, entry.category);
     await refreshBoard(client, data);
   } else if (action === "remove") {
     data.entries = data.entries.filter((e) => e.id !== entryId);
@@ -605,7 +639,7 @@ client.on("interactionCreate", async (interaction) => {
       );
       if (existing) {
         await respond(interaction, {
-          content: `You're already on the board for ${CATEGORIES[category].label}.`,
+          content: `You're already on the board for ${catOf(data, category).label}.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -623,7 +657,7 @@ client.on("interactionCreate", async (interaction) => {
       saveData(data);
       // Acknowledge the user FIRST (3-second window), then do the slow work.
       await respond(interaction, {
-        content: `Added you to the board for **${CATEGORIES[category].label}**. ${CATEGORIES[category].emoji}`,
+        content: `Added you to the board for **${catOf(data, category).label}**. ${catOf(data, category).emoji}`,
         flags: MessageFlags.Ephemeral,
       });
       await postRequestCard(client, data, entry, interaction.channelId);
@@ -778,7 +812,7 @@ client.on("interactionCreate", async (interaction) => {
       );
       if (!entry) {
         await respond(interaction, {
-          content: `No pending entry found for ${member.username} in ${CATEGORIES[category].label}.`,
+          content: `No pending entry found for ${member.username} in ${catOf(data, category).label}.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -789,11 +823,11 @@ client.on("interactionCreate", async (interaction) => {
       saveData(data);
       await respond(
         interaction,
-        `✅ Marked **${entry.username}** as sorted for ${CATEGORIES[category].label}.`
+        `✅ Marked **${entry.username}** as sorted for ${catOf(data, category).label}.`
       );
       const byName = interaction.member?.displayName || interaction.user.username;
       await resolveCard(client, entry, `✅ Sorted by ${byName}`);
-      await dmSorted(client, entry.userId, entry.category);
+      await dmSorted(client, data, entry.userId, entry.category);
       await refreshBoard(client, data);
     }
 
@@ -809,7 +843,7 @@ client.on("interactionCreate", async (interaction) => {
       );
       if (!target) {
         await respond(interaction, {
-          content: `No pending entry found for ${member.username} in ${CATEGORIES[category].label}.`,
+          content: `No pending entry found for ${member.username} in ${catOf(data, category).label}.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -997,6 +1031,11 @@ module.exports = {
   saveData,
   tallyHelpers,
   isLockFresh,
+  defaultCategories,
+  emptyData,
+  categoryMap,
+  activeCategories,
+  countByCategory,
 };
 
 if (require.main === module) {
