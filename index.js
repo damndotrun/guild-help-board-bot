@@ -342,12 +342,15 @@ function buildBoardEmbed(data, names = {}) {
   const pending = data.entries.filter((e) => !e.done);
   const done = data.entries.filter((e) => e.done);
 
+  const active = activeCategories(data).map((c) => c.label);
+  const desc = active.length
+    ? `Need help with ${active.slice(0, 6).join(", ")}${active.length > 6 ? ", …" : ""}? Use \`/needhelp\`.`
+    : "Use `/needhelp` to ask for help.";
+
   const embed = new EmbedBuilder()
     .setColor(0x5ac9a1)
     .setTitle("🛡️ Guild Help Board")
-    .setDescription(
-      "Need help hitting Season Run 5K or MVP 5K? Use `/needhelp`."
-    )
+    .setDescription(desc)
     .setFooter({ text: `${pending.length} waiting · ${done.length} sorted this season` })
     .setTimestamp();
 
@@ -860,7 +863,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const pending = data.entries.filter((e) => !e.done);
       const done = data.entries.filter((e) => e.done);
-      const countBy = (arr, c) => arr.filter((e) => e.category === c).length;
 
       const waits = done
         .filter((e) => e.ts && e.doneTs && e.doneTs >= e.ts)
@@ -878,19 +880,24 @@ client.on("interactionCreate", async (interaction) => {
         lbLines.push(`${medals[i] || "•"} ${nm} — **${n}**`);
       }
 
+      const pend = countByCategory(pending);
+      const don = countByCategory(done);
+      const ids = new Set([
+        ...activeCategories(data).map((c) => c.id),
+        ...Object.keys(pend), ...Object.keys(don),
+      ]);
+      const catLines = [...ids].map((id) => {
+        const c = catOf(data, id);
+        return `${c.emoji} **${c.label}** — ${pend[id] || 0} waiting · ${don[id] || 0} sorted`;
+      });
+
       const embed = new EmbedBuilder()
         .setColor(0x5ac9a1)
         .setTitle("📊 Guild Help Board — season stats")
         .addFields(
           {
-            name: "Waiting",
-            value: `🏃 **${countBy(pending, "seasonrun5k")}**  ·  ⭐ **${countBy(pending, "mvp5k")}**`,
-            inline: true,
-          },
-          {
-            name: "Sorted this season",
-            value: `🏃 **${countBy(done, "seasonrun5k")}**  ·  ⭐ **${countBy(done, "mvp5k")}**  (total **${done.length}**)`,
-            inline: true,
+            name: "By category",
+            value: catLines.length ? catLines.join("\n") : "No categories configured.",
           },
           {
             name: "Average wait",
@@ -903,10 +910,10 @@ client.on("interactionCreate", async (interaction) => {
         );
       const last = data.seasons[data.seasons.length - 1];
       if (last) {
-        embed.addFields({
-          name: "Last season",
-          value: `${last.sortedTotal} sorted (🏃 ${last.byCategory.seasonrun5k} · ⭐ ${last.byCategory.mvp5k})`,
-        });
+        const parts = Object.entries(last.byCategory || {})
+          .map(([id, n]) => `${catOf(data, id).emoji} ${n}`)
+          .join(" · ");
+        embed.addFields({ name: "Last season", value: `${last.sortedTotal} sorted (${parts})` });
       }
       await respond(interaction, {
         embeds: [embed],
@@ -919,7 +926,7 @@ client.on("interactionCreate", async (interaction) => {
         .setColor(0x5ac9a1)
         .setTitle("🛡️ Guild Help Board — how it works")
         .setDescription(
-          "Tracks who needs help hitting **Season Run 5K** or **MVP 5K** this " +
+          "Tracks who needs help with the guild's help categories this " +
             "season, and lets officers mark them as sorted once helped. The board " +
             "message updates automatically."
         )
@@ -1090,10 +1097,7 @@ client.on("interactionCreate", async (interaction) => {
         data.seasons.push({
           endedTs: Date.now(),
           sortedTotal: done.length,
-          byCategory: {
-            seasonrun5k: done.filter((e) => e.category === "seasonrun5k").length,
-            mvp5k: done.filter((e) => e.category === "mvp5k").length,
-          },
+          byCategory: countByCategory(done),
         });
         if (data.seasons.length > 12) data.seasons = data.seasons.slice(-12);
       }

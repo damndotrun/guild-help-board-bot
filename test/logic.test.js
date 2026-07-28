@@ -270,3 +270,16 @@ test("categorySuggestions: active only, substring, ≤25, {name,value}", () => {
   assert.deepEqual(boss.map((c) => c.value), ["guild-boss"]);                // substring, active
   assert.equal(all.find((c) => c.value === "mvp5k").name, "⭐ MVP 5K");       // emoji + label
 });
+
+test("stats aggregation is category-agnostic and back-compatible", () => {
+  const done = [
+    { category: "seasonrun5k", done: true }, { category: "guild-boss", done: true },
+    { category: "guild-boss", done: true },
+  ];
+  const by = bot.countByCategory(done);
+  assert.deepEqual(by, { seasonrun5k: 1, "guild-boss": 2 });
+  // an OLD season archive uses fixed keys — catOf still labels them:
+  const data = { categories: bot.defaultCategories() };
+  assert.equal(bot.catOf(data, "seasonrun5k").label, "Season Run 5K");
+  assert.equal(bot.catOf(data, "mvp5k").label, "MVP 5K");
+});
