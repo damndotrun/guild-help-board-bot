@@ -115,10 +115,21 @@ test("tallyHelpers: counts done+helpedBy, sorted desc", () => {
   assert.deepEqual(bot.tallyHelpers(entries), [["a", 2], ["b", 1]]);
 });
 
+// The .bak/corruption-recovery block below all shares the one TMP dir created
+// at module load. Every test here calls resetDataFiles() FIRST so it starts
+// from a known-empty filesystem state instead of relying on whatever the
+// previous test happened to leave behind — each test is independently
+// runnable (e.g. via --test-name-pattern) regardless of declaration order.
+function resetDataFiles() {
+  fs.rmSync(path.join(TMP, "data.json"), { force: true });
+  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  fs.rmSync(path.join(TMP, "data.json.tmp"), { force: true });
+}
+
 test("saveData keeps last-known-good in data.json.bak", () => {
-  // saveData/loadData bind to DATA_DIR captured at module load (= TMP, set at
-  // the top of this file). No earlier test writes data.json, so the FIRST save
-  // finds no prior file and writes no .bak; the SECOND save backs up the first.
+  resetDataFiles();
+  // With a clean slate, the FIRST save finds no prior file and writes no
+  // .bak; the SECOND save backs up the first.
   bot.saveData({ entries: [{ id: "A" }] });
   bot.saveData({ entries: [{ id: "A" }, { id: "B" }] });
   const bak = JSON.parse(fs.readFileSync(path.join(TMP, "data.json.bak"), "utf8"));
@@ -128,6 +139,7 @@ test("saveData keeps last-known-good in data.json.bak", () => {
 });
 
 test("loadData restores from .bak when data.json is corrupt", () => {
+  resetDataFiles();
   const good = { boardChannelId: "c", boardMessageId: "m", entries: [{ id: "X" }],
     managerRoleIds: [], notifyRoleId: null, seasons: [] };
   fs.writeFileSync(path.join(TMP, "data.json.bak"), JSON.stringify(good));
@@ -139,6 +151,7 @@ test("loadData restores from .bak when data.json is corrupt", () => {
 });
 
 test("loadData falls back to empty when both files are corrupt", () => {
+  resetDataFiles();
   fs.writeFileSync(path.join(TMP, "data.json.bak"), "also broken {");
   fs.writeFileSync(path.join(TMP, "data.json"), "broken {");
   const loaded = bot.loadData();
@@ -147,8 +160,7 @@ test("loadData falls back to empty when both files are corrupt", () => {
 });
 
 test("saveData skips backup when current data.json is corrupt, but still saves", () => {
-  fs.rmSync(path.join(TMP, "data.json"), { force: true });
-  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  resetDataFiles();
   // Seed a GOOD backup and a CORRUPT primary (the post-restore situation).
   fs.writeFileSync(path.join(TMP, "data.json.bak"), JSON.stringify({ entries: [{ id: "GOOD" }] }));
   fs.writeFileSync(path.join(TMP, "data.json"), "{ corrupt");
@@ -162,7 +174,7 @@ test("saveData skips backup when current data.json is corrupt, but still saves",
 });
 
 test("loadData falls back to empty when data.json is corrupt and no .bak exists", () => {
-  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  resetDataFiles();
   fs.writeFileSync(path.join(TMP, "data.json"), "not json {");
   const loaded = bot.loadData();
   assert.deepEqual(loaded.entries, []);
@@ -170,20 +182,20 @@ test("loadData falls back to empty when data.json is corrupt and no .bak exists"
 });
 
 test("loadData seeds categories when the field is absent (live-data migration)", () => {
-  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  resetDataFiles();
   fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [] })); // no categories field
   const d = bot.loadData();
   assert.deepEqual(d.categories.map((c) => c.id).sort(), ["mvp5k", "seasonrun5k"]);
 });
 
 test("loadData seeds categories when the array is empty", () => {
-  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  resetDataFiles();
   fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: [] }));
   assert.equal(bot.loadData().categories.length, 2);
 });
 
 test("loadData preserves a non-empty categories array as-is", () => {
-  fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  resetDataFiles();
   const custom = [{ id: "boss", label: "Boss", emoji: "👹", archived: false }];
   fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: custom }));
   assert.deepEqual(bot.loadData().categories, custom);
@@ -232,6 +244,17 @@ test("addCategory: 25-active cap", () => {
   for (let i = 0; i < 25; i++) cats.push({ id: `c${i}`, label: `C${i}`, emoji: "•", archived: false });
   const data = { categories: cats };
   assert.equal(bot.addCategory(data, "One More", "•").ok, false);
+});
+
+test("addCategory: reviving an archived category is rejected at the 25-active cap", () => {
+  const cats = [];
+  for (let i = 0; i < 25; i++) cats.push({ id: `c${i}`, label: `C${i}`, emoji: "•", archived: false });
+  cats.push({ id: "old", label: "Old", emoji: "🎯", archived: true });
+  const data = { categories: cats };
+  const r = bot.addCategory(data, "Old", "🎯");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /at most 25 active/);
+  assert.equal(data.categories.find((c) => c.id === "old").archived, true); // NOT revived
 });
 
 test("removeCategory: archive when empty; reassign+dedup; guards", () => {
