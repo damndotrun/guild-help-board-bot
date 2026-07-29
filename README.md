@@ -17,7 +17,7 @@ run `/help` in Discord).
 |---|---|---|
 | `/needhelp category:[seasonrun5k/mvp5k] note:optional` | Anyone | Adds you to the board (and posts a request card officers can action) |
 | `/imsorted category:[optional]` | Anyone | Removes yourself once you've been helped |
-| `/stats` | Anyone | Season stats: waiting, sorted, average wait, top helpers |
+| `/stats` | Anyone | Navigable stats panel (private): current season, all-time, any past season, or one member's help — top helpers, per-category, demand |
 | `/help` | Anyone | Shows the command list (private reply) |
 | `/helped member:@user category:[…]` | Officers | Marks that member as sorted (also DMs them) |
 | `/remove member:@user category:[…]` | Officers | Removes an entry without marking it done (fixes mistakes) |
@@ -143,6 +143,13 @@ on a dataset so it survives restarts.
 > Run only **one** instance of the bot. Multiple instances sharing one
 > `data.json` (e.g. `pm2` cluster mode, or a second copy elsewhere) can
 > overwrite each other.
+
+> **⚠️ Don't roll back to a version older than the helper-stats release.** The
+> bot only keeps the `data.json` fields it knows about when it saves. Once the
+> helper-stats build has run, `data.json` holds the append-only `records` log;
+> starting an older build against that same file will drop the log on its first
+> save. If you must roll back, restore `data.json` from the `data.json.bak`
+> sidecar first (or keep a copy).
 
 ### Option B — Railway / Render / VPS
 

@@ -32,9 +32,18 @@ Take yourself off the board once you've been helped.
   of your waiting entries.
 
 ### `/stats`
-Season dashboard (private reply): how many are waiting and sorted per category,
-the **average wait time**, the **top helpers** leaderboard, and last season's
-total.
+A private, navigable stats panel. It opens on the **current season** and you can
+switch views from the dropdowns without re-running the command:
+
+- **📊 Current season** — how many are waiting and sorted per category, the
+  **average wait time**, and the **top helpers** leaderboard.
+- **🏆 All-time** — the top helpers across every season, sorted counts per
+  category, and a demand summary (sorted · self-sorted · removed · unresolved).
+- **📅 A past season** — pick any archived season to see its helpers and demand.
+- **🙌 A member** — use the *"Look up a member's help…"* picker to see one
+  person's helper contribution, broken down by category.
+
+Anyone can open it; it's always a private reply, so it never clutters a channel.
 
 ### `/help`
 Shows the command list and who can use what (private reply).

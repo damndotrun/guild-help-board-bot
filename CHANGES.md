@@ -39,6 +39,8 @@ tricky bits don't get re-broken.
       "ts": 1690000000000,          // asked-at
       "doneTs": 1690000001000,      // sorted-at (when done)
       "helpedBy": "…",              // officer userId who sorted (for the leaderboard)
+      "claimedBy": "…",             // officer userId who claimed it (🙌), or null
+      "claimedTs": 1690000000500,   // claimed-at (set/cleared by toggleClaim), or null
       "requestChannelId": "…",      // the button card message…
       "requestMessageId": "…"       // …so we can update it later
     }
@@ -48,6 +50,20 @@ tricky bits don't get re-broken.
   "seasons": [],               // archived summaries pushed by /reset (byCategory now generic)
   "categories": [              // configurable categories (seeded with the two defaults)
     { "id": "seasonrun5k", "label": "Season Run 5K", "emoji": "🏃", "archived": false }
+  ],
+  "records": [                 // append-only log — one per RESOLVED request (see below)
+    {
+      "reqId": "1690000000000-ab12c",  // the entry's id at resolution
+      "requesterId": "…",
+      "category": "seasonrun5k",
+      "resolution": "sorted",          // "sorted" | "self" | "removed" | "unresolved"
+      "requestedTs": 1690000000000,    // entry.ts
+      "resolvedTs": 1690000001000,     // when the record was written
+      "seasonStartedTs": 1690000000000,// closing/current season's startedTs (immutable identity)
+      "helperId": "…",                 // only on "sorted"
+      "claimedById": "…",              // only if the entry was claimed
+      "claimedTs": 1690000000500       // paired with claimedById
+    }
   ]
 }
 ```
@@ -246,6 +262,62 @@ adapts to any guild goal without a code change.
   `handleSeasonModal`. Namespace: `season:*` buttons/select + `season:newmodal` /
   `season:renamemodal:<target>` modals.
 
+## Helper stats + `/stats` panel (latest round)
+
+- **Append-only record log (`data.records`).** The pivot: instead of deriving
+  stats from the season archive, every request that reaches a *terminal moment*
+  writes an immutable record, and **every report is a query over the log.**
+  Additive/migration-free (`readAndShape` coerces `records` to `[]`;
+  `emptyData` seeds it). `RECORD_CAP = 5000` — on append the oldest are pruned
+  with a **once-per-process** `console.warn` (module-level `recordCapWarned`
+  flag, not once-per-prune).
+- **`makeRecord(data, entry, resolution, now)` / `logRecord(data, record)`** —
+  `makeRecord` is pure (`now` injected, never `Date.now()` inside); `helperId`
+  only for `"sorted"`, claim info carried when present, `seasonStartedTs` is the
+  season's immutable identity (survives a later rename). `logRecord` appends +
+  prunes. `resolution ∈ "sorted" | "self" | "removed" | "unresolved"`.
+- **Five terminal sites log synchronously before `saveData`** (no intervening
+  `await`): card **✅ Sorted** and **🗑️ Remove**, `/helped`, `/remove`,
+  `/imsorted` (all `mine` in one `now` snapshot), plus **`removeCategory`'s
+  dropped-duplicate path** (a `/config category remove …moveto:…` that dedups a
+  user's entry into the destination — logged `"removed"`, its own terminal
+  moment). `closeSeason` logs `"unresolved"` for still-pending entries *before*
+  clearing, stamping the closing season (done entries were already logged
+  `"sorted"`, never re-logged).
+- **`toggleClaim(entry, officerId, now)`** now captures `entry.claimedTs` on
+  claim, clears it on release, overwrites on re-claim — so a record can carry
+  claim→resolve timing.
+- **Pure query helpers** (read-only, exported, unit-tested): `recordsForSeason`,
+  `helperTotals`, `requesterTotals` (help *received* = sorted + self),
+  `categoryWait` (mean-ready sums over valid-timing sorted only),
+  `helperBreakdown` (per-category counts + wait + claim timing), `demandSummary`
+  (counts by resolution). **C1 claim-validity rule:** claim timing counts only
+  when `claimedById === helperId` (the sorter *is* the claimer) — otherwise it'd
+  be misattributed. `validWait(start,end)` guards null + out-of-order stamps.
+- **`/stats` is now an ephemeral, navigable panel** (was a single embed). A view
+  `StringSelectMenu` (`stats:view` — current / all-time / any past season) + a
+  `UserSelectMenu` (`stats:member` — the first in the bot) re-render via
+  `deferUpdate()` → resolve names → `editReply()`. **Read-only — the panel never
+  `saveData`s.** Builders: `statsViewOptions`, `currentStatsEmbed` (reads live
+  `data.entries`, *not* records), `allTimeEmbed`, `memberEmbed`,
+  `seasonHelperEmbed` (graceful "no per-request data" for pre-M10 seasons).
+  Plumbing (not exported): `statsPanelComponents`, `leaderboardLines`,
+  `resolveIds` (dedupes ids before REST, left-guild → "(left the server)").
+  Leaderboards cap at 15 rows; multi-line fields go through `renderField` (1024).
+- **Recording landed before the panel** (deployable on its own — it starts
+  capturing immediately; the panel just displays). The rich per-helper timings
+  (`waitMs`/`claimMs`) are captured but not yet surfaced — a future report is a
+  query away.
+- **⚠️ Deploy caveat (no rollback past this release):** once live, `data.json`
+  carries `records`; an older build's `readAndShape` whitelist drops it on the
+  first save. `.bak` is the only recovery. (Documented in `README.md`.)
+- Key helpers/handlers: `makeRecord`, `logRecord`, `RECORD_CAP`, `toggleClaim`,
+  `recordsForSeason`, `helperTotals`, `requesterTotals`, `categoryWait`,
+  `helperBreakdown`, `demandSummary`, `statsViewOptions`, `currentStatsEmbed`,
+  `allTimeEmbed`, `memberEmbed`, `seasonHelperEmbed`, `handleStatsCommand`,
+  `handleStatsView`, `handleStatsMember`, `resolveIds`. Namespace: `stats:view`
+  (StringSelect) + `stats:member` (UserSelect).
+
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 
 1. **No `await` between `loadData()` and `saveData()` in a handler.** The whole
@@ -265,6 +337,13 @@ adapts to any guild goal without a code change.
    validation, `acquireLock`, `registerCommands`, `login`, signal handlers) live
    inside `if (require.main === module)`, so `node --test` can `require` the module
    without connecting to Discord or exiting. Keep new startup code inside that guard.
+6. **Every terminal site logs a record.** When a request leaves the board for
+   good — sorted, self-sorted, removed, dropped-as-duplicate on category merge,
+   or unresolved at season close — append `logRecord(data, makeRecord(...))`
+   *synchronously, before that site's `saveData`* (no `await` between). The
+   append-only `data.records` log is the substrate for all of `/stats`; a new
+   deletion path that forgets to log silently undercounts every report. If you
+   add a way for an entry to leave `data.entries`, add its record too.
 
 ## Updating
 
