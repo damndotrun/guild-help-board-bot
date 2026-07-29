@@ -278,6 +278,40 @@ test("removeCategory: archive when empty; reassign+dedup; guards", () => {
   assert.equal(bot.removeCategory(base(), "a", "a").ok, false);
 });
 
+test("removeCategory + logRecord: dropped duplicates get a \"removed\" record, moved entries don't", () => {
+  const data = {
+    categories: [
+      { id: "a", label: "A", emoji: "🅰", archived: false },
+      { id: "b", label: "B", emoji: "🅱", archived: false },
+    ],
+    entries: [
+      { id: "e1", userId: "u1", category: "a", ts: 10, done: false }, // dup -> dropped
+      { id: "e1b", userId: "u1", category: "b", ts: 5, done: false }, // pre-existing open in moveto
+      { id: "e2", userId: "u2", category: "a", ts: 20, done: false }, // no dup -> moved
+    ],
+    records: [],
+    currentSeason: { name: null, startedTs: null },
+  };
+  const r = bot.removeCategory(data, "a", "b");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.dropped.map((e) => e.id), ["e1"]);
+  assert.deepEqual(r.moved.map((e) => e.id), ["e2"]);
+
+  // Mirror the handler's logging step: a "removed" record for every dropped entry.
+  const nowTs = 999;
+  for (const e of r.dropped || []) bot.logRecord(data, bot.makeRecord(data, e, "removed", nowTs));
+
+  const removedRecs = data.records.filter((rec) => rec.resolution === "removed");
+  assert.equal(removedRecs.length, 1);
+  assert.equal(removedRecs[0].reqId, "e1");
+  assert.equal(removedRecs[0].requesterId, "u1");
+  assert.equal(removedRecs[0].category, "a");
+  assert.equal(removedRecs[0].resolvedTs, 999);
+
+  // The moved (non-duplicate) entry must NOT get a record.
+  assert.equal(data.records.find((rec) => rec.reqId === "e2"), undefined);
+});
+
 test("categorySuggestions: active only, substring, ≤25, {name,value}", () => {
   const data = { categories: [
     { id: "guild-boss", label: "Guild Boss", emoji: "👹", archived: false },
@@ -680,6 +714,31 @@ test("allTimeEmbed: shows leaderboard names, no raw null/id leak", () => {
   const json = JSON.stringify(embed.data);
   assert.match(json, /Helper One/);
   assert.doesNotMatch(json, /"h1"/);   // raw id not leaked
+});
+
+test("allTimeEmbed: By category counts ALL sorted (agrees with demandSummary), not just valid-timing ones", () => {
+  const data = {
+    records: [
+      // valid timing -> counted by categoryWait too
+      { resolution: "sorted", helperId: "h1", requesterId: "u1", category: "a", requestedTs: 0, resolvedTs: 100 },
+      // invalid timing (no requestedTs) -> categoryWait excludes it, but it's still a sorted record
+      { resolution: "sorted", helperId: "h2", requesterId: "u2", category: "a", requestedTs: null, resolvedTs: 50 },
+      // invalid timing (resolved before requested) -> also excluded by categoryWait
+      { resolution: "sorted", helperId: "h1", requesterId: "u3", category: "a", requestedTs: 200, resolvedTs: 150 },
+    ],
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }],
+    seasons: [],
+  };
+  const embed = bot.allTimeEmbed(data, {});
+  const d = bot.demandSummary(data.records);
+  assert.equal(d.sorted, 3);
+
+  const catField = embed.data.fields.find((f) => f.name === "By category");
+  assert.match(catField.value, /3 sorted/);      // matches demandSummary total, not categoryWait's 1
+  assert.doesNotMatch(catField.value, /1 sorted/);
+
+  const requestsField = embed.data.fields.find((f) => f.name === "Requests");
+  assert.match(requestsField.value, /3 sorted/); // the two lines agree
 });
 
 test("memberEmbed: one member's per-category contribution", () => {

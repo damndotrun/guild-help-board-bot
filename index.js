@@ -496,7 +496,13 @@ function allTimeEmbed(data, names) {
   const recs = data.records || [];
   const top = helperTotals(recs).slice(0, 15);
   const cw = categoryWait(recs);
-  const catLines = Object.keys(cw).map((id) => { const c = catOf(data, id); return `${c.emoji} **${c.label}** — ${cw[id].waitN} sorted`; });
+  // Per-category sorted count uses ALL sorted records (not just valid-timing
+  // ones from categoryWait), so it agrees with the "Requests" line below.
+  const sortedByCat = {};
+  for (const r of recs) {
+    if (r.resolution === "sorted") sortedByCat[r.category] = (sortedByCat[r.category] || 0) + 1;
+  }
+  const catLines = Object.keys(cw).map((id) => { const c = catOf(data, id); return `${c.emoji} **${c.label}** — ${sortedByCat[id] || 0} sorted`; });
   const d = demandSummary(recs);
   return new EmbedBuilder()
     .setColor(0x5ac9a1)
@@ -1684,6 +1690,8 @@ client.on("interactionCreate", async (interaction) => {
           const moveto = interaction.options.getString("moveto") || undefined;
           const r = removeCategory(data, id, moveto);
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+          const nowTs = Date.now();
+          for (const e of r.dropped || []) logRecord(data, makeRecord(data, e, "removed", nowTs));
           saveData(data);
           const label = catOf(data, id).label;
           const extra = r.moved?.length
