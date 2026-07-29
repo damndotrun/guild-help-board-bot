@@ -150,6 +150,7 @@ function emptyData() {
     managerRoleIds: [],
     notifyRoleId: null,
     seasons: [],
+    records: [],
     currentSeason: { name: null, startedTs: null },
     categories: defaultCategories(),
   };
@@ -164,6 +165,7 @@ function readAndShape(raw) {
     managerRoleIds: Array.isArray(parsed.managerRoleIds) ? parsed.managerRoleIds : [],
     notifyRoleId: parsed.notifyRoleId ?? null,
     seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
+    records: Array.isArray(parsed.records) ? parsed.records : [],
     currentSeason:
       parsed.currentSeason && typeof parsed.currentSeason === "object"
         ? {
@@ -336,6 +338,40 @@ function seasonLabel(season) {
   return (season && season.name) || "(unnamed)";
 }
 
+const RECORD_CAP = 5000;
+
+// Build an immutable log record for a resolved request. `now` is injected
+// (the resolving handler passes Date.now()). helperId only for "sorted";
+// claim info carried whenever present. seasonStartedTs is the season's
+// immutable identity (survives a later rename).
+function makeRecord(data, entry, resolution, now) {
+  const rec = {
+    reqId: entry.id,
+    requesterId: entry.userId,
+    category: entry.category,
+    resolution,
+    requestedTs: entry.ts ?? null,
+    resolvedTs: now,
+    seasonStartedTs: data.currentSeason?.startedTs ?? null,
+  };
+  if (resolution === "sorted" && entry.helpedBy) rec.helperId = entry.helpedBy;
+  if (entry.claimedBy) {
+    rec.claimedById = entry.claimedBy;
+    rec.claimedTs = entry.claimedTs ?? null;
+  }
+  return rec;
+}
+
+// Append a record and keep the log under RECORD_CAP (drop oldest). Mutates data.
+function logRecord(data, record) {
+  if (!Array.isArray(data.records)) data.records = [];
+  data.records.push(record);
+  if (data.records.length > RECORD_CAP) {
+    data.records = data.records.slice(-RECORD_CAP);
+    console.warn(`[records] pruned to RECORD_CAP=${RECORD_CAP}`);
+  }
+}
+
 // Archive the current season (only if it has sorted entries) and clear the
 // board. Mutates data. `now` is injected for determinism. Returns the archived
 // season object, or null when there was nothing to archive.
@@ -354,6 +390,8 @@ function closeSeason(data, now) {
     data.seasons.push(archived);
     if (data.seasons.length > 12) data.seasons = data.seasons.slice(-12);
   }
+  const pending = (data.entries || []).filter((e) => !e.done);
+  for (const e of pending) logRecord(data, makeRecord(data, e, "unresolved", now));
   data.entries = [];
   // The archived season's identity is now history; the board is a fresh cycle.
   // Reset to an unnamed current season (name it via /season, or /season "New
@@ -608,9 +646,9 @@ function needHelpRow() {
   );
 }
 
-function toggleClaim(entry, officerId) {
-  if (!entry.claimedBy) { entry.claimedBy = officerId; return { action: "claimed", by: officerId }; }
-  if (entry.claimedBy === officerId) { entry.claimedBy = null; return { action: "released", by: officerId }; }
+function toggleClaim(entry, officerId, now) {
+  if (!entry.claimedBy) { entry.claimedBy = officerId; entry.claimedTs = now; return { action: "claimed", by: officerId }; }
+  if (entry.claimedBy === officerId) { entry.claimedBy = null; entry.claimedTs = null; return { action: "released", by: officerId }; }
   return { action: "blocked", by: entry.claimedBy };
 }
 
@@ -915,6 +953,7 @@ async function handleButton(interaction) {
     entry.done = true;
     entry.doneTs = Date.now();
     entry.helpedBy = interaction.user.id;
+    logRecord(data, makeRecord(data, entry, "sorted", Date.now()));
     saveData(data);
     await interaction.update({
       content: `✅ Sorted by ${byName}`,
@@ -924,6 +963,7 @@ async function handleButton(interaction) {
     await dmSorted(client, data, entry.userId, entry.category);
     await refreshBoard(client, data);
   } else if (action === "remove") {
+    logRecord(data, makeRecord(data, entry, "removed", Date.now()));
     data.entries = data.entries.filter((e) => e.id !== entryId);
     saveData(data);
     await interaction.update({
@@ -934,7 +974,7 @@ async function handleButton(interaction) {
     await refreshBoard(client, data);
   } else if (action === "claim") {
     const byName = interaction.member?.displayName || interaction.user.username;
-    const r = toggleClaim(entry, interaction.user.id);
+    const r = toggleClaim(entry, interaction.user.id, Date.now());
     if (r.action === "blocked") {
       const holder = await memberName(interaction.guild, r.by);
       await respond(interaction, { content: `🙌 **${holder || "Another officer"}** is already on this.`, flags: MessageFlags.Ephemeral });
@@ -1182,6 +1222,8 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       const ids = new Set(mine.map((e) => e.id));
+      const nowTs = Date.now();
+      for (const e of mine) logRecord(data, makeRecord(data, e, "self", nowTs));
       data.entries = data.entries.filter((e) => !ids.has(e.id));
       saveData(data);
       await respond(interaction, {
@@ -1332,6 +1374,7 @@ client.on("interactionCreate", async (interaction) => {
       entry.done = true;
       entry.doneTs = Date.now();
       entry.helpedBy = interaction.user.id;
+      logRecord(data, makeRecord(data, entry, "sorted", Date.now()));
       saveData(data);
       await respond(
         interaction,
@@ -1367,6 +1410,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
+      logRecord(data, makeRecord(data, target, "removed", Date.now()));
       data.entries = data.entries.filter((e) => e !== target);
       saveData(data);
       await respond(interaction, {
@@ -1618,6 +1662,9 @@ module.exports = {
   renameSeason,
   seasonPanelEmbed,
   seasonSelectOptions,
+  makeRecord,
+  logRecord,
+  RECORD_CAP,
 };
 
 if (require.main === module) {

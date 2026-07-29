@@ -523,3 +523,74 @@ test("seasonPanelEmbed: past-seasons field stays under Discord's 1024 limit with
   const pastField = embed.data.fields.find((f) => f.name === "Past seasons");
   assert.ok(pastField.value.length <= 1024, `field is ${pastField.value.length} chars`);
 });
+
+test("makeRecord: sorted carries helper + claim + season identity", () => {
+  const data = { currentSeason: { name: "S5", startedTs: 100 } };
+  const entry = { id: "e1", userId: "u1", category: "a", ts: 10, helpedBy: "h1", claimedBy: "h1", claimedTs: 20 };
+  const r = bot.makeRecord(data, entry, "sorted", 50);
+  assert.equal(r.reqId, "e1");
+  assert.equal(r.requesterId, "u1");
+  assert.equal(r.category, "a");
+  assert.equal(r.resolution, "sorted");
+  assert.equal(r.helperId, "h1");
+  assert.equal(r.requestedTs, 10);
+  assert.equal(r.resolvedTs, 50);
+  assert.equal(r.claimedById, "h1");
+  assert.equal(r.claimedTs, 20);
+  assert.equal(r.seasonStartedTs, 100);
+});
+
+test("makeRecord: self/removed/unresolved carry no helperId", () => {
+  const data = { currentSeason: { name: null, startedTs: 1 } };
+  const entry = { id: "e2", userId: "u2", category: "b", ts: 5 };
+  for (const res of ["self", "removed", "unresolved"]) {
+    const r = bot.makeRecord(data, entry, res, 9);
+    assert.equal(r.resolution, res);
+    assert.equal(r.helperId, undefined);
+    assert.equal(r.requesterId, "u2");
+  }
+});
+
+test("logRecord: appends and prunes oldest beyond RECORD_CAP", () => {
+  const data = { records: [] };
+  for (let i = 0; i < bot.RECORD_CAP + 5; i++) bot.logRecord(data, { reqId: "r" + i });
+  assert.equal(data.records.length, bot.RECORD_CAP);
+  assert.equal(data.records[data.records.length - 1].reqId, "r" + (bot.RECORD_CAP + 4)); // newest kept
+  assert.equal(data.records[0].reqId, "r5");                                             // oldest dropped
+});
+
+test("logRecord: initializes records when absent", () => {
+  const data = {};
+  bot.logRecord(data, { reqId: "x" });
+  assert.deepEqual(data.records, [{ reqId: "x" }]);
+});
+
+test("toggleClaim: sets claimedTs on claim, clears on release, overwrites on re-claim", () => {
+  const e = {};
+  assert.deepEqual(bot.toggleClaim(e, "o1", 100), { action: "claimed", by: "o1" });
+  assert.equal(e.claimedBy, "o1"); assert.equal(e.claimedTs, 100);
+  assert.deepEqual(bot.toggleClaim(e, "o1", 200), { action: "released", by: "o1" });
+  assert.equal(e.claimedBy, null); assert.equal(e.claimedTs, null);       // cleared
+  bot.toggleClaim(e, "o2", 300);
+  assert.equal(e.claimedBy, "o2"); assert.equal(e.claimedTs, 300);        // re-claim overwrites
+  assert.equal(bot.toggleClaim(e, "o3", 400).action, "blocked");
+  assert.equal(e.claimedTs, 300);                                         // blocked leaves it
+});
+
+test("closeSeason: logs unresolved records for pending, not for done", () => {
+  const data = {
+    entries: [
+      { id: "d1", userId: "u1", category: "a", ts: 1, done: true },
+      { id: "p1", userId: "u2", category: "a", ts: 2, done: false },
+      { id: "p2", userId: "u3", category: "b", ts: 3, done: false },
+    ],
+    seasons: [], records: [],
+    currentSeason: { name: "S1", startedTs: 100 },
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }, { id: "b", label: "B", emoji: "🅱", archived: false }],
+  };
+  bot.closeSeason(data, 999);
+  const unresolved = data.records.filter((r) => r.resolution === "unresolved");
+  assert.equal(unresolved.length, 2);                                  // p1, p2 only
+  assert.deepEqual(unresolved.map((r) => r.reqId).sort(), ["p1", "p2"]);
+  assert.equal(unresolved[0].seasonStartedTs, 100);                    // closing season's identity
+});
