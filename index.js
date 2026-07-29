@@ -1599,8 +1599,16 @@ async function handleSeasonModal(interaction) {
     const archived = closeSeason(data, Date.now());
     beginSeason(data, name, Date.now());
     saveData(data);                 // persist BEFORE slow REST
-    const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
-    await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
+    const sortedNow = data.entries.filter((e) => e.done).length;
+    // Refresh the season panel this modal was opened from, in place — falls
+    // back to a fresh ephemeral ack if the submit somehow didn't come from a
+    // message component (shouldn't happen: both modals are button-triggered).
+    if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
+      await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+    } else {
+      const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
+      await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
+    }
     for (const e of pending) await resolveCard(client, e, "Season reset — this request is closed.");
     await refreshBoard(client, data);
     return;
@@ -1612,7 +1620,12 @@ async function handleSeasonModal(interaction) {
     const r = renameSeason(data, target, name);
     if (!r.ok) { await respond(interaction, { content: "Couldn't rename that season (it may be gone, or the name was blank).", flags: MessageFlags.Ephemeral }); return; }
     saveData(data);
-    await interaction.reply({ content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
+    const sortedNow = data.entries.filter((e) => e.done).length;
+    if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
+      await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+    } else {
+      await interaction.reply({ content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
+    }
     if (target === "current") await refreshBoard(client, data); // board may show the season name later; safe no-op otherwise
     return;
   }
