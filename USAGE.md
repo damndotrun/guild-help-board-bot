@@ -27,9 +27,10 @@ the board (with how long you've been waiting), and a small **request card**
 with buttons is posted so officers can sort you with one click.
 
 ### `/imsorted`
-Take yourself off the board once you've been helped.
-- **category** (optional): remove just that one, or leave empty to remove all
-  of your waiting entries.
+Take yourself off the board once you've been helped. Run it with no options and
+you get a **private picker** listing everything you're currently waiting on —
+tick the ones that are done (or hit **Close all**), one click. (You can still
+pass **category** directly to close just that one.)
 
 ### `/stats`
 A private, navigable stats panel. It opens on the **current season** and you can
@@ -67,11 +68,16 @@ Every request posts a **request card** with these buttons:
 - **🗑️ Remove** — removes the entry (e.g. posted by mistake).
 
 ### Or use commands
-- `/helped @member <category>` — mark a member as sorted (also DMs them).
-- `/remove @member <category>` — remove an entry without marking it done.
+- `/helped` — run it with no options for a **picker**: choose the member, then
+  pick from *only the requests they're actually waiting on* (no more "no pending
+  entry" dead-ends), one click marks them sorted and DMs them. You can still pass
+  `@member <category>` directly.
+- `/remove` — same picker (choose member → their open request), removes without
+  marking done. Direct `@member <category>` still works.
 - `/board` — post the live board in the current channel and pin it.
 - `/reset` — quick-close the board for a new season (archives the season's totals
-  for `/stats`). The new season starts unnamed — give it a name with `/season`.
+  for `/stats`). It now **asks you to confirm** first (it's irreversible and closes
+  every pending request). The new season starts unnamed — name it with `/season`.
 
 ---
 
@@ -95,23 +101,20 @@ right away.
 ## For admins — settings
 `/config` is only available to members with the **Manage Server** permission.
 
-### `/config addrole @role`
-Lets everyone with that role use the officer actions above — no Manage Server
-permission needed. Add your `Officers` and `LEADER` roles here.
-
-### `/config removerole @role`
-Stops a role from managing the board.
-
-### `/config notify @role`
-Pings that role on the request card whenever someone new asks for help. Run it
-with no role to turn pings off.
-
 ### `/config roles`
-Shows the current manager roles and the notify setting.
+Opens a **manager-roles panel**: it lists the current manager roles and the notify
+role, with a role picker to **add** a manager role, a menu to **remove** one, and a
+picker to set (or clear) the **notify** role — all in one place, updating live. The
+direct commands still work too:
+- `/config addrole @role` — lets everyone with that role use the officer actions
+  (no Manage Server needed). Add your `Officers` and `LEADER` roles.
+- `/config removerole @role` — stops a role from managing the board.
+- `/config notify @role` — pings that role on new request cards (empty = off).
 
-### `/config category add <label> [emoji]`
+### `/config category add [label] [emoji]`
 Add a new help category (or update one — same name updates its emoji, and re-adding
-an archived one brings it back). Example: `/config category add Guild Boss 👹`.
+an archived one brings it back). Run it with no options for a **form**, or pass them
+directly: `/config category add Guild Boss 👹`.
 
 ### `/config category remove <category> [moveto]`
 Archive a category. If it still has open requests you must pass **moveto** to move

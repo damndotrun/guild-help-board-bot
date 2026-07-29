@@ -22,7 +22,7 @@ run `/help` in Discord).
 | `/helped member:@user category:[…]` | Officers | Marks that member as sorted (also DMs them) |
 | `/remove member:@user category:[…]` | Officers | Removes an entry without marking it done (fixes mistakes) |
 | `/board` | Officers | Posts the live board in the current channel and pins it |
-| `/reset` | Officers | Quick-closes the board for a new season (archives the totals for `/stats`) |
+| `/reset` | Officers | Quick-closes the board for a new season (asks to confirm; archives the totals for `/stats`) |
 | `/season` | Officers | Season control panel: start a new **named** season, rename the current or a past one |
 | `/config addrole\|removerole\|roles\|notify\|category\|nudge` | Admins (Manage Server) | Manager roles, request-ping settings, board categories, stale-request nudges |
 
@@ -34,6 +34,13 @@ anything. `/config nudge off` and `/config nudge status` manage it.
 Officers can also resolve a request without typing: every `/needhelp` posts a
 card with **✅ Sorted** / **🗑️ Remove** buttons. Clicking updates the card, the
 board, and DMs the member.
+
+Most commands now open **interactive panels** when run with no options — pick from
+menus instead of typing ids: `/imsorted` lists your own open requests to close;
+`/helped` and `/remove` let you pick the member then their waiting request (no
+dead-ends); `/config roles` manages manager/notify roles with role pickers;
+`/config category add` opens a form; `/reset` asks you to confirm before wiping.
+The typed forms still work as fast-paths.
 
 ### Who counts as an "officer"
 

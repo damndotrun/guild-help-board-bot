@@ -428,6 +428,55 @@ changes (M8, M9); the rest is hardening + test hygiene.
   `selectedViewFrom`, `releaseClaim`, `applyStaleClaimRelease`, `isGoneError`,
   `categorySuggestions(…, excludeId)`. New path constant `BAK_TMP_FILE`.
 
+## Interactive UI/UX upgrade (M13) (latest round)
+
+Five old-style command surfaces upgraded to the interactive patterns proven in
+M8–M12 (embed + buttons / native pickers / select menus / modals, refreshed in
+place), with helper text and a confirm/warning on the destructive season-wipe.
+**No new `data.json` field** — every panel is a pure READ over existing state (a
+recording audit confirmed nothing is stored redundantly; reports render
+already-recorded data). Each typed command keeps its args as an OPTIONAL
+fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
+`imsorted:`, `resolve:`, `catadd:`, `roles:`.
+
+- **`/reset` now confirms (was an immediate irreversible wipe).** `/reset` posts
+  an ephemeral warning (live waiting-count) + `Confirm`/`Cancel` buttons; the wipe
+  body moved into the `reset:confirm` handler (own `isManager` check). The confirm
+  customId carries an **`issuedTs` freshness token** — a stale panel (>5 min, via
+  `resetConfirmStale`) refuses and re-warns with the CURRENT count instead of
+  wiping newer requests. The `/season` "New season" flow (same `closeSeason`
+  effect) gained a matching destructive warning (embed + button label + modal).
+- **`/imsorted` self-service panel.** No-arg → an ephemeral multi-`StringSelect`
+  of the caller's OWN open entries (+ a `Close all` button). Ownership is
+  re-derived server-side, so a crafted/stale id can't close someone else's entry.
+  Extracted `openEntriesFor(data, userId)` + `closeEntries(...)` (the shared
+  log-then-remove core — invariant #6 is now unit-tested directly).
+- **`/helped` + `/remove` shared member-picker.** No-arg → `UserSelectMenu` →
+  the picked member's open entries as a `StringSelect` (only categories they're
+  actually waiting in — the old "no pending entry" dead-end is gone) → resolve.
+  Shared cores `resolveEntryAsSorted`/`resolveEntryAsRemoved`/`finishResolveEntry`
+  (used by both the fast-path and the panel; helped DMs + logs `"sorted"`, remove
+  logs `"removed"`, no cross-wire). A member-but-no-category invocation skips
+  straight to that member's entry step.
+- **`/config category add` modal.** No-arg → a two-field modal (label + emoji),
+  mirroring the `/season` name modal; `catadd:submit` runs `addCategory` verbatim.
+- **`/config roles` panel.** A live-updating panel: `RoleSelectMenuBuilder`
+  (`roles:add`, **first RoleSelectMenu in the repo**) to add a manager role
+  (rejects `@everyone`/managed roles), a `StringSelect` (`roles:remove`) of only
+  the current manager roles, and a notify-role picker + clear button. New router
+  branch: `interaction.isRoleSelectMenu()`.
+- **Cross-cutting:** every new close path logs its record synchronously before
+  `saveData` (invariant #6); handlers that `await` before persisting use
+  re-load-patch-save (invariant #1); `interaction.update()` is the first ack and
+  is **try/catch-wrapped** (the M12-F3 pattern) so the post-save
+  `resolveCard`/`refreshBoard`/DM always run even if the ack throws. The
+  `/config`-owned panels (`catadd:`, `roles:*`) gate on **ManageGuild** (not the
+  weaker `isManager`), matching `/config` itself.
+- Key helpers: `openEntriesFor`, `closeEntries`, `imsortedSelectOptions`,
+  `resolveEntryAsSorted`, `resolveEntryAsRemoved`, `finishResolveEntry`,
+  `entryStepPanelPayload`, `resetWarningEmbed`, `resetConfirmStale`,
+  `rolesPanelEmbed`, `rolesRemoveSelectOptions`, `rolesPanelComponents`.
+
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 
 1. **No `await` between `loadData()` and `saveData()` in a handler.** The whole
