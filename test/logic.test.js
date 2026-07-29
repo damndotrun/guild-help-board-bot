@@ -804,3 +804,58 @@ test("emptyData/readAndShape: nudge fields default safely", () => {
   assert.equal(shaped2.nudgeThresholdHours, 12);
   assert.equal(shaped2.lastNudgeTs, 5);
 });
+
+test("staleEntries: open + past threshold only; excludes done and null ts", () => {
+  const now = 1_000_000;
+  const th = 100;
+  const entries = [
+    { id: "a", userId: "u1", category: "c", ts: now - 200, done: false }, // stale
+    { id: "b", userId: "u2", category: "c", ts: now - 100, done: false }, // exactly at threshold → stale
+    { id: "c", userId: "u3", category: "c", ts: now - 50, done: false },  // too fresh
+    { id: "d", userId: "u4", category: "c", ts: now - 999, done: true },  // done → excluded
+    { id: "e", userId: "u5", category: "c", ts: null, done: false },      // no ts → excluded
+  ];
+  const stale = bot.staleEntries(entries, now, th);
+  assert.deepEqual(stale.map((e) => e.id), ["a", "b"]);
+  assert.deepEqual(bot.staleEntries([], now, th), []);
+  assert.deepEqual(bot.staleEntries(undefined, now, th), []);
+});
+
+test("dueForNudge: null lastNudgeTs is due; respects the cadence boundary", () => {
+  const cad = 1000;
+  assert.equal(bot.dueForNudge({}, 5000, cad), true);                      // never nudged → due
+  assert.equal(bot.dueForNudge({ lastNudgeTs: 4000 }, 5000, cad), true);   // exactly cadence → due
+  assert.equal(bot.dueForNudge({ lastNudgeTs: 4001 }, 5000, cad), false);  // just under → not due
+});
+
+test("nudgeDigestEmbed: groups by category, shows names + waits, no id leak", () => {
+  const now = 1_000_000;
+  const data = {
+    nudgeThresholdHours: 48,
+    categories: [
+      { id: "a", label: "Alpha", emoji: "🅰", archived: false },
+      { id: "b", label: "Beta", emoji: "🅱", archived: false },
+    ],
+  };
+  const stale = [
+    { userId: "u1", category: "a", ts: now - 200_000 },
+    { userId: "u2", category: "a", ts: now - 100_000 },
+    { userId: "u3", category: "b", ts: now - 300_000 },
+  ];
+  const embed = bot.nudgeDigestEmbed(data, stale, { u1: "Ann", u2: "Bob", u3: "Cyd" }, now);
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /Ann/);
+  assert.match(json, /Alpha/);
+  assert.match(json, /Beta/);
+  assert.doesNotMatch(json, /"u1"/);       // raw id not leaked
+  assert.match(json, /3 request/i);        // count in title
+});
+
+test("nudgeDigestEmbed: left-guild requester falls back, not raw id/null", () => {
+  const now = 1_000_000;
+  const data = { nudgeThresholdHours: 48, categories: [{ id: "a", label: "Alpha", emoji: "🅰", archived: false }] };
+  const embed = bot.nudgeDigestEmbed(data, [{ userId: "gone", category: "a", ts: now - 500_000 }], {}, now);
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /left the server/i);
+  assert.doesNotMatch(json, /null/);
+});

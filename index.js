@@ -470,6 +470,39 @@ function demandSummary(records) {
   return s;
 }
 
+// ---------- stale nudges (pure helpers, now-injected) ----------
+
+// Open requests that have waited at least thresholdMs. now injected.
+function staleEntries(entries, now, thresholdMs) {
+  return (entries || []).filter((e) => !e.done && e.ts != null && now - e.ts >= thresholdMs);
+}
+
+// Has a full cadence elapsed since the last digest? now injected.
+function dueForNudge(data, now, cadenceMs) {
+  return now - (data.lastNudgeTs || 0) >= cadenceMs;
+}
+
+// Build the reminder digest: stale requests grouped by category, each showing
+// the requester's live name and how long they've waited. now injected.
+function nudgeDigestEmbed(data, stale, names, now) {
+  const byCat = {};
+  for (const e of stale) (byCat[e.category] || (byCat[e.category] = [])).push(e);
+  const fields = [];
+  for (const id of Object.keys(byCat)) {
+    const c = catOf(data, id);
+    const lines = byCat[id]
+      .slice()
+      .sort((a, b) => a.ts - b.ts) // longest-waiting first
+      .map((e) => `• ${names[e.userId] || "(left the server)"} — waiting **${formatDuration(now - e.ts)}**`);
+    fields.push({ name: `${c.emoji} ${c.label}`, value: renderField(lines) });
+  }
+  return new EmbedBuilder()
+    .setColor(0xd9822b)
+    .setTitle(`⏰ ${stale.length} request(s) still waiting`)
+    .setDescription(`These have waited longer than **${data.nudgeThresholdHours ?? 48}h**. Anyone free to help?`)
+    .addFields(fields.length ? fields : [{ name: "—", value: "None." }]);
+}
+
 // ---------- /stats panel ----------
 
 function statsViewOptions(data) {
@@ -1931,6 +1964,9 @@ module.exports = {
   categoryWait,
   helperBreakdown,
   demandSummary,
+  staleEntries,
+  dueForNudge,
+  nudgeDigestEmbed,
   statsViewOptions,
   currentStatsEmbed,
   allTimeEmbed,
