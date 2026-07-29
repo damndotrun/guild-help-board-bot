@@ -657,3 +657,45 @@ test("helperBreakdown: claim by a different helper is excluded (C1 rule)", () =>
 test("demandSummary: counts by resolution", () => {
   assert.deepEqual(bot.demandSummary(RECS), { sorted: 3, self: 1, removed: 1, unresolved: 1 });
 });
+
+test("statsViewOptions: current (default) + all-time + past newest-first", () => {
+  const data = { seasons: [{ name: "S1", endedTs: 100, sortedTotal: 3 }, { name: "S2", endedTs: 200, sortedTotal: 1 }] };
+  const opts = bot.statsViewOptions(data);
+  assert.equal(opts[0].value, "current");
+  assert.equal(opts[0].default, true);
+  assert.equal(opts[1].value, "alltime");
+  assert.deepEqual(opts.slice(2).map((o) => o.value), ["200", "100"]); // newest past first
+});
+
+test("allTimeEmbed: shows leaderboard names, no raw null/id leak", () => {
+  const data = {
+    records: [
+      { resolution: "sorted", helperId: "h1", requesterId: "u1", category: "a", requestedTs: 0, resolvedTs: 100 },
+      { resolution: "self", requesterId: "u2", category: "a", requestedTs: 0, resolvedTs: 5 },
+    ],
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }],
+    seasons: [],
+  };
+  const embed = bot.allTimeEmbed(data, { h1: "Helper One" });
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /Helper One/);
+  assert.doesNotMatch(json, /"h1"/);   // raw id not leaked
+});
+
+test("memberEmbed: one member's per-category contribution", () => {
+  const data = {
+    records: [{ resolution: "sorted", helperId: "h1", requesterId: "u1", category: "a", requestedTs: 0, resolvedTs: 100 }],
+    categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }],
+  };
+  const embed = bot.memberEmbed(data, "h1", "Helper One");
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /Helper One/);
+  assert.match(json, /A/);             // category label present
+});
+
+test("seasonHelperEmbed: pre-M10 season (no records) renders a graceful note", () => {
+  const data = { records: [], categories: [] };
+  const season = { name: "Old", startedTs: 5, endedTs: 9, sortedTotal: 4 };
+  const embed = bot.seasonHelperEmbed(data, season, {});
+  assert.match(JSON.stringify(embed.data), /no per-request data/i);
+});

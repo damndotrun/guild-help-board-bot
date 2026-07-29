@@ -13,6 +13,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
   PermissionFlagsBits,
   MessageFlags,
   ModalBuilder,
@@ -439,6 +440,100 @@ function demandSummary(records) {
   return s;
 }
 
+// ---------- /stats panel ----------
+
+function statsViewOptions(data) {
+  const opts = [
+    { label: "📊 Current season", value: "current", default: true },
+    { label: "🏆 All-time", value: "alltime" },
+  ];
+  const past = [...(data.seasons || [])].sort((a, b) => (b.endedTs || 0) - (a.endedTs || 0));
+  for (const s of past.slice(0, 12)) {
+    opts.push({ label: `${seasonLabel(s)} — ${s.sortedTotal || 0} sorted`.slice(0, 100), value: String(s.endedTs) });
+  }
+  return opts;
+}
+
+function statsPanelComponents(data, selected = "current") {
+  const view = new StringSelectMenuBuilder()
+    .setCustomId("stats:view")
+    .setPlaceholder("Choose a view…")
+    .addOptions(statsViewOptions(data).map((o) => ({ ...o, default: o.value === selected })));
+  const member = new UserSelectMenuBuilder()
+    .setCustomId("stats:member")
+    .setPlaceholder("Look up a member's help…")
+    .setMinValues(1)
+    .setMaxValues(1);
+  return [new ActionRowBuilder().addComponents(view), new ActionRowBuilder().addComponents(member)];
+}
+
+// Medal-prefixed leaderboard lines from [[id, n], …], names resolved.
+function leaderboardLines(rows, names) {
+  const medals = ["🥇", "🥈", "🥉"];
+  return rows.map(([id, n], i) => `${medals[i] || "•"} ${names[id] || "(left the server)"} — **${n}**`);
+}
+
+function currentStatsEmbed(data, names) {
+  const pending = data.entries.filter((e) => !e.done);
+  const done = data.entries.filter((e) => e.done);
+  const waits = done.filter((e) => e.ts && e.doneTs && e.doneTs >= e.ts).map((e) => e.doneTs - e.ts);
+  const avg = waits.length ? waits.reduce((a, b) => a + b, 0) / waits.length : null;
+  const pend = countByCategory(pending), don = countByCategory(done);
+  const ids = new Set([...activeCategories(data).map((c) => c.id), ...Object.keys(pend), ...Object.keys(don)]);
+  const catLines = [...ids].map((id) => { const c = catOf(data, id); return `${c.emoji} **${c.label}** — ${pend[id] || 0} waiting · ${don[id] || 0} sorted`; });
+  const top = tallyHelpers(data.entries).slice(0, 15);
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle(`📊 ${seasonLabel(data.currentSeason)} — current season`)
+    .addFields(
+      { name: "By category", value: renderField(catLines.length ? catLines : ["No categories configured."]) },
+      { name: "Average wait", value: avg != null ? formatDuration(avg) : "—" },
+      { name: "Top helpers", value: renderField(leaderboardLines(top, names).length ? leaderboardLines(top, names) : ["No sorts recorded yet."]) }
+    );
+}
+
+function allTimeEmbed(data, names) {
+  const recs = data.records || [];
+  const top = helperTotals(recs).slice(0, 15);
+  const cw = categoryWait(recs);
+  const catLines = Object.keys(cw).map((id) => { const c = catOf(data, id); return `${c.emoji} **${c.label}** — ${cw[id].waitN} sorted`; });
+  const d = demandSummary(recs);
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle("🏆 All-time helper stats")
+    .addFields(
+      { name: "Top helpers (all-time)", value: renderField(leaderboardLines(top, names).length ? leaderboardLines(top, names) : ["No records yet."]) },
+      { name: "By category", value: renderField(catLines.length ? catLines : ["—"]) },
+      { name: "Requests", value: `${d.sorted} sorted · ${d.self} self-sorted · ${d.removed} removed · ${d.unresolved} unresolved` }
+    );
+}
+
+function memberEmbed(data, helperId, name) {
+  const { byCat, total } = helperBreakdown(data.records || [], helperId);
+  const lines = Object.keys(byCat).map((id) => { const c = catOf(data, id); return `${c.emoji} **${c.label}** — ${byCat[id].n}`; });
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle(`🙌 ${name} — helper stats`)
+    .setDescription(`**${total}** sorted all-time`)
+    .addFields({ name: "By category", value: renderField(lines.length ? lines : ["No sorts recorded for this member."]) });
+}
+
+function seasonHelperEmbed(data, season, names) {
+  const recs = recordsForSeason(data.records || [], season.startedTs);
+  if (recs.length === 0) {
+    return new EmbedBuilder().setColor(0x5ac9a1).setTitle(`📅 ${seasonLabel(season)}`).setDescription("_no per-request data for this season_");
+  }
+  const top = helperTotals(recs).slice(0, 15);
+  const d = demandSummary(recs);
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle(`📅 ${seasonLabel(season)} — helpers`)
+    .addFields(
+      { name: "Top helpers", value: renderField(leaderboardLines(top, names).length ? leaderboardLines(top, names) : ["No sorts recorded."]) },
+      { name: "Requests", value: `${d.sorted} sorted · ${d.self} self-sorted · ${d.removed} removed · ${d.unresolved} unresolved` }
+    );
+}
+
 // Archive the current season (only if it has sorted entries) and clear the
 // board. Mutates data. `now` is injected for determinism. Returns the archived
 // season object, or null when there was nothing to archive.
@@ -682,6 +777,14 @@ async function memberName(guild, userId) {
   } catch {
     return null;
   }
+}
+
+// Resolve a set of user ids to display names for a leaderboard. Read-only REST;
+// left-guild ids fall back to a fixed label. Dedupe before calling.
+async function resolveIds(guild, ids) {
+  const names = {};
+  for (const id of new Set(ids)) names[id] = (await memberName(guild, id)) || "(left the server)";
+  return names;
 }
 
 async function refreshBoard(client, data) {
@@ -1109,6 +1212,45 @@ async function handleBoardSelect(interaction) {
   await announceEntry(client, entry, interaction.channelId);
 }
 
+async function handleStatsCommand(interaction, data) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const top = tallyHelpers(data.entries).slice(0, 15);
+  const names = await resolveIds(interaction.guild, top.map(([id]) => id));
+  await interaction.editReply({ embeds: [currentStatsEmbed(data, names)], components: statsPanelComponents(data, "current") });
+}
+
+async function handleStatsView(interaction) {
+  await interaction.deferUpdate();
+  const data = loadData();
+  const value = interaction.values[0];
+  if (value === "current") {
+    const top = tallyHelpers(data.entries).slice(0, 15);
+    const names = await resolveIds(interaction.guild, top.map(([id]) => id));
+    await interaction.editReply({ embeds: [currentStatsEmbed(data, names)], components: statsPanelComponents(data, "current") });
+    return;
+  }
+  if (value === "alltime") {
+    const top = helperTotals(data.records || []).slice(0, 15);
+    const names = await resolveIds(interaction.guild, top.map(([id]) => id));
+    await interaction.editReply({ embeds: [allTimeEmbed(data, names)], components: statsPanelComponents(data, "alltime") });
+    return;
+  }
+  const endedTs = Number(value);
+  const season = (data.seasons || []).find((s) => s.endedTs === endedTs);
+  if (!season) { await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") }); return; }
+  const top = helperTotals(recordsForSeason(data.records || [], season.startedTs)).slice(0, 15);
+  const names = await resolveIds(interaction.guild, top.map(([id]) => id));
+  await interaction.editReply({ embeds: [seasonHelperEmbed(data, season, names)], components: statsPanelComponents(data, value) });
+}
+
+async function handleStatsMember(interaction) {
+  await interaction.deferUpdate();
+  const data = loadData();
+  const helperId = interaction.values[0];
+  const name = (await memberName(interaction.guild, helperId)) || "(left the server)";
+  await interaction.editReply({ embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, "current") });
+}
+
 async function handleSeasonCommand(interaction, data) {
   if (!isManager(interaction, data)) { await respond(interaction, NO_PERM); return; }
   const sortedNow = data.entries.filter((e) => e.done).length;
@@ -1225,6 +1367,14 @@ client.on("interactionCreate", async (interaction) => {
       await handleSeasonSelect(interaction);
       return;
     }
+    if (interaction.isStringSelectMenu() && interaction.customId === "stats:view") {
+      await handleStatsView(interaction);
+      return;
+    }
+    if (interaction.isUserSelectMenu() && interaction.customId === "stats:member") {
+      await handleStatsMember(interaction);
+      return;
+    }
     if (interaction.isModalSubmit()) {
       if (interaction.customId.startsWith("season:")) { await handleSeasonModal(interaction); return; }
       return;
@@ -1304,65 +1454,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "stats") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const pending = data.entries.filter((e) => !e.done);
-      const done = data.entries.filter((e) => e.done);
-
-      const waits = done
-        .filter((e) => e.ts && e.doneTs && e.doneTs >= e.ts)
-        .map((e) => e.doneTs - e.ts);
-      const avg = waits.length
-        ? waits.reduce((a, b) => a + b, 0) / waits.length
-        : null;
-
-      const top = tallyHelpers(data.entries).slice(0, 5);
-      const medals = ["🥇", "🥈", "🥉"];
-      const lbLines = [];
-      for (let i = 0; i < top.length; i++) {
-        const [id, n] = top[i];
-        const nm = (await memberName(interaction.guild, id)) || "(left the server)";
-        lbLines.push(`${medals[i] || "•"} ${nm} — **${n}**`);
-      }
-
-      const pend = countByCategory(pending);
-      const don = countByCategory(done);
-      const ids = new Set([
-        ...activeCategories(data).map((c) => c.id),
-        ...Object.keys(pend), ...Object.keys(don),
-      ]);
-      const catLines = [...ids].map((id) => {
-        const c = catOf(data, id);
-        return `${c.emoji} **${c.label}** — ${pend[id] || 0} waiting · ${don[id] || 0} sorted`;
-      });
-
-      const embed = new EmbedBuilder()
-        .setColor(0x5ac9a1)
-        .setTitle("📊 Guild Help Board — season stats")
-        .addFields(
-          {
-            name: "By category",
-            value: catLines.length ? catLines.join("\n") : "No categories configured.",
-          },
-          {
-            name: "Average wait",
-            value: avg != null ? formatDuration(avg) : "—",
-          },
-          {
-            name: "Top helpers",
-            value: lbLines.length ? lbLines.join("\n") : "No sorts recorded yet.",
-          }
-        );
-      const last = data.seasons[data.seasons.length - 1];
-      if (last) {
-        const parts = Object.entries(last.byCategory || {})
-          .map(([id, n]) => `${catOf(data, id).emoji} ${n}`)
-          .join(" · ");
-        embed.addFields({ name: "Last season", value: `${last.sortedTotal} sorted (${parts})` });
-      }
-      await respond(interaction, {
-        embeds: [embed],
-        flags: MessageFlags.Ephemeral,
-      });
+      await handleStatsCommand(interaction, data);
     }
 
     if (interaction.commandName === "season") {
@@ -1738,6 +1830,11 @@ module.exports = {
   categoryWait,
   helperBreakdown,
   demandSummary,
+  statsViewOptions,
+  currentStatsEmbed,
+  allTimeEmbed,
+  memberEmbed,
+  seasonHelperEmbed,
 };
 
 if (require.main === module) {
