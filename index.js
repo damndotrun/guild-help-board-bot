@@ -363,12 +363,18 @@ function makeRecord(data, entry, resolution, now) {
 }
 
 // Append a record and keep the log under RECORD_CAP (drop oldest). Mutates data.
+// The prune warning fires at most once per process lifetime (past the cap,
+// every future append would otherwise re-enter the branch and warn again).
+let recordCapWarned = false;
 function logRecord(data, record) {
   if (!Array.isArray(data.records)) data.records = [];
   data.records.push(record);
   if (data.records.length > RECORD_CAP) {
     data.records = data.records.slice(-RECORD_CAP);
-    console.warn(`[records] pruned to RECORD_CAP=${RECORD_CAP}`);
+    if (!recordCapWarned) {
+      console.warn(`[records] pruned to RECORD_CAP=${RECORD_CAP}`);
+      recordCapWarned = true;
+    }
   }
 }
 

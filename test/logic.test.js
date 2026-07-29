@@ -557,6 +557,14 @@ test("logRecord: appends and prunes oldest beyond RECORD_CAP", () => {
   assert.equal(data.records.length, bot.RECORD_CAP);
   assert.equal(data.records[data.records.length - 1].reqId, "r" + (bot.RECORD_CAP + 4)); // newest kept
   assert.equal(data.records[0].reqId, "r5");                                             // oldest dropped
+
+  // Well past the cap now (this loop already re-entered the prune branch 5
+  // times). One more append must keep pruning correctly without throwing —
+  // covers the "warn only once, prune every time" behavior.
+  bot.logRecord(data, { reqId: "extra" });
+  assert.equal(data.records.length, bot.RECORD_CAP);
+  assert.equal(data.records[data.records.length - 1].reqId, "extra");
+  assert.equal(data.records[0].reqId, "r6");
 });
 
 test("logRecord: initializes records when absent", () => {
