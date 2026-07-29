@@ -1453,7 +1453,7 @@ const commands = [
           sub
             .setName("add")
             .setDescription("Add or update a category")
-            .addStringOption((o) => o.setName("label").setDescription("Category name").setRequired(true))
+            .addStringOption((o) => o.setName("label").setDescription("Category name (leave empty to open a form)"))
             .addStringOption((o) => o.setName("emoji").setDescription("Emoji (optional)"))
         )
         .addSubcommand((sub) =>
@@ -1839,6 +1839,26 @@ async function handleSeasonModal(interaction) {
   }
 }
 
+// /config category add's no-arg fallback modal. A plain ModalSubmitInteraction
+// (opened straight from the slash command, not a message component) — so ack
+// with reply(), never .update(). Re-check isManager: a modal submit is a fresh
+// interaction, and the slash-command check that gated opening it doesn't carry
+// over.
+async function handleCatAddModal(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) { await respond(interaction, { content: "Managers only.", flags: MessageFlags.Ephemeral }); return; }
+  const label = interaction.fields.getTextInputValue("label");
+  const emoji = interaction.fields.getTextInputValue("emoji") || undefined;
+  const r = addCategory(data, label, emoji);
+  if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+  saveData(data);
+  await respond(interaction, {
+    content: `Category **${r.category.label}** ${r.category.emoji} is ready.`,
+    flags: MessageFlags.Ephemeral,
+  });
+  await refreshBoard(client, data);
+}
+
 // The /reset confirm/cancel buttons. A different member could click these than
 // the one who ran /reset (the warning is ephemeral but the customId isn't
 // bound to a user), so re-check isManager here — don't trust the slash-command
@@ -2058,6 +2078,7 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (interaction.isModalSubmit()) {
       if (interaction.customId.startsWith("season:")) { await handleSeasonModal(interaction); return; }
+      if (interaction.customId === "catadd:submit") { await handleCatAddModal(interaction); return; }
       return;
     }
     if (!interaction.isChatInputCommand()) return;
@@ -2189,7 +2210,7 @@ client.on("interactionCreate", async (interaction) => {
               "`/config removerole @role` — remove a role\n" +
               "`/config notify @role` — ping a role on new requests\n" +
               "`/config roles` — show current settings\n" +
-              "`/config category add <label> [emoji]` — add/update a category\n" +
+              "`/config category add [label] [emoji]` — add/update a category (opens a form if left blank)\n" +
               "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
               "`/config category list` — list categories\n" +
               "`/config nudge set #channel [hours]` — daily digest for long-waiting requests\n" +
@@ -2378,6 +2399,31 @@ client.on("interactionCreate", async (interaction) => {
 
         if (catSub === "add") {
           const label = interaction.options.getString("label");
+          if (!label) {
+            const labelInput = new TextInputBuilder()
+              .setCustomId("label")
+              .setLabel("Category name")
+              .setStyle(TextInputStyle.Short)
+              .setMaxLength(MAX_LABEL)
+              .setRequired(true)
+              .setPlaceholder("e.g. Guild Boss");
+            const emojiInput = new TextInputBuilder()
+              .setCustomId("emoji")
+              .setLabel("Emoji")
+              .setStyle(TextInputStyle.Short)
+              .setMaxLength(32)
+              .setRequired(false)
+              .setPlaceholder("e.g. 👹");
+            const modal = new ModalBuilder()
+              .setCustomId("catadd:submit")
+              .setTitle("Add a category")
+              .addComponents(
+                new ActionRowBuilder().addComponents(labelInput),
+                new ActionRowBuilder().addComponents(emojiInput)
+              );
+            await interaction.showModal(modal);
+            return;
+          }
           const emoji = interaction.options.getString("emoji") || "";
           const r = addCategory(data, label, emoji);
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
