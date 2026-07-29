@@ -438,6 +438,18 @@ function logRecord(data, record) {
   }
 }
 
+// Close a batch of entries: logs one `resolution` record per entry (invariant
+// #6 — MUST happen before saveData) and then drops them from data.entries.
+// Pure — no REST, no Date.now side effect beyond the passed-in `now`. This is
+// the exact close-and-log logic /imsorted has always used (both the direct
+// category fast-path and the M13 select panel), pulled out so it's covered by
+// a unit test instead of only by hand.
+function closeEntries(data, entries, resolution, now) {
+  for (const e of entries) logRecord(data, makeRecord(data, e, resolution, now));
+  const ids = new Set(entries.map((e) => e.id));
+  data.entries = data.entries.filter((e) => !ids.has(e.id));
+}
+
 // ---------- pure query helpers (read-only, derived from records) ----------
 
 function recordsForSeason(records, seasonStartedTs) {
@@ -940,6 +952,49 @@ function hasOpenEntry(data, userId, categoryId) {
   return (data.entries || []).some(
     (e) => e.userId === userId && e.category === categoryId && !e.done
   );
+}
+
+// This user's own still-open entries (any category). Pure — used by the
+// /imsorted self-service select panel (and reused by /helped+/remove, M13-T3).
+function openEntriesFor(data, userId) {
+  return (data.entries || []).filter((e) => e.userId === userId && !e.done);
+}
+
+// Build the imsorted:pick select options from a caller's open entries: one
+// option per entry, label "<emoji> <label>", description "waiting <duration>".
+function imsortedSelectOptions(data, entries, now) {
+  return entries.slice(0, 25).map((e) => {
+    const cat = catOf(data, e.category);
+    return {
+      label: `${cat.emoji} ${cat.label}`.slice(0, 100),
+      description: `waiting ${formatDuration(now - (e.ts ?? now))}`.slice(0, 100),
+      value: e.id,
+    };
+  });
+}
+
+// The /imsorted (no category arg) panel: pick-which-to-close select + a
+// "close all" convenience button, mirroring the old omit=all behavior.
+function imsortedPanelEmbed(count) {
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle("✅ Mark yourself sorted")
+    .setDescription(
+      `You have **${count}** open request${count === 1 ? "" : "s"}. Pick which to mark sorted, or close them all.`
+    );
+}
+
+function imsortedPanelComponents(options) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("imsorted:pick")
+    .setPlaceholder("Choose which to mark sorted…")
+    .setMinValues(1)
+    .setMaxValues(options.length)
+    .addOptions(options);
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("imsorted:all").setLabel("Close all").setEmoji("✅").setStyle(ButtonStyle.Secondary)
+  );
+  return [new ActionRowBuilder().addComponents(select), buttons];
 }
 
 function newHelpEntry(userId, username, categoryId, note) {
@@ -1753,6 +1808,56 @@ async function handleResetButton(interaction) {
   await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
 }
 
+// Closes the given (already ownership-filtered) entries: logs a "self" record
+// for each BEFORE saveData (invariant #6), saves, acks the panel, then does the
+// slow REST (resolveCard/refreshBoard) after the ack (invariant #1). Shared by
+// both the imsorted:pick select and the imsorted:all button.
+async function closeImsortedEntries(interaction, data, mine) {
+  closeEntries(data, mine, "self", Date.now());
+  saveData(data);
+  await interaction.update({
+    content: `Marked ${mine.length} request${mine.length === 1 ? "" : "s"} sorted.`,
+    embeds: [],
+    components: [],
+  });
+  for (const e of mine) {
+    await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
+  }
+  await refreshBoard(client, data);
+}
+
+// imsorted:pick — the caller multi-selected specific entries to close. Never
+// trust the select values alone: filter to entries actually owned by the
+// clicking user (and still open) before closing anything.
+async function handleImsortedSelect(interaction) {
+  const data = loadData();
+  const ids = new Set(interaction.values);
+  const mine = data.entries.filter(
+    (e) => ids.has(e.id) && e.userId === interaction.user.id && !e.done
+  );
+  if (mine.length === 0) {
+    await interaction.update({ content: "Those requests are already gone.", embeds: [], components: [] });
+    return;
+  }
+  await closeImsortedEntries(interaction, data, mine);
+}
+
+// imsorted:all — the "close all" convenience button from the panel.
+async function handleImsortedButton(interaction) {
+  const action = interaction.customId.split(":")[1];
+  if (action !== "all") {
+    await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const data = loadData();
+  const mine = openEntriesFor(data, interaction.user.id);
+  if (mine.length === 0) {
+    await interaction.update({ content: "You have no open requests.", embeds: [], components: [] });
+    return;
+  }
+  await closeImsortedEntries(interaction, data, mine);
+}
+
 client.on("interactionCreate", async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
@@ -1774,11 +1879,16 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId.startsWith("board:")) { await handleBoardButton(interaction); return; }
       if (interaction.customId.startsWith("season:")) { await handleSeasonButton(interaction); return; }
       if (interaction.customId.startsWith("reset:")) { await handleResetButton(interaction); return; }
+      if (interaction.customId.startsWith("imsorted:")) { await handleImsortedButton(interaction); return; }
       await handleButton(interaction);
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === "board:pick") {
       await handleBoardSelect(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === "imsorted:pick") {
+      await handleImsortedSelect(interaction);
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === "season:view") {
@@ -1843,32 +1953,45 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      const mine = data.entries.filter(
-        (e) =>
-          e.userId === interaction.user.id &&
-          !e.done &&
-          (!category || e.category === category)
-      );
+      if (category) {
+        // Fast path (category given) — unchanged direct-close behavior.
+        const mine = data.entries.filter(
+          (e) => e.userId === interaction.user.id && !e.done && e.category === category
+        );
+        if (mine.length === 0) {
+          await respond(interaction, {
+            content: "You're not on the board right now.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        closeEntries(data, mine, "self", Date.now());
+        saveData(data);
+        await respond(interaction, {
+          content: "Took you off the board. Glad you got sorted! 🎉",
+          flags: MessageFlags.Ephemeral,
+        });
+        for (const e of mine) {
+          await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
+        }
+        await refreshBoard(client, data);
+        return;
+      }
+      // No category — self-service select panel (M13-T2).
+      const mine = openEntriesFor(data, interaction.user.id);
       if (mine.length === 0) {
         await respond(interaction, {
-          content: "You're not on the board right now.",
+          content: "You have no open requests.",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      const ids = new Set(mine.map((e) => e.id));
-      const nowTs = Date.now();
-      for (const e of mine) logRecord(data, makeRecord(data, e, "self", nowTs));
-      data.entries = data.entries.filter((e) => !ids.has(e.id));
-      saveData(data);
+      const options = imsortedSelectOptions(data, mine, Date.now());
       await respond(interaction, {
-        content: "Took you off the board. Glad you got sorted! 🎉",
+        embeds: [imsortedPanelEmbed(mine.length)],
+        components: imsortedPanelComponents(options),
         flags: MessageFlags.Ephemeral,
       });
-      for (const e of mine) {
-        await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
-      }
-      await refreshBoard(client, data);
     }
 
     if (interaction.commandName === "stats") {
@@ -2275,6 +2398,9 @@ module.exports = {
   readAndShape,
   categorySuggestions,
   hasOpenEntry,
+  openEntriesFor,
+  imsortedSelectOptions,
+  imsortedPanelEmbed,
   newHelpEntry,
   cardDescription,
   categorySelectOptions,
@@ -2292,6 +2418,7 @@ module.exports = {
   resetWarningEmbed,
   makeRecord,
   logRecord,
+  closeEntries,
   RECORD_CAP,
   recordsForSeason,
   helperTotals,

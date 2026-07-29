@@ -1134,3 +1134,71 @@ test("nudgeDigestEmbed: 26 distinct categories does not throw and caps fields at
     assert.ok(embed.data.fields.length <= 25, `expected <= 25 fields, got ${embed.data.fields.length}`);
   });
 });
+
+// ---------- M13-T2: /imsorted self-service select panel ----------
+
+test("openEntriesFor: only this user's open entries — excludes done and other users", () => {
+  const data = {
+    entries: [
+      { id: "1", userId: "u1", category: "a", done: false },
+      { id: "2", userId: "u1", category: "b", done: true }, // done — excluded
+      { id: "3", userId: "u2", category: "a", done: false }, // other user — excluded
+      { id: "4", userId: "u1", category: "b", done: false },
+    ],
+  };
+  const mine = bot.openEntriesFor(data, "u1");
+  assert.deepEqual(mine.map((e) => e.id).sort(), ["1", "4"]);
+});
+
+test("openEntriesFor: empty when entries missing or user has none", () => {
+  assert.deepEqual(bot.openEntriesFor({}, "u1"), []);
+  assert.deepEqual(bot.openEntriesFor({ entries: [] }, "u1"), []);
+});
+
+test("imsortedSelectOptions: label emoji+category, description waiting-duration, value=id, ≤25", () => {
+  const data = { categories: [{ id: "a", label: "Season Run 5K", emoji: "🏃", archived: false }] };
+  const now = 1_000_000;
+  const entries = [
+    { id: "e1", category: "a", ts: now - 8 * 60 * 1000 }, // 8m ago
+  ];
+  const opts = bot.imsortedSelectOptions(data, entries, now);
+  assert.equal(opts.length, 1);
+  assert.equal(opts[0].value, "e1");
+  assert.equal(opts[0].label, "🏃 Season Run 5K");
+  assert.equal(opts[0].description, "waiting 8m");
+});
+
+test("imsortedSelectOptions: caps at 25 options even with more entries", () => {
+  const data = { categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }] };
+  const entries = Array.from({ length: 30 }, (_, i) => ({ id: `e${i}`, category: "a", ts: 0 }));
+  const opts = bot.imsortedSelectOptions(data, entries, 100);
+  assert.equal(opts.length, 25);
+});
+
+test("closeEntries: logs one \"self\" record per entry BEFORE removing it from data.entries", () => {
+  const data = {
+    entries: [
+      { id: "1", userId: "u1", category: "a", done: false, ts: 10 },
+      { id: "2", userId: "u1", category: "b", done: false, ts: 20 },
+      { id: "3", userId: "u1", category: "a", done: false, ts: 30 }, // not picked
+    ],
+  };
+  const mine = data.entries.filter((e) => e.id !== "3");
+  bot.closeEntries(data, mine, "self", 999);
+  // Every picked entry logged exactly one "self" record — invariant #6.
+  assert.equal(data.records.length, 2);
+  assert.deepEqual(data.records.map((r) => r.reqId).sort(), ["1", "2"]);
+  for (const r of data.records) {
+    assert.equal(r.resolution, "self");
+    assert.equal(r.resolvedTs, 999);
+  }
+  // Picked entries are gone; the untouched one survives.
+  assert.deepEqual(data.entries.map((e) => e.id), ["3"]);
+});
+
+test("closeEntries: no-op on an empty selection (no record, nothing removed)", () => {
+  const data = { entries: [{ id: "1", userId: "u1", done: false }] };
+  bot.closeEntries(data, [], "self", 1);
+  assert.deepEqual(data.entries.map((e) => e.id), ["1"]);
+  assert.equal((data.records || []).length, 0);
+});
