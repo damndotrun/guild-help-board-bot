@@ -218,7 +218,11 @@ function shapeCategories(rawCategories) {
       id: item.id,
       label: item.label,
       emoji: typeof item.emoji === "string" && item.emoji ? item.emoji : "📌",
-      archived: Boolean(item.archived),
+      // Only a real `true` or the string "true" archives — Boolean(item.archived)
+      // would also coerce the STRING "false" to true, silently archiving a
+      // hand-edited category that a person wrote as "archived":"false" (B2
+      // exists precisely to survive hand-edited files).
+      archived: item.archived === true || item.archived === "true",
     }));
   return cleaned.length ? cleaned : defaultCategories();
 }
@@ -1051,6 +1055,30 @@ function releaseClaim(entry) {
   return entry;
 }
 
+// True only for a confirmed "member/user is gone" Discord REST error — NOT for
+// rate limits, 5xx, or network errors, which can spike exactly when several
+// officers are interacting at once (contested claims). Used to gate the M8
+// auto-release so a transient fetch failure can't be mistaken for a departure.
+function isGoneError(err) {
+  return err?.code === 10007 || err?.code === 10013; // Unknown Member / Unknown User
+}
+
+// M8 claim auto-release, TOCTOU-guarded: called from the claim button's
+// "blocked" branch AFTER a fresh reload, once the ORIGINAL holder
+// (staleHolderId) has been confirmed gone. That confirmation awaited a REST
+// call, so the claim may have changed hands in the meantime — recheck the
+// freshly-loaded entry before releasing. If someone else holds it now, it's a
+// live claim; don't steal it. Pure — no guild access, no Date.now side effects
+// beyond the passed-in `now`.
+function applyStaleClaimRelease(freshEntry, staleHolderId, officerId, now) {
+  if (freshEntry.claimedBy && freshEntry.claimedBy !== staleHolderId) {
+    // Claim changed hands during the membership check — it's live now.
+    return { action: "blocked", by: freshEntry.claimedBy };
+  }
+  if (freshEntry.claimedBy === staleHolderId) releaseClaim(freshEntry);
+  return toggleClaim(freshEntry, officerId, now);
+}
+
 // ---------- help-request cards (one-click officer actions) ----------
 function requestButtons(entryId) {
   return new ActionRowBuilder().addComponents(
@@ -1403,18 +1431,32 @@ async function handleButton(interaction) {
     let workingData = data;
     let workingEntry = entry;
     if (r.action === "blocked") {
-      // memberName returns null both when the holder truly left the guild and
-      // (rarely) on a transient fetch error — either way we treat "unresolvable"
-      // as "no longer a member" per the M8 auto-release design.
-      const holder = await memberName(interaction.guild, r.by);
-      if (holder) {
-        await respond(interaction, { content: `🙌 **${holder}** is already on this.`, flags: MessageFlags.Ephemeral });
+      // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
+      // check" (rate limit / 5xx / network) — only the former justifies
+      // auto-release. A transient error must NOT be treated as a departure.
+      const guild = interaction.guild;
+      let member = null;
+      let verifyFailed = !guild;
+      if (guild) {
+        try {
+          member = guild.members.cache.get(r.by) || (await guild.members.fetch(r.by));
+        } catch (err) {
+          if (isGoneError(err)) member = null; // confirmed gone
+          else verifyFailed = true;
+        }
+      }
+      if (verifyFailed) {
+        await respond(interaction, { content: "Couldn't verify the current claimer — try again.", flags: MessageFlags.Ephemeral });
         return;
       }
-      // Stale claim — the holder is gone. Invariant #1: the membership check
-      // above was an await since loadData, so re-load fresh, re-find the entry
-      // by id, and apply the release+claim to that copy rather than saving our
-      // now-possibly-stale snapshot.
+      if (member) {
+        await respond(interaction, { content: `🙌 **${member.displayName}** is already on this.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      // Stale claim — the holder is confirmed gone. Invariant #1: the
+      // membership check above was an await since loadData, so re-load fresh,
+      // re-find the entry by id, and apply the release+claim to that copy
+      // rather than saving our now-possibly-stale snapshot.
       const fresh = loadData();
       const freshEntry = fresh.entries.find((e) => e.id === entryId);
       if (!freshEntry || freshEntry.done) {
@@ -1425,8 +1467,14 @@ async function handleButton(interaction) {
         }
         return;
       }
-      releaseClaim(freshEntry);
-      r = toggleClaim(freshEntry, interaction.user.id, Date.now());
+      // F1: recheck the fresh claim before releasing — it may have changed
+      // hands (to a LIVE claim) during the membership check's await window.
+      r = applyStaleClaimRelease(freshEntry, r.by, interaction.user.id, Date.now());
+      if (r.action === "blocked") {
+        const holder2 = await memberName(interaction.guild, r.by);
+        await respond(interaction, { content: `🙌 **${holder2 || "Another officer"}** is already on this.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
       workingData = fresh;
       workingEntry = freshEntry;
     }
@@ -1604,7 +1652,16 @@ async function handleSeasonModal(interaction) {
     // back to a fresh ephemeral ack if the submit somehow didn't come from a
     // message component (shouldn't happen: both modals are button-triggered).
     if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
-      await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+      // F3: the ack can fail on its own (panel dismissed mid-modal, message-
+      // target errors) — wrap it so a throw here can't skip the post-ack REST
+      // below (resolveCard for every pending entry + refreshBoard), which must
+      // always run since saveData already committed the season reset.
+      try {
+        await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+      } catch {
+        const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
+        await respond(interaction, { content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
+      }
     } else {
       const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
       await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
@@ -1622,7 +1679,13 @@ async function handleSeasonModal(interaction) {
     saveData(data);
     const sortedNow = data.entries.filter((e) => e.done).length;
     if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
-      await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+      // F3: same ack-can-fail guard as the newmodal branch above — the fallback
+      // reply must fire so refreshBoard below still runs after saveData.
+      try {
+        await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+      } catch {
+        await respond(interaction, { content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
+      }
     } else {
       await interaction.reply({ content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
     }
@@ -2159,6 +2222,8 @@ module.exports = {
   categorySelectOptions,
   toggleClaim,
   releaseClaim,
+  isGoneError,
+  applyStaleClaimRelease,
   resolveNames,
   seasonLabel,
   closeSeason,

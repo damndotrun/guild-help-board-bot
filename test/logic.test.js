@@ -231,13 +231,17 @@ test("loadData cleans malformed category items, defaulting emoji/archived and dr
   assert.deepEqual(cats, [{ id: "boss", label: "Boss", emoji: "📌", archived: false }]);
 });
 
-test("loadData coerces a string archived flag to boolean", () => {
+test("loadData coerces a string archived flag to boolean (only real-true/\"true\" archive; \"false\" stays active)", () => {
   resetDataFiles();
-  const custom = [{ id: "boss", label: "Boss", emoji: "👹", archived: "true" }];
+  const custom = [
+    { id: "boss", label: "Boss", emoji: "👹", archived: "true" },
+    { id: "boss2", label: "Boss2", emoji: "👹", archived: "false" },
+  ];
   fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: custom }));
   const cats = bot.loadData().categories;
-  assert.equal(cats.length, 1);
-  assert.strictEqual(cats[0].archived, true);
+  assert.equal(cats.length, 2);
+  assert.strictEqual(cats[0].archived, true); // "true" string still archives
+  assert.strictEqual(cats[1].archived, false); // "false" string must NOT archive (Fix 4)
 });
 
 test("loadData falls back to defaults when every category item is malformed", () => {
@@ -719,6 +723,61 @@ test("releaseClaim then toggleClaim: a new officer can claim after the stale hol
   assert.deepEqual(r, { action: "claimed", by: "o2" });
   assert.equal(e.claimedBy, "o2");
   assert.equal(e.claimedTs, 200);
+});
+
+test("applyStaleClaimRelease: TOCTOU guard — a claim that changed hands during the membership-check await must not be stolen", () => {
+  // Regression guard for the M8 auto-release TOCTOU (Fix 1). Interleave:
+  //   1. Officer B clicks claim on an entry stale-held by X. toggleClaim
+  //      returns blocked with r.by = "X".
+  //   2. B awaits a membership check on X (REST) — this is the window.
+  //   3. Meanwhile officer C also clicks: C's own membership check on X
+  //      resolves first, C releases X's claim and claims it for itself. This
+  //      is "saved" as the entry's live state.
+  //   4. B's check resolves (X really is gone) and B re-loads fresh data —
+  //      landing on the state C just saved — then runs the release-guard +
+  //      toggle step.
+  // B must see C's claim as LIVE (blocked), not steal it by blindly releasing
+  // whatever the fresh entry holds.
+  const savedState = { id: "e1", claimedBy: "X", claimedTs: 100 };
+  // Step 3: C's full transaction against a copy of the pre-interleave state.
+  bot.releaseClaim(savedState);
+  bot.toggleClaim(savedState, "C", 150);
+  assert.equal(savedState.claimedBy, "C"); // sanity: C now holds it live
+
+  // Step 4: B's patch step runs against the state C just saved. B's stale
+  // holder id (captured before its own await) is still "X".
+  const result = bot.applyStaleClaimRelease(savedState, "X", "B", 200);
+
+  assert.deepEqual(result, { action: "blocked", by: "C" });
+  assert.equal(savedState.claimedBy, "C"); // C's live claim survives untouched
+  assert.equal(savedState.claimedTs, 150);
+});
+
+test("applyStaleClaimRelease: releases and claims when the fresh entry still holds the stale claim", () => {
+  // No interleave — the fresh reload shows the same stale holder still on it,
+  // so B's release + claim should proceed normally.
+  const freshEntry = { id: "e1", claimedBy: "X", claimedTs: 100 };
+  const result = bot.applyStaleClaimRelease(freshEntry, "X", "B", 200);
+  assert.deepEqual(result, { action: "claimed", by: "B" });
+  assert.equal(freshEntry.claimedBy, "B");
+  assert.equal(freshEntry.claimedTs, 200);
+});
+
+test("applyStaleClaimRelease: claims cleanly when the fresh entry was already released (no interleaved claim)", () => {
+  const freshEntry = { id: "e1", claimedBy: null, claimedTs: null };
+  const result = bot.applyStaleClaimRelease(freshEntry, "X", "B", 200);
+  assert.deepEqual(result, { action: "claimed", by: "B" });
+  assert.equal(freshEntry.claimedBy, "B");
+});
+
+test("isGoneError: true only for DiscordAPIError 10007/10013, false for anything else", () => {
+  assert.equal(bot.isGoneError({ code: 10007 }), true); // Unknown Member
+  assert.equal(bot.isGoneError({ code: 10013 }), true); // Unknown User
+  assert.equal(bot.isGoneError({ code: 50013 }), false); // Missing Permissions
+  assert.equal(bot.isGoneError({ code: 429 }), false); // rate limit
+  assert.equal(bot.isGoneError(new Error("network blip")), false);
+  assert.equal(bot.isGoneError(null), false);
+  assert.equal(bot.isGoneError(undefined), false);
 });
 
 test("closeSeason: logs unresolved records for pending, not for done", () => {
