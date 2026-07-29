@@ -758,3 +758,49 @@ test("seasonHelperEmbed: pre-M10 season (no records) renders a graceful note", (
   const embed = bot.seasonHelperEmbed(data, season, {});
   assert.match(JSON.stringify(embed.data), /no per-request data/i);
 });
+
+test("setNudgeConfig: sets channel, keeps threshold when hours omitted", () => {
+  const data = { nudgeThresholdHours: 48 };
+  const r = bot.setNudgeConfig(data, "chan1", undefined);
+  assert.deepEqual(r, { ok: true });
+  assert.equal(data.nudgeChannelId, "chan1");
+  assert.equal(data.nudgeThresholdHours, 48); // unchanged
+});
+
+test("setNudgeConfig: sets threshold when hours given", () => {
+  const data = {};
+  bot.setNudgeConfig(data, "chan1", 24);
+  assert.equal(data.nudgeChannelId, "chan1");
+  assert.equal(data.nudgeThresholdHours, 24);
+});
+
+test("setNudgeConfig: rejects non-positive / non-integer / absurd hours", () => {
+  for (const bad of [0, -5, 2.5, 99999]) {
+    const data = { nudgeThresholdHours: 48 };
+    const r = bot.setNudgeConfig(data, "chan1", bad);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /hours|whole number|between/i);
+    assert.equal(data.nudgeChannelId, undefined); // not set on failure
+    assert.equal(data.nudgeThresholdHours, 48);   // unchanged
+  }
+});
+
+test("clearNudge: disables by nulling the channel", () => {
+  const data = { nudgeChannelId: "chan1", nudgeThresholdHours: 24 };
+  assert.deepEqual(bot.clearNudge(data), { ok: true });
+  assert.equal(data.nudgeChannelId, null);
+  assert.equal(data.nudgeThresholdHours, 24); // threshold retained
+});
+
+test("emptyData/readAndShape: nudge fields default safely", () => {
+  const empty = bot.emptyData ? bot.emptyData() : null;
+  // readAndShape via a minimal raw object
+  const shaped = bot.readAndShape(JSON.stringify({}));
+  assert.equal(shaped.nudgeChannelId, null);
+  assert.equal(shaped.nudgeThresholdHours, 48);
+  assert.equal(shaped.lastNudgeTs, null);
+  const shaped2 = bot.readAndShape(JSON.stringify({ nudgeChannelId: "c", nudgeThresholdHours: 12, lastNudgeTs: 5 }));
+  assert.equal(shaped2.nudgeChannelId, "c");
+  assert.equal(shaped2.nudgeThresholdHours, 12);
+  assert.equal(shaped2.lastNudgeTs, 5);
+});

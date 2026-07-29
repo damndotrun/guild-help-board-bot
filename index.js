@@ -19,6 +19,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  ChannelType,
 } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
@@ -135,6 +136,25 @@ function removeCategory(data, id, moveto) {
   return { ok: true, moved, dropped };
 }
 
+// Enable/adjust stale nudges. Sets the digest channel (the on/off switch); if
+// `hours` is provided, validates and sets the stale threshold. Pure — mutates data.
+function setNudgeConfig(data, channelId, hours) {
+  if (hours != null) {
+    if (!Number.isInteger(hours) || hours < 1 || hours > NUDGE_MAX_HOURS) {
+      return { ok: false, error: `Threshold must be a whole number of hours between 1 and ${NUDGE_MAX_HOURS}.` };
+    }
+    data.nudgeThresholdHours = hours;
+  }
+  data.nudgeChannelId = channelId;
+  return { ok: true };
+}
+
+// Turn nudges off (keep the threshold for next time). Pure — mutates data.
+function clearNudge(data) {
+  data.nudgeChannelId = null;
+  return { ok: true };
+}
+
 function categorySuggestions(data, typed) {
   const q = (typed || "").toLowerCase();
   return activeCategories(data)
@@ -150,6 +170,9 @@ function emptyData() {
     entries: [],
     managerRoleIds: [],
     notifyRoleId: null,
+    nudgeChannelId: null,
+    nudgeThresholdHours: 48,
+    lastNudgeTs: null,
     seasons: [],
     records: [],
     currentSeason: { name: null, startedTs: null },
@@ -165,6 +188,9 @@ function readAndShape(raw) {
     entries: Array.isArray(parsed.entries) ? parsed.entries : [],
     managerRoleIds: Array.isArray(parsed.managerRoleIds) ? parsed.managerRoleIds : [],
     notifyRoleId: parsed.notifyRoleId ?? null,
+    nudgeChannelId: parsed.nudgeChannelId ?? null,
+    nudgeThresholdHours: Number.isInteger(parsed.nudgeThresholdHours) ? parsed.nudgeThresholdHours : 48,
+    lastNudgeTs: typeof parsed.lastNudgeTs === "number" ? parsed.lastNudgeTs : null,
     seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
     records: Array.isArray(parsed.records) ? parsed.records : [],
     currentSeason:
@@ -232,6 +258,10 @@ function saveData(data) {
 const LOCK_FILE = path.join(DATA_DIR, "bot.lock");
 const LOCK_STALE_MS = 90_000; // treat a lock older than this as abandoned
 const LOCK_REFRESH_MS = 30_000; // heartbeat cadence (well under the stale window)
+
+const NUDGE_TICK_MS = 60 * 60 * 1000;      // hourly tick
+const NUDGE_CADENCE_MS = 24 * 60 * 60 * 1000; // at most one digest per day
+const NUDGE_MAX_HOURS = 8760;              // 1 year — sane upper bound for the threshold
 
 function readLock() {
   try {
@@ -1072,6 +1102,25 @@ const commands = [
             )
         )
         .addSubcommand((sub) => sub.setName("list").setDescription("List categories"))
+    )
+    .addSubcommandGroup((g) =>
+      g
+        .setName("nudge")
+        .setDescription("Remind officers about long-waiting requests")
+        .addSubcommand((sub) =>
+          sub
+            .setName("set")
+            .setDescription("Post a daily digest to a channel (this enables nudges)")
+            .addChannelOption((o) =>
+              o.setName("channel").setDescription("Where to post the digest").setRequired(true)
+                .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+            )
+            .addIntegerOption((o) =>
+              o.setName("hours").setDescription("Stale threshold in hours (default 48)").setMinValue(1).setMaxValue(NUDGE_MAX_HOURS)
+            )
+        )
+        .addSubcommand((sub) => sub.setName("off").setDescription("Turn off stale nudges"))
+        .addSubcommand((sub) => sub.setName("status").setDescription("Show current nudge settings"))
     ),
 ].map((c) => c.toJSON());
 
@@ -1503,7 +1552,10 @@ client.on("interactionCreate", async (interaction) => {
               "`/config roles` — show current settings\n" +
               "`/config category add <label> [emoji]` — add/update a category\n" +
               "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
-              "`/config category list` — list categories",
+              "`/config category list` — list categories\n" +
+              "`/config nudge set #channel [hours]` — daily digest for long-waiting requests\n" +
+              "`/config nudge off` — turn nudges off\n" +
+              "`/config nudge status` — show nudge settings",
           }
         );
       await respond(interaction, {
@@ -1726,6 +1778,44 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
+      if (group === "nudge") {
+        const nSub = interaction.options.getSubcommand();
+
+        if (nSub === "set") {
+          const channel = interaction.options.getChannel("channel");
+          const hours = interaction.options.getInteger("hours"); // null if omitted
+          const r = setNudgeConfig(data, channel.id, hours ?? undefined);
+          if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+          saveData(data);
+          await respond(interaction, {
+            content: `Stale nudges **on** — daily digest to <#${channel.id}> for requests older than **${data.nudgeThresholdHours}h**.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (nSub === "off") {
+          clearNudge(data);
+          saveData(data);
+          await respond(interaction, { content: "Stale nudges **off**.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        if (nSub === "status") {
+          if (!data.nudgeChannelId) {
+            await respond(interaction, { content: "Stale nudges **off**. Use `/config nudge set` to enable.", flags: MessageFlags.Ephemeral });
+            return;
+          }
+          const dueTs = (data.lastNudgeTs || 0) + NUDGE_CADENCE_MS;
+          const nextLine = data.lastNudgeTs ? `next digest eligible <t:${Math.floor(dueTs / 1000)}:R>` : "next digest eligible on the next hourly check";
+          await respond(interaction, {
+            content: `Stale nudges **on** → <#${data.nudgeChannelId}>, threshold **${data.nudgeThresholdHours ?? 48}h**, ${nextLine}.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+      }
+
       if (sub === "addrole") {
         const role = interaction.options.getRole("role");
         if (data.managerRoleIds.includes(role.id)) {
@@ -1816,6 +1906,9 @@ module.exports = {
   slugify,
   addCategory,
   removeCategory,
+  setNudgeConfig,
+  clearNudge,
+  readAndShape,
   categorySuggestions,
   hasOpenEntry,
   newHelpEntry,
