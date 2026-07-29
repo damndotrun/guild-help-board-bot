@@ -794,6 +794,11 @@ test("clearNudge: disables by nulling the channel", () => {
 
 test("emptyData/readAndShape: nudge fields default safely", () => {
   const empty = bot.emptyData ? bot.emptyData() : null;
+  if (empty) {
+    assert.equal(empty.nudgeChannelId, null);
+    assert.equal(empty.nudgeThresholdHours, 48);
+    assert.equal(empty.lastNudgeTs, null);
+  }
   // readAndShape via a minimal raw object
   const shaped = bot.readAndShape(JSON.stringify({}));
   assert.equal(shaped.nudgeChannelId, null);
@@ -803,6 +808,12 @@ test("emptyData/readAndShape: nudge fields default safely", () => {
   assert.equal(shaped2.nudgeChannelId, "c");
   assert.equal(shaped2.nudgeThresholdHours, 12);
   assert.equal(shaped2.lastNudgeTs, 5);
+});
+
+test("readAndShape: clamps nudgeThresholdHours (0/negative → 48; valid passes through)", () => {
+  assert.equal(bot.readAndShape(JSON.stringify({ nudgeThresholdHours: 0 })).nudgeThresholdHours, 48);
+  assert.equal(bot.readAndShape(JSON.stringify({ nudgeThresholdHours: -5 })).nudgeThresholdHours, 48);
+  assert.equal(bot.readAndShape(JSON.stringify({ nudgeThresholdHours: 12 })).nudgeThresholdHours, 12);
 });
 
 test("staleEntries: open + past threshold only; excludes done and null ts", () => {
@@ -826,6 +837,12 @@ test("dueForNudge: null lastNudgeTs is due; respects the cadence boundary", () =
   assert.equal(bot.dueForNudge({}, 5000, cad), true);                      // never nudged → due
   assert.equal(bot.dueForNudge({ lastNudgeTs: 4000 }, 5000, cad), true);   // exactly cadence → due
   assert.equal(bot.dueForNudge({ lastNudgeTs: 4001 }, 5000, cad), false);  // just under → not due
+});
+
+test("dueForNudge: a future lastNudgeTs (clock stepped backward) is treated as due", () => {
+  const now = 1_000_000;
+  const cad = 86_400_000;
+  assert.equal(bot.dueForNudge({ lastNudgeTs: now + 3 * 86_400_000 }, now, cad), true);
 });
 
 test("nudgeDigestEmbed: groups by category, shows names + waits, no id leak", () => {
@@ -858,4 +875,37 @@ test("nudgeDigestEmbed: left-guild requester falls back, not raw id/null", () =>
   const json = JSON.stringify(embed.data);
   assert.match(json, /left the server/i);
   assert.doesNotMatch(json, /null/);
+});
+
+test("nudgeDigestEmbed: budgets total embed size under heavy load (8 cats x 30 stale)", () => {
+  const now = 1_000_000;
+  const categories = [];
+  for (let i = 0; i < 8; i++) categories.push({ id: `cat${i}`, label: `Category${i}`, emoji: "🔥", archived: false });
+  const data = { nudgeThresholdHours: 48, categories };
+  const names = {};
+  const stale = [];
+  for (let c = 0; c < 8; c++) {
+    for (let n = 0; n < 30; n++) {
+      const uid = `u${c}_${n}`;
+      names[uid] = "x".repeat(20);
+      stale.push({ userId: uid, category: `cat${c}`, ts: now - 500_000 });
+    }
+  }
+  const embed = bot.nudgeDigestEmbed(data, stale, names, now);
+  const totalFieldChars = embed.data.fields.reduce((sum, f) => sum + f.name.length + f.value.length, 0);
+  assert.ok(totalFieldChars < 6000, `expected total field chars < 6000, got ${totalFieldChars}`);
+  assert.ok(embed.data.fields.length <= 25, `expected <= 25 fields, got ${embed.data.fields.length}`);
+  assert.match(embed.data.title, /240/); // true total, not the shown subset
+});
+
+test("nudgeDigestEmbed: 26 distinct categories does not throw and caps fields at 25", () => {
+  const now = 1_000_000;
+  const categories = [];
+  for (let i = 0; i < 26; i++) categories.push({ id: `cat${i}`, label: `C${i}`, emoji: "⭐", archived: false });
+  const data = { nudgeThresholdHours: 48, categories };
+  const stale = categories.map((c, i) => ({ userId: `u${i}`, category: c.id, ts: now - 100_000 }));
+  assert.doesNotThrow(() => {
+    const embed = bot.nudgeDigestEmbed(data, stale, {}, now);
+    assert.ok(embed.data.fields.length <= 25, `expected <= 25 fields, got ${embed.data.fields.length}`);
+  });
 });

@@ -189,7 +189,12 @@ function readAndShape(raw) {
     managerRoleIds: Array.isArray(parsed.managerRoleIds) ? parsed.managerRoleIds : [],
     notifyRoleId: parsed.notifyRoleId ?? null,
     nudgeChannelId: parsed.nudgeChannelId ?? null,
-    nudgeThresholdHours: Number.isInteger(parsed.nudgeThresholdHours) ? parsed.nudgeThresholdHours : 48,
+    nudgeThresholdHours:
+      Number.isInteger(parsed.nudgeThresholdHours) &&
+      parsed.nudgeThresholdHours >= 1 &&
+      parsed.nudgeThresholdHours <= NUDGE_MAX_HOURS
+        ? parsed.nudgeThresholdHours
+        : 48,
     lastNudgeTs: typeof parsed.lastNudgeTs === "number" ? parsed.lastNudgeTs : null,
     seasons: Array.isArray(parsed.seasons) ? parsed.seasons : [],
     records: Array.isArray(parsed.records) ? parsed.records : [],
@@ -262,6 +267,12 @@ const LOCK_REFRESH_MS = 30_000; // heartbeat cadence (well under the stale windo
 const NUDGE_TICK_MS = 60 * 60 * 1000;      // hourly tick
 const NUDGE_CADENCE_MS = 24 * 60 * 60 * 1000; // at most one digest per day
 const NUDGE_MAX_HOURS = 8760;              // 1 year — sane upper bound for the threshold
+
+// In-memory-only guard against re-posting (with the role ping) within the same
+// process if persistence fails after a successful send — see nudgeTick. Not
+// persisted: a single extra digest after an actual restart is acceptable; the
+// persisted data.lastNudgeTs remains the cross-restart source of truth.
+let lastNudgePostTs = 0;
 
 function readLock() {
   try {
@@ -479,27 +490,71 @@ function staleEntries(entries, now, thresholdMs) {
 
 // Has a full cadence elapsed since the last digest? now injected.
 function dueForNudge(data, now, cadenceMs) {
+  if (data.lastNudgeTs > now) return true; // clock stepped backward / corrupt future stamp ⇒ due
   return now - (data.lastNudgeTs || 0) >= cadenceMs;
 }
 
 // Build the reminder digest: stale requests grouped by category, each showing
 // the requester's live name and how long they've waited. now injected.
+//
+// Budgeted so the embed can never exceed Discord's limits (25 fields, ~6000
+// aggregate chars): an overloaded board must still post a (truncated) digest
+// every day rather than fail channel.send identically hour after hour. When
+// categories/chars don't all fit, the true total (stale.length) still shows in
+// the title, and one final field summarizes what got dropped.
 function nudgeDigestEmbed(data, stale, names, now) {
   const byCat = {};
   for (const e of stale) (byCat[e.category] || (byCat[e.category] = [])).push(e);
+  const catIds = Object.keys(byCat);
+
+  const title = `⏰ ${stale.length} request(s) still waiting`;
+  const description = `These have waited longer than **${data.nudgeThresholdHours ?? 48}h**. Anyone free to help?`;
+
+  const MAX_FIELDS = 25;
+  const MAX_CHARS = 5500;
+  let runningChars = title.length + description.length;
+
   const fields = [];
-  for (const id of Object.keys(byCat)) {
+  let cutIndex = catIds.length; // index of the first category NOT included
+
+  for (let i = 0; i < catIds.length; i++) {
+    const id = catIds[i];
     const c = catOf(data, id);
     const lines = byCat[id]
       .slice()
       .sort((a, b) => a.ts - b.ts) // longest-waiting first
       .map((e) => `• ${names[e.userId] || "(left the server)"} — waiting **${formatDuration(now - e.ts)}**`);
-    fields.push({ name: `${c.emoji} ${c.label}`, value: renderField(lines) });
+    const name = `${c.emoji} ${c.label}`;
+    const value = renderField(lines);
+    const addedChars = name.length + value.length;
+
+    if (fields.length >= MAX_FIELDS || runningChars + addedChars > MAX_CHARS) {
+      cutIndex = i;
+      break;
+    }
+    fields.push({ name, value });
+    runningChars += addedChars;
   }
+
+  if (cutIndex < catIds.length) {
+    // Truncated. Make room for one overflow field if every slot is already used.
+    if (fields.length >= MAX_FIELDS) {
+      fields.pop();
+      cutIndex -= 1; // the evicted category is now also dropped
+    }
+    let droppedReqCount = 0;
+    for (let j = cutIndex; j < catIds.length; j++) droppedReqCount += byCat[catIds[j]].length;
+    const droppedCatCount = catIds.length - cutIndex;
+    fields.push({
+      name: "…",
+      value: `_…and ${droppedReqCount} more request(s) across ${droppedCatCount} more categor${droppedCatCount === 1 ? "y" : "ies"}_`,
+    });
+  }
+
   return new EmbedBuilder()
     .setColor(0xd9822b)
-    .setTitle(`⏰ ${stale.length} request(s) still waiting`)
-    .setDescription(`These have waited longer than **${data.nudgeThresholdHours ?? 48}h**. Anyone free to help?`)
+    .setTitle(title)
+    .setDescription(description)
     .addFields(fields.length ? fields : [{ name: "—", value: "None." }]);
 }
 
@@ -844,7 +899,11 @@ async function nudgeTick(client) {
     const data = loadData();
     if (!data.nudgeChannelId) return;                 // disabled
     const now = Date.now();
-    if (!dueForNudge(data, now, NUDGE_CADENCE_MS)) return;
+    // Persisted lastNudgeTs is the cross-restart source of truth; lastNudgePostTs
+    // is an in-memory-only backstop so a persistence failure right after a
+    // successful send (corrupt data.json, ENOSPC, process death) can't make THIS
+    // process re-post a full digest + role ping again before the day is up.
+    if (!dueForNudge(data, now, NUDGE_CADENCE_MS) || now - lastNudgePostTs < NUDGE_CADENCE_MS) return;
     const thresholdMs = (data.nudgeThresholdHours ?? 48) * 60 * 60 * 1000;
     const stale = staleEntries(data.entries, now, thresholdMs);
     if (stale.length === 0) return;
@@ -854,6 +913,7 @@ async function nudgeTick(client) {
 
     const names = await resolveNames(channel.guild, data); // read-only
     const embed = nudgeDigestEmbed(data, stale, names, now);
+    lastNudgePostTs = now; // set BEFORE the send so a throw during/after send still blocks a same-process re-post
     await channel.send({
       content: data.notifyRoleId ? `<@&${data.notifyRoleId}>` : undefined,
       embeds: [embed],
@@ -866,7 +926,7 @@ async function nudgeTick(client) {
     fresh.lastNudgeTs = now;
     saveData(fresh);
   } catch (err) {
-    console.error("nudgeTick failed:", err.message);
+    console.error("nudgeTick failed:", err?.message ?? err);
   }
 }
 
@@ -1214,6 +1274,11 @@ client.once("clientReady", () => {
   console.log(`Logged in as ${client.user.tag}`);
   const nudgeTimer = setInterval(() => nudgeTick(client), NUDGE_TICK_MS);
   nudgeTimer.unref(); // never keep the process alive for the nudge timer alone
+  // One delayed startup kick: the deploy model is "restart = git pull", so
+  // without this the first possible digest is up to an hour after every
+  // routine deploy — the daily cadence gate makes the extra call harmless
+  // when a digest isn't actually due.
+  setTimeout(() => nudgeTick(client), 60_000).unref();
 });
 
 // ---------- button handling (one-click officer actions) ----------
