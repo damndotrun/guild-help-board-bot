@@ -24,7 +24,12 @@ run `/help` in Discord).
 | `/board` | Officers | Posts the live board in the current channel and pins it |
 | `/reset` | Officers | Quick-closes the board for a new season (archives the totals for `/stats`) |
 | `/season` | Officers | Season control panel: start a new **named** season, rename the current or a past one |
-| `/config addrole\|removerole\|roles\|notify\|category` | Admins (Manage Server) | Manager roles, request-ping settings, board categories |
+| `/config addrole\|removerole\|roles\|notify\|category\|nudge` | Admins (Manage Server) | Manager roles, request-ping settings, board categories, stale-request nudges |
+
+**Stale nudges** (off by default): `/config nudge set #channel [hours]` posts a
+once-a-day reminder digest for requests waiting longer than the threshold
+(default 48h), pinging the notify role once. It only reminds — it never removes
+anything. `/config nudge off` and `/config nudge status` manage it.
 
 Officers can also resolve a request without typing: every `/needhelp` posts a
 card with **✅ Sorted** / **🗑️ Remove** buttons. Clicking updates the card, the
@@ -144,12 +149,13 @@ on a dataset so it survives restarts.
 > `data.json` (e.g. `pm2` cluster mode, or a second copy elsewhere) can
 > overwrite each other.
 
-> **⚠️ Don't roll back to a version older than the helper-stats release.** The
-> bot only keeps the `data.json` fields it knows about when it saves. Once the
-> helper-stats build has run, `data.json` holds the append-only `records` log;
-> starting an older build against that same file will drop the log on its first
-> save. If you must roll back, restore `data.json` from the `data.json.bak`
-> sidecar first (or keep a copy).
+> **⚠️ Don't roll back to a version older than the current release.** The
+> bot only keeps the `data.json` fields it knows about when it saves. Later
+> builds added fields the older ones don't recognise — the append-only `records`
+> log (helper-stats) and the stale-nudge settings (`nudgeChannelId`,
+> `nudgeThresholdHours`, `lastNudgeTs`). Starting an older build against that
+> same file drops those fields on its first save. If you must roll back, restore
+> `data.json` from the `data.json.bak` sidecar first (or keep a copy).
 
 ### Option B — Railway / Render / VPS
 

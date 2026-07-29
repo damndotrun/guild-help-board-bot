@@ -47,6 +47,9 @@ tricky bits don't get re-broken.
   ],
   "managerRoleIds": [],        // roles that can run officer actions (set via /config)
   "notifyRoleId": null,        // pinged on new request cards (/config notify)
+  "nudgeChannelId": null,      // stale-nudge digest channel — the on/off switch (/config nudge)
+  "nudgeThresholdHours": 48,   // a request older than this is "stale"
+  "lastNudgeTs": null,         // when the last daily digest posted (the daily gate)
   "seasons": [],               // archived summaries pushed by /reset (byCategory now generic)
   "categories": [              // configurable categories (seeded with the two defaults)
     { "id": "seasonrun5k", "label": "Season Run 5K", "emoji": "🏃", "archived": false }
@@ -317,6 +320,55 @@ adapts to any guild goal without a code change.
   `allTimeEmbed`, `memberEmbed`, `seasonHelperEmbed`, `handleStatsCommand`,
   `handleStatsView`, `handleStatsMember`, `resolveIds`. Namespace: `stats:view`
   (StringSelect) + `stats:member` (UserSelect).
+
+## Stale nudges + `/config nudge` (latest round)
+
+- **Three additive `data` fields** — `nudgeChannelId` (the on/off switch),
+  `nudgeThresholdHours` (default 48), `lastNudgeTs` (the daily gate). Defaulted
+  in both `readAndShape` and `emptyData`; migration-free. `readAndShape` also
+  **clamps** `nudgeThresholdHours` to `1..NUDGE_MAX_HOURS` (a hand-edited `0`/
+  negative would make every request instantly "stale").
+- **`/config nudge set|off|status`** (a subcommand group beside `category`).
+  `set` restricts the channel option to text/announcement types and validates
+  `hours` at both the slash-command layer *and* in `setNudgeConfig`
+  (`Number.isInteger && 1..8760`) — the float/zero/absurd crash-class this
+  project has hit before (cf. M7). `set` is the on switch; `off` nulls the
+  channel but keeps the threshold; `status` shows channel/threshold/next-eligible.
+- **Pure helpers (exported, `now`-injected, unit-tested):**
+  `setNudgeConfig`/`clearNudge` (config mutation), `staleEntries(entries, now,
+  thresholdMs)` (open + past-threshold), `dueForNudge(data, now, cadenceMs)`
+  (daily gate; treats a **future `lastNudgeTs`** as due, guarding a
+  backward clock step), `nudgeDigestEmbed(data, stale, names, now)` (category-
+  grouped reminder). None call `Date.now()` — the tick passes it.
+- **`nudgeTick(client)` + hourly interval.** A `.unref()`'d
+  `setInterval(NUDGE_TICK_MS = 1h)` plus one `setTimeout(…, 60s).unref()`
+  startup-kick, both armed in `clientReady` (inside the `require.main` guard, so
+  inert under tests). The tick: off-by-default guard → daily gate
+  (`NUDGE_CADENCE_MS = 24h`) → `staleEntries` → post one digest (pinging
+  `notifyRoleId` once via a **narrow `allowedMentions` override** — `{roles:[id]}`
+  or `{parse:[]}`, the global `{parse:[]}` untouched) → **re-load-patch-save**
+  `lastNudgeTs` (invariant #1: an await happened since load). A **failed post
+  does not stamp** `lastNudgeTs` (retry preserved). The whole body is
+  try/catch'd (`err?.message ?? err`) so a transient error never crashes or
+  blocks the next tick.
+- **Two hardening fixes from the opus+Fable final review (both "silent-failure"
+  class):** (1) **embed budget** — the digest is the first surface that builds a
+  1024-capped field *per category*, so it can blow Discord's 6000-char / 25-field
+  embed limit → `send` rejects → the digest silently never posts and re-fails
+  hourly. `nudgeDigestEmbed` now budgets (≤25 fields **and** ~5500 chars) and
+  appends one "…and N more" overflow field; the title still shows the *true*
+  total. (2) **post-send persist guard** — if `saveData` throws *after* a
+  successful `send` (corrupt file, ENOSPC on the NAS), `lastNudgeTs` never
+  persists → the next tick re-posts *with the role ping*, hourly. A module-level
+  in-memory `lastNudgePostTs` (set *before* `send`) is folded into the due gate:
+  persisted `lastNudgeTs` stays the cross-restart source of truth; the in-memory
+  guard stops the *same process* from re-pinging when persistence fails.
+- Key helpers/handlers: `setNudgeConfig`, `clearNudge`, `staleEntries`,
+  `dueForNudge`, `nudgeDigestEmbed`, `nudgeTick`, constants `NUDGE_TICK_MS`/
+  `NUDGE_CADENCE_MS`/`NUDGE_MAX_HOURS`, `lastNudgePostTs`. The `/config` handler
+  gained a `group === "nudge"` branch; `clientReady` starts the timers.
+- **Invariant #6 (record log) is N/A here** — a nudge resolves nothing and
+  writes no record; it only reads open entries and reminds.
 
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 

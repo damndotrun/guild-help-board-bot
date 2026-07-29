@@ -119,6 +119,23 @@ stats and on already-sorted cards. You can't remove the last active category.
 ### `/config category list`
 Shows the active and archived categories.
 
+### `/config nudge set #channel [hours]`
+Turns on **stale nudges**: once a day, if any request has been waiting longer
+than the threshold, the bot posts a short reminder digest (grouped by category)
+to that channel and pings your notify role once. `hours` is optional — the
+threshold defaults to **48** and stays whatever you last set. Example:
+`/config nudge set #officer-chat 24`.
+
+### `/config nudge off`
+Turns stale nudges back off (your threshold is remembered for next time).
+
+### `/config nudge status`
+Shows whether nudges are on, which channel, the threshold, and when the next
+digest is eligible.
+
+> Nudges are **off until you set a channel**, only **remind** (they never remove
+> anything), and post **at most once a day** — so they won't spam officers.
+
 > If no manager roles are set, only members with **Manage Server** can manage
 > the board — so you can never lock yourself out.
 
