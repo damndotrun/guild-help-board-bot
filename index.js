@@ -156,9 +156,10 @@ function clearNudge(data) {
   return { ok: true };
 }
 
-function categorySuggestions(data, typed) {
+function categorySuggestions(data, typed, excludeId) {
   const q = (typed || "").toLowerCase();
   return activeCategories(data)
+    .filter((c) => c.id !== excludeId)
     .filter((c) => c.label.toLowerCase().includes(q))
     .slice(0, 25)
     .map((c) => ({ name: `${c.emoji} ${c.label}`.slice(0, 100), value: c.id }));
@@ -617,6 +618,28 @@ function statsPanelComponents(data, selected = "current") {
     .setMinValues(1)
     .setMaxValues(1);
   return [new ActionRowBuilder().addComponents(view), new ActionRowBuilder().addComponents(member)];
+}
+
+// Recover the currently-selected value of the "stats:view" string-select menu
+// from a message's components array, so a follow-up interaction (e.g. the
+// stats:member UserSelect) can preserve it instead of snapping back to a
+// default. Pure/read-only. `components` may be discord.js Message component
+// instances (getters: .customId/.options), raw API objects (.custom_id/
+// .options), or builder instances (nested under .data) — handled defensively
+// since the exact shape depends on where the caller got the message from.
+// Returns the selected option's value, or null if not found.
+function selectedViewFrom(components) {
+  for (const row of components || []) {
+    const rowComponents = row?.components || row?.data?.components || [];
+    for (const comp of rowComponents) {
+      const customId = comp?.customId ?? comp?.custom_id ?? comp?.data?.custom_id ?? comp?.data?.customId;
+      if (customId !== "stats:view") continue;
+      const options = comp?.options ?? comp?.data?.options ?? [];
+      const picked = options.find((o) => o?.default);
+      return picked ? picked.value ?? null : null;
+    }
+  }
+  return null;
 }
 
 // Medal-prefixed leaderboard lines from [[id, n], …], names resolved.
@@ -1471,7 +1494,8 @@ async function handleStatsMember(interaction) {
   const data = loadData();
   const helperId = interaction.values[0];
   const name = (await memberName(interaction.guild, helperId)) || "(left the server)";
-  await interaction.editReply({ embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, "current") });
+  const view = selectedViewFrom(interaction.message?.components) || "current";
+  await interaction.editReply({ embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, view) });
 }
 
 async function handleSeasonCommand(interaction, data) {
@@ -1567,7 +1591,8 @@ client.on("interactionCreate", async (interaction) => {
         const focused = interaction.options.getFocused(true);
         if (focused.name === "category" || focused.name === "moveto") {
           const data = loadData();
-          await interaction.respond(categorySuggestions(data, focused.value));
+          const excludeId = focused.name === "moveto" ? interaction.options.getString("category") || undefined : undefined;
+          await interaction.respond(categorySuggestions(data, focused.value, excludeId));
         } else {
           await interaction.respond([]);
         }
@@ -1922,10 +1947,13 @@ client.on("interactionCreate", async (interaction) => {
             content: `Archived **${label}**.${extra}${merged}`,
             flags: MessageFlags.Ephemeral,
           });
-          // Slow REST after the ack: finalize dropped cards, re-render moved ones, refresh board.
+          // Slow REST after the ack. `data` (with the reassigned categories) is
+          // already saved, so refresh the board FIRST — it rebuilds straight from
+          // `data` and needs no per-entry REST, so it's correct sooner. Only the
+          // individual request cards still need their own sequential REST edit.
+          await refreshBoard(client, data);
           for (const e of r.dropped || []) await resolveCard(client, e, `Merged into ${catOf(data, moveto).label}.`);
           for (const e of r.moved || []) await rerenderCard(client, data, e);
-          await refreshBoard(client, data);
           return;
         }
 
@@ -2103,6 +2131,7 @@ module.exports = {
   dueForNudge,
   nudgeDigestEmbed,
   statsViewOptions,
+  selectedViewFrom,
   currentStatsEmbed,
   allTimeEmbed,
   memberEmbed,

@@ -394,6 +394,18 @@ test("categorySuggestions: active only, substring, ≤25, {name,value}", () => {
   assert.equal(all.find((c) => c.value === "mvp5k").name, "⭐ MVP 5K");       // emoji + label
 });
 
+test("categorySuggestions: excludeId omits that id, keeps the rest", () => {
+  const data = { categories: [
+    { id: "guild-boss", label: "Guild Boss", emoji: "👹", archived: false },
+    { id: "mvp5k", label: "MVP 5K", emoji: "⭐", archived: false },
+  ] };
+  const excluded = bot.categorySuggestions(data, "", "guild-boss");
+  assert.deepEqual(excluded.map((c) => c.value), ["mvp5k"]);
+  // no excludeId -> unchanged behavior
+  const all = bot.categorySuggestions(data, "");
+  assert.deepEqual(all.map((c) => c.value).sort(), ["guild-boss", "mvp5k"]);
+});
+
 test("stats aggregation is category-agnostic and back-compatible", () => {
   const done = [
     { category: "seasonrun5k", done: true }, { category: "guild-boss", done: true },
@@ -768,6 +780,30 @@ test("statsViewOptions: current (default) + all-time + past newest-first", () =>
   assert.equal(opts[0].default, true);
   assert.equal(opts[1].value, "alltime");
   assert.deepEqual(opts.slice(2).map((o) => o.value), ["200", "100"]); // newest past first
+});
+
+test("selectedViewFrom: recovers the stats:view menu's selected option", () => {
+  const components = [
+    {
+      components: [
+        {
+          customId: "stats:view",
+          options: [
+            { label: "Current season", value: "current", default: false },
+            { label: "All-time", value: "alltime", default: true },
+          ],
+        },
+      ],
+    },
+    { components: [{ customId: "stats:member" }] },
+  ];
+  assert.equal(bot.selectedViewFrom(components), "alltime");
+});
+
+test("selectedViewFrom: missing stats:view select -> null", () => {
+  assert.equal(bot.selectedViewFrom([{ components: [{ customId: "stats:member" }] }]), null);
+  assert.equal(bot.selectedViewFrom([]), null);
+  assert.equal(bot.selectedViewFrom(undefined), null);
 });
 
 test("allTimeEmbed: shows leaderboard names, no raw null/id leak", () => {
