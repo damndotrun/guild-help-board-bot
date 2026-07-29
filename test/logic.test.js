@@ -602,3 +602,58 @@ test("closeSeason: logs unresolved records for pending, not for done", () => {
   assert.deepEqual(unresolved.map((r) => r.reqId).sort(), ["p1", "p2"]);
   assert.equal(unresolved[0].seasonStartedTs, 100);                    // closing season's identity
 });
+
+const RECS = [
+  { resolution: "sorted", helperId: "h1", requesterId: "u1", category: "a", requestedTs: 0,  resolvedTs: 100, seasonStartedTs: 1 },
+  { resolution: "sorted", helperId: "h1", requesterId: "u2", category: "a", requestedTs: 0,  resolvedTs: 300, seasonStartedTs: 1, claimedById: "h1", claimedTs: 100 },
+  { resolution: "sorted", helperId: "h2", requesterId: "u1", category: "b", requestedTs: 50, resolvedTs: 60,  seasonStartedTs: 2 },
+  { resolution: "self",   requesterId: "u3", category: "a", requestedTs: 0, resolvedTs: 10,  seasonStartedTs: 2 },
+  { resolution: "removed", requesterId: "u4", category: "b", requestedTs: 0, resolvedTs: 5,  seasonStartedTs: 2 },
+  { resolution: "unresolved", requesterId: "u5", category: "a", requestedTs: 0, resolvedTs: 9, seasonStartedTs: 2 },
+];
+
+test("recordsForSeason: filters by immutable season identity", () => {
+  assert.equal(bot.recordsForSeason(RECS, 1).length, 2);
+  assert.equal(bot.recordsForSeason(RECS, 2).length, 4);
+  assert.equal(bot.recordsForSeason(RECS, 999).length, 0);
+});
+
+test("helperTotals: counts sorted per helper, desc", () => {
+  assert.deepEqual(bot.helperTotals(RECS), [["h1", 2], ["h2", 1]]);
+  assert.deepEqual(bot.helperTotals([]), []);
+});
+
+test("requesterTotals: counts help received (sorted + self), desc", () => {
+  // u1 sorted x2, u2 sorted x1, u3 self x1 ; removed/unresolved excluded
+  assert.deepEqual(bot.requesterTotals(RECS), [["u1", 2], ["u2", 1], ["u3", 1]]);
+});
+
+test("categoryWait: mean-ready sums over valid sorted only", () => {
+  const cw = bot.categoryWait(RECS);
+  assert.deepEqual(cw.a, { waitMs: 400, waitN: 2 }); // 100 + 300
+  assert.deepEqual(cw.b, { waitMs: 10, waitN: 1 });  // 60 - 50
+});
+
+test("helperBreakdown: per-category counts, wait, and claim-validity rule", () => {
+  const h1 = bot.helperBreakdown(RECS, "h1");
+  assert.equal(h1.total, 2);
+  assert.equal(h1.byCat.a.n, 2);
+  assert.equal(h1.byCat.a.waitMs, 400);
+  assert.equal(h1.byCat.a.waitN, 2);
+  assert.equal(h1.byCat.a.claimN, 1);         // only the record where claimedById === h1
+  assert.equal(h1.byCat.a.claimMs, 200);      // 300 - 100
+  const h2 = bot.helperBreakdown(RECS, "h2");
+  assert.equal(h2.byCat.b.claimN, 0);         // no claim on that record
+  assert.deepEqual(bot.helperBreakdown(RECS, "nobody"), { byCat: {}, total: 0 });
+});
+
+test("helperBreakdown: claim by a different helper is excluded (C1 rule)", () => {
+  const recs = [{ resolution: "sorted", helperId: "B", requesterId: "u", category: "a", requestedTs: 0, resolvedTs: 100, claimedById: "A", claimedTs: 10 }];
+  const b = bot.helperBreakdown(recs, "B");
+  assert.equal(b.byCat.a.n, 1);
+  assert.equal(b.byCat.a.claimN, 0);          // claim belonged to A, not the sorter B
+});
+
+test("demandSummary: counts by resolution", () => {
+  assert.deepEqual(bot.demandSummary(RECS), { sorted: 3, self: 1, removed: 1, unresolved: 1 });
+});

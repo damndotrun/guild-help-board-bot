@@ -378,6 +378,67 @@ function logRecord(data, record) {
   }
 }
 
+// ---------- pure query helpers (read-only, derived from records) ----------
+
+function recordsForSeason(records, seasonStartedTs) {
+  return (records || []).filter((r) => r.seasonStartedTs === seasonStartedTs);
+}
+
+function helperTotals(records) {
+  const t = {};
+  for (const r of records || []) {
+    if (r.resolution === "sorted" && r.helperId) t[r.helperId] = (t[r.helperId] || 0) + 1;
+  }
+  return Object.entries(t).sort((a, b) => b[1] - a[1]);
+}
+
+function requesterTotals(records) {
+  const t = {};
+  for (const r of records || []) {
+    if ((r.resolution === "sorted" || r.resolution === "self") && r.requesterId) {
+      t[r.requesterId] = (t[r.requesterId] || 0) + 1;
+    }
+  }
+  return Object.entries(t).sort((a, b) => b[1] - a[1]);
+}
+
+// Valid timing = both stamps present and end >= start.
+function validWait(start, end) {
+  return start != null && end != null && end >= start;
+}
+
+function categoryWait(records) {
+  const out = {};
+  for (const r of records || []) {
+    if (r.resolution !== "sorted" || !validWait(r.requestedTs, r.resolvedTs)) continue;
+    const c = out[r.category] || (out[r.category] = { waitMs: 0, waitN: 0 });
+    c.waitMs += r.resolvedTs - r.requestedTs;
+    c.waitN += 1;
+  }
+  return out;
+}
+
+function helperBreakdown(records, helperId) {
+  const byCat = {};
+  let total = 0;
+  for (const r of records || []) {
+    if (r.resolution !== "sorted" || r.helperId !== helperId) continue;
+    total += 1;
+    const c = byCat[r.category] || (byCat[r.category] = { n: 0, waitMs: 0, waitN: 0, claimMs: 0, claimN: 0 });
+    c.n += 1;
+    if (validWait(r.requestedTs, r.resolvedTs)) { c.waitMs += r.resolvedTs - r.requestedTs; c.waitN += 1; }
+    // Claim timing only when the sorter is the claimer (C1): otherwise misattributed.
+    if (r.claimedById === helperId && validWait(r.claimedTs, r.resolvedTs)) { c.claimMs += r.resolvedTs - r.claimedTs; c.claimN += 1; }
+  }
+  return { byCat, total };
+}
+
+function demandSummary(records) {
+  const s = { sorted: 0, self: 0, removed: 0, unresolved: 0 };
+  for (const r of records || []) if (r.resolution in s) s[r.resolution] += 1;
+  return s;
+}
+
 // Archive the current season (only if it has sorted entries) and clear the
 // board. Mutates data. `now` is injected for determinism. Returns the archived
 // season object, or null when there was nothing to archive.
@@ -1671,6 +1732,12 @@ module.exports = {
   makeRecord,
   logRecord,
   RECORD_CAP,
+  recordsForSeason,
+  helperTotals,
+  requesterTotals,
+  categoryWait,
+  helperBreakdown,
+  demandSummary,
 };
 
 if (require.main === module) {
