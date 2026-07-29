@@ -700,6 +700,27 @@ test("toggleClaim: sets claimedTs on claim, clears on release, overwrites on re-
   assert.equal(e.claimedTs, 300);                                         // blocked leaves it
 });
 
+test("releaseClaim: clears claimedBy/claimedTs and returns the entry", () => {
+  const e = { claimedBy: "o1", claimedTs: 100 };
+  const result = bot.releaseClaim(e);
+  assert.equal(e.claimedBy, null);
+  assert.equal(e.claimedTs, null);
+  assert.equal(result, e); // returns the same entry, mutated
+});
+
+test("releaseClaim then toggleClaim: a new officer can claim after the stale holder is released", () => {
+  // Regression guard for M8: the claim button's "blocked" branch used to leave
+  // entry.claimedBy set forever once the holder left the guild. releaseClaim
+  // is the pure seam the handler uses to clear it before re-running toggleClaim.
+  const e = { claimedBy: "o1", claimedTs: 100 };
+  bot.releaseClaim(e);
+  const r = bot.toggleClaim(e, "o2", 200);
+  assert.notEqual(r.action, "blocked");
+  assert.deepEqual(r, { action: "claimed", by: "o2" });
+  assert.equal(e.claimedBy, "o2");
+  assert.equal(e.claimedTs, 200);
+});
+
 test("closeSeason: logs unresolved records for pending, not for done", () => {
   const data = {
     entries: [

@@ -1042,6 +1042,15 @@ function toggleClaim(entry, officerId, now) {
   return { action: "blocked", by: entry.claimedBy };
 }
 
+// Clear a stale claim (the holder is no longer a guild member) so the next
+// toggleClaim call lets a new officer take it instead of staying "blocked"
+// forever. Pure — no guild access, no Date.now.
+function releaseClaim(entry) {
+  entry.claimedBy = null;
+  entry.claimedTs = null;
+  return entry;
+}
+
 // ---------- help-request cards (one-click officer actions) ----------
 function requestButtons(entryId) {
   return new ActionRowBuilder().addComponents(
@@ -1390,20 +1399,45 @@ async function handleButton(interaction) {
     await refreshBoard(client, data);
   } else if (action === "claim") {
     const byName = interaction.member?.displayName || interaction.user.username;
-    const r = toggleClaim(entry, interaction.user.id, Date.now());
+    let r = toggleClaim(entry, interaction.user.id, Date.now());
+    let workingData = data;
+    let workingEntry = entry;
     if (r.action === "blocked") {
+      // memberName returns null both when the holder truly left the guild and
+      // (rarely) on a transient fetch error — either way we treat "unresolvable"
+      // as "no longer a member" per the M8 auto-release design.
       const holder = await memberName(interaction.guild, r.by);
-      await respond(interaction, { content: `🙌 **${holder || "Another officer"}** is already on this.`, flags: MessageFlags.Ephemeral });
-      return;
+      if (holder) {
+        await respond(interaction, { content: `🙌 **${holder}** is already on this.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      // Stale claim — the holder is gone. Invariant #1: the membership check
+      // above was an await since loadData, so re-load fresh, re-find the entry
+      // by id, and apply the release+claim to that copy rather than saving our
+      // now-possibly-stale snapshot.
+      const fresh = loadData();
+      const freshEntry = fresh.entries.find((e) => e.id === entryId);
+      if (!freshEntry || freshEntry.done) {
+        try {
+          await interaction.update({ components: [] });
+        } catch {
+          await respond(interaction, { content: "That request has already been handled.", flags: MessageFlags.Ephemeral });
+        }
+        return;
+      }
+      releaseClaim(freshEntry);
+      r = toggleClaim(freshEntry, interaction.user.id, Date.now());
+      workingData = fresh;
+      workingEntry = freshEntry;
     }
-    saveData(data);
-    const cat = catOf(data, entry.category);
+    saveData(workingData);
+    const cat = catOf(workingData, workingEntry.category);
     await interaction.update({
-      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, entry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(entry.ts ? new Date(entry.ts) : null)],
-      components: [requestButtons(entry.id)],
+      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
+      components: [requestButtons(workingEntry.id)],
       allowedMentions: { parse: [] },
     });
-    await refreshBoard(client, data);
+    await refreshBoard(client, workingData);
   } else {
     // Unknown / future action — acknowledge so Discord doesn't show "failed".
     await respond(interaction, {
@@ -2111,6 +2145,7 @@ module.exports = {
   cardDescription,
   categorySelectOptions,
   toggleClaim,
+  releaseClaim,
   resolveNames,
   seasonLabel,
   closeSeason,
