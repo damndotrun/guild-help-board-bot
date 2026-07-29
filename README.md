@@ -9,7 +9,9 @@ lets officers mark them as sorted once helped. Posts a live, auto-updating
 board message in a channel of your choice.
 
 For a player-facing guide to the commands, see **[USAGE.md](USAGE.md)** (or
-run `/help` in Discord).
+run `/help` in Discord). Officers and admins running the board day to day should
+read the **[Officer & Admin Guide](OFFICER-GUIDE.md)** — task-oriented, with
+troubleshooting and a quick-reference table.
 
 ## Commands
 
