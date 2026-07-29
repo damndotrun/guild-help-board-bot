@@ -1288,3 +1288,59 @@ test("openEntriesFor: only the picked member's open entries appear as select opt
   assert.equal(options[0].value, "1");
   assert.equal(options[0].label, "🏃 Season Run 5K");
 });
+
+// ---------- /config roles panel (M13-T5) ----------
+
+test("rolesPanelEmbed: lists manager roles as mentions and the notify role, with none/off fallbacks", () => {
+  const withRoles = bot.rolesPanelEmbed({ managerRoleIds: ["r1", "r2"], notifyRoleId: "n1" });
+  const json = JSON.stringify(withRoles.data);
+  assert.match(json, /<@&r1>/);
+  assert.match(json, /<@&r2>/);
+  assert.match(json, /<@&n1>/);
+
+  const empty = bot.rolesPanelEmbed({ managerRoleIds: [], notifyRoleId: null });
+  const emptyJson = JSON.stringify(empty.data);
+  assert.match(emptyJson, /none/i);
+  assert.match(emptyJson, /off/i);
+});
+
+test("rolesRemoveSelectOptions: only offers the current manager roles, label via nameOf, value=id", () => {
+  const nameOf = (id) => ({ r1: "Officers", r2: "Helpers" }[id]);
+  const options = bot.rolesRemoveSelectOptions(["r1", "r2"], nameOf);
+  assert.deepEqual(options, [
+    { label: "Officers", value: "r1" },
+    { label: "Helpers", value: "r2" },
+  ]);
+});
+
+test("rolesRemoveSelectOptions: falls back to a placeholder label when nameOf can't resolve (role left the guild)", () => {
+  const options = bot.rolesRemoveSelectOptions(["r1"], () => undefined);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].value, "r1");
+  assert.match(options[0].label, /r1/);
+});
+
+test("rolesRemoveSelectOptions: no manager roles yields an empty array (caller must omit the select)", () => {
+  assert.deepEqual(bot.rolesRemoveSelectOptions([], () => "x"), []);
+  assert.deepEqual(bot.rolesRemoveSelectOptions(undefined, () => "x"), []);
+});
+
+test("rolesPanelComponents: wires roles:add / roles:notify RoleSelects and the roles:notifyclear button", () => {
+  const json = JSON.stringify(bot.rolesPanelComponents({ managerRoleIds: [], notifyRoleId: null }, () => undefined));
+  assert.match(json, /roles:add/);
+  assert.match(json, /roles:notify"/);
+  assert.match(json, /roles:notifyclear/);
+});
+
+test("rolesPanelComponents: omits the roles:remove select when there are no manager roles (no 0-option select)", () => {
+  const json = JSON.stringify(bot.rolesPanelComponents({ managerRoleIds: [], notifyRoleId: null }, () => undefined));
+  assert.doesNotMatch(json, /roles:remove/);
+});
+
+test("rolesPanelComponents: includes the roles:remove select, populated with only current managers, when present", () => {
+  const nameOf = (id) => ({ r1: "Officers" }[id]);
+  const json = JSON.stringify(bot.rolesPanelComponents({ managerRoleIds: ["r1"], notifyRoleId: null }, nameOf));
+  assert.match(json, /roles:remove/);
+  assert.match(json, /"label":"Officers"/);
+  assert.match(json, /"value":"r1"/);
+});

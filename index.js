@@ -14,6 +14,7 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
+  RoleSelectMenuBuilder,
   PermissionFlagsBits,
   MessageFlags,
   ModalBuilder,
@@ -1065,6 +1066,88 @@ function resolveEntryPanelComponents(action, options) {
   return [new ActionRowBuilder().addComponents(select)];
 }
 
+// ---------- /config roles panel (M13-T5) ----------
+// Pure — reads only data.managerRoleIds/notifyRoleId, no discord.js interaction
+// state, so directly unit-testable.
+function rolesPanelEmbed(data) {
+  const roles =
+    (data.managerRoleIds || []).length > 0
+      ? data.managerRoleIds.map((id) => `<@&${id}>`).join(", ")
+      : "_none_ (only Manage Server can manage)";
+  const notify = data.notifyRoleId ? `<@&${data.notifyRoleId}>` : "_off_";
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle("🛡️ Manager roles & notifications")
+    .setDescription(
+      "**Manager roles** can run the officer commands (`/imsorted`, `/helped`, `/remove`, etc.) in addition to anyone with Manage Server.\n" +
+        "**Request ping role** gets @mentioned whenever a new `/needhelp` request comes in — leave it unset for no ping."
+    )
+    .addFields(
+      { name: "Manager roles", value: roles },
+      { name: "Request ping role", value: notify }
+    );
+}
+
+// Options for the roles:remove StringSelect: ONLY the current manager roles,
+// so you can only pick a removable one. label = role name (via nameOf — a
+// small resolver so this stays pure/testable without a real guild), value =
+// role id. Returns [] when there are no manager roles — the caller must omit
+// the select in that case (Discord rejects a select with 0 options).
+function rolesRemoveSelectOptions(managerRoleIds, nameOf) {
+  return (managerRoleIds || []).slice(0, 25).map((id) => ({
+    label: (nameOf(id) || `role ${id}`).slice(0, 100),
+    value: id,
+  }));
+}
+
+// nameOf(id) resolves a role id to its current name (e.g. via the guild's
+// role cache) — kept separate from rolesRemoveSelectOptions so that helper
+// stays pure and unit-testable without discord.js.
+function rolesPanelComponents(data, nameOf) {
+  const rows = [
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId("roles:add")
+        .setPlaceholder("Add a manager role…")
+        .setMinValues(1)
+        .setMaxValues(1)
+    ),
+  ];
+
+  const removeOptions = rolesRemoveSelectOptions(data.managerRoleIds, nameOf);
+  if (removeOptions.length > 0) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("roles:remove")
+          .setPlaceholder("Remove a manager role…")
+          .setMinValues(1)
+          .setMaxValues(1)
+          .addOptions(removeOptions)
+      )
+    );
+  }
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId("roles:notify")
+        .setPlaceholder("Set the request-ping role…")
+        .setMinValues(1)
+        .setMaxValues(1)
+    )
+  );
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("roles:notifyclear")
+        .setLabel("Clear notify role")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  );
+  return rows;
+}
+
 function newHelpEntry(userId, username, categoryId, note) {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1435,7 +1518,7 @@ const commands = [
         )
     )
     .addSubcommand((sub) =>
-      sub.setName("roles").setDescription("List roles and notification settings")
+      sub.setName("roles").setDescription("Open the manager roles & notify-role panel")
     )
     .addSubcommand((sub) =>
       sub
@@ -1859,6 +1942,76 @@ async function handleCatAddModal(interaction) {
   await refreshBoard(client, data);
 }
 
+// ---------- /config roles panel handlers (M13-T5) ----------
+// Resolves a role id to its current name via the guild's role cache — kept
+// separate from rolesRemoveSelectOptions so that helper stays pure/testable
+// without discord.js.
+function roleNameResolver(interaction) {
+  return (id) => interaction.guild?.roles.cache.get(id)?.name;
+}
+
+async function updateRolesPanel(interaction, data) {
+  await interaction.update({
+    embeds: [rolesPanelEmbed(data)],
+    components: rolesPanelComponents(data, roleNameResolver(interaction)),
+  });
+}
+
+// roles:add — RoleSelectMenu pick to add a manager role. Re-check isManager:
+// the panel's customIds aren't bound to the member who ran /config roles, so
+// a differently-permissioned member could click it.
+async function handleRolesAddSelect(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  const roleId = interaction.values[0];
+  if (!data.managerRoleIds.includes(roleId)) {
+    data.managerRoleIds.push(roleId); // dedupe: already-present role is a no-op refresh
+    saveData(data);
+  }
+  await updateRolesPanel(interaction, data);
+}
+
+// roles:remove — StringSelect populated with only the CURRENT manager roles
+// (rolesRemoveSelectOptions), so the picked id is always a real manager role.
+async function handleRolesRemoveSelect(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  const roleId = interaction.values[0];
+  data.managerRoleIds = data.managerRoleIds.filter((id) => id !== roleId);
+  saveData(data);
+  await updateRolesPanel(interaction, data);
+}
+
+// roles:notify — RoleSelectMenu pick to set the request-ping role.
+async function handleRolesNotifySelect(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  data.notifyRoleId = interaction.values[0];
+  saveData(data);
+  await updateRolesPanel(interaction, data);
+}
+
+// roles:notifyclear — button to turn request pings back off.
+async function handleRolesNotifyClear(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  data.notifyRoleId = null;
+  saveData(data);
+  await updateRolesPanel(interaction, data);
+}
+
 // The /reset confirm/cancel buttons. A different member could click these than
 // the one who ran /reset (the warning is ephemeral but the customId isn't
 // bound to a user), so re-check isManager here — don't trust the slash-command
@@ -2039,7 +2192,20 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId.startsWith("season:")) { await handleSeasonButton(interaction); return; }
       if (interaction.customId.startsWith("reset:")) { await handleResetButton(interaction); return; }
       if (interaction.customId.startsWith("imsorted:")) { await handleImsortedButton(interaction); return; }
+      if (interaction.customId === "roles:notifyclear") { await handleRolesNotifyClear(interaction); return; }
       await handleButton(interaction);
+      return;
+    }
+    if (interaction.isRoleSelectMenu() && interaction.customId === "roles:add") {
+      await handleRolesAddSelect(interaction);
+      return;
+    }
+    if (interaction.isRoleSelectMenu() && interaction.customId === "roles:notify") {
+      await handleRolesNotifySelect(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === "roles:remove") {
+      await handleRolesRemoveSelect(interaction);
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === "board:pick") {
@@ -2209,7 +2375,7 @@ client.on("interactionCreate", async (interaction) => {
               "`/config addrole @role` — let a role manage the board\n" +
               "`/config removerole @role` — remove a role\n" +
               "`/config notify @role` — ping a role on new requests\n" +
-              "`/config roles` — show current settings\n" +
+              "`/config roles` — panel: manage roles & the notify role\n" +
               "`/config category add [label] [emoji]` — add/update a category (opens a form if left blank)\n" +
               "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
               "`/config category list` — list categories\n" +
@@ -2566,15 +2732,9 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (sub === "roles") {
-        const roles =
-          data.managerRoleIds.length > 0
-            ? data.managerRoleIds.map((id) => `<@&${id}>`).join(", ")
-            : "_none_ (only Manage Server can manage)";
-        const notify = data.notifyRoleId
-          ? `<@&${data.notifyRoleId}>`
-          : "_off_";
         await respond(interaction, {
-          content: `**Manager roles:** ${roles}\n**Request pings:** ${notify}`,
+          embeds: [rolesPanelEmbed(data)],
+          components: rolesPanelComponents(data, roleNameResolver(interaction)),
           flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] },
         });
@@ -2621,6 +2781,9 @@ module.exports = {
   resolveMemberPanelComponents,
   resolveEntryPanelEmbed,
   resolveEntryPanelComponents,
+  rolesPanelEmbed,
+  rolesRemoveSelectOptions,
+  rolesPanelComponents,
   imsortedPanelEmbed,
   newHelpEntry,
   cardDescription,
