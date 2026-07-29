@@ -795,7 +795,8 @@ function seasonPanelEmbed(data, sortedNow) {
     .setTitle("📅 Seasons")
     .addFields(
       { name: "Current season", value: `**${seasonLabel(cur)}**${since}\n${sortedNow} sorted so far` },
-      { name: "Past seasons", value: pastLines.length ? renderField(pastLines) : "None yet." }
+      { name: "Past seasons", value: pastLines.length ? renderField(pastLines) : "None yet." },
+      { name: "⚠️ Before you start a new season", value: "**Starting a new season closes every pending request** — anyone still waiting gets moved to history as unresolved. This can't be undone." }
     );
 }
 
@@ -805,10 +806,33 @@ function seasonPanelComponents(data) {
     .setPlaceholder("View a season…")
     .addOptions(seasonSelectOptions(data));
   const buttons = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("season:new").setLabel("New season").setEmoji("▶️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("season:new").setLabel("New season (closes pending)").setEmoji("▶️").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("season:rename").setLabel("Rename current").setEmoji("✏️").setStyle(ButtonStyle.Secondary)
   );
   return [new ActionRowBuilder().addComponents(select), buttons];
+}
+
+// The /reset confirmation panel: warns how many members are still waiting
+// before the destructive season wipe (closeSeason). Pure — no discord.js
+// interaction state, so it's directly unit-testable.
+function resetWarningEmbed(data) {
+  const waiting = data.entries.filter((e) => !e.done).length;
+  const who = waiting === 1 ? "member is" : "members are";
+  return new EmbedBuilder()
+    .setColor(0xe67e22)
+    .setTitle("⚠️ Reset the season?")
+    .setDescription(
+      `This archives the current season and clears the board. **${waiting} ${who} still waiting** and their requests will be closed.\nThis can't be undone.`
+    );
+}
+
+function resetWarningComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("reset:confirm").setLabel("Confirm reset").setEmoji("⚠️").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("reset:cancel").setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    ),
+  ];
 }
 
 // ---------- board rendering ----------
@@ -1266,7 +1290,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("reset")
-    .setDescription("Clear the board for a new season"),
+    .setDescription("Archive the season and clear the board (asks you to confirm)"),
 
   // Admin-only: bootstrap which roles may run the officer commands above.
   new SlashCommandBuilder()
@@ -1618,7 +1642,7 @@ async function handleSeasonButton(interaction) {
 
   if (action === "new") {
     const input = new TextInputBuilder().setCustomId("name").setLabel("New season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setPlaceholder("e.g. Season 5 — Winter");
-    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season").addComponents(new ActionRowBuilder().addComponents(input));
+    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season (closes pending requests)").addComponents(new ActionRowBuilder().addComponents(input));
     await interaction.showModal(modal);
     return;
   }
@@ -1694,6 +1718,41 @@ async function handleSeasonModal(interaction) {
   }
 }
 
+// The /reset confirm/cancel buttons. A different member could click these than
+// the one who ran /reset (the warning is ephemeral but the customId isn't
+// bound to a user), so re-check isManager here — don't trust the slash-command
+// check alone.
+async function handleResetButton(interaction) {
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  const action = interaction.customId.split(":")[1]; // confirm | cancel
+
+  if (action === "cancel") {
+    await interaction.update({ content: "Cancelled — nothing changed.", embeds: [], components: [] });
+    return;
+  }
+  if (action === "confirm") {
+    // Invariant #1: no await between loadData and saveData — closeSeason is
+    // synchronous, so this mirrors the old direct /reset wipe exactly, just
+    // moved behind the confirm click.
+    const pending = data.entries.filter((e) => !e.done);
+    closeSeason(data, Date.now());
+    saveData(data);
+    await interaction.update({ content: "Season reset — the board is clear.", embeds: [], components: [] });
+    // Slow REST after the ack + save: close any open request cards so they
+    // don't linger looking actionable, then refresh the live board.
+    for (const e of pending) {
+      await resolveCard(client, e, "Season reset — this request is closed.");
+    }
+    await refreshBoard(client, data);
+    return;
+  }
+  await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+}
+
 client.on("interactionCreate", async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
@@ -1714,6 +1773,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("board:")) { await handleBoardButton(interaction); return; }
       if (interaction.customId.startsWith("season:")) { await handleSeasonButton(interaction); return; }
+      if (interaction.customId.startsWith("reset:")) { await handleResetButton(interaction); return; }
       await handleButton(interaction);
       return;
     }
@@ -1998,15 +2058,13 @@ client.on("interactionCreate", async (interaction) => {
         await respond(interaction, NO_PERM);
         return;
       }
-      const pending = data.entries.filter((e) => !e.done);
-      closeSeason(data, Date.now());
-      saveData(data);
-      await respond(interaction, "Board cleared for the new season. 🌱");
-      // Close any open request cards so they don't linger looking actionable.
-      for (const e of pending) {
-        await resolveCard(client, e, "Season reset — this request is closed.");
-      }
-      await refreshBoard(client, data);
+      // The wipe itself now lives behind the reset:confirm button (see
+      // handleResetButton) — this just shows the warning + waiting count.
+      await respond(interaction, {
+        embeds: [resetWarningEmbed(data)],
+        components: resetWarningComponents(),
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     if (interaction.commandName === "config") {
@@ -2231,6 +2289,7 @@ module.exports = {
   renameSeason,
   seasonPanelEmbed,
   seasonSelectOptions,
+  resetWarningEmbed,
   makeRecord,
   logRecord,
   RECORD_CAP,

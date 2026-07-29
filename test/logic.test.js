@@ -643,6 +643,38 @@ test("seasonPanelEmbed: past-seasons field stays under Discord's 1024 limit with
   assert.ok(pastField.value.length <= 1024, `field is ${pastField.value.length} chars`);
 });
 
+test("seasonPanelEmbed: warns that a new season closes pending requests", () => {
+  const data = {
+    currentSeason: { name: "Now", startedTs: 1 },
+    seasons: [],
+    categories: [],
+    entries: [],
+  };
+  const embed = bot.seasonPanelEmbed(data, 0);
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /new season/i);
+  assert.match(json, /closes every pending request/i);
+});
+
+test("resetWarningEmbed: reports the waiting (not-done) count, singular vs plural", () => {
+  const data = {
+    entries: [
+      { id: "e1", done: false },
+      { id: "e2", done: false },
+      { id: "e3", done: true },
+    ],
+  };
+  const embed = bot.resetWarningEmbed(data);
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /2 members are still waiting/);
+
+  const one = bot.resetWarningEmbed({ entries: [{ id: "e1", done: false }] });
+  assert.match(JSON.stringify(one.data), /1 member is still waiting/);
+
+  const none = bot.resetWarningEmbed({ entries: [{ id: "e1", done: true }] });
+  assert.match(JSON.stringify(none.data), /0 members are still waiting/);
+});
+
 test("makeRecord: sorted carries helper + claim + season identity", () => {
   const data = { currentSeason: { name: "S5", startedTs: 100 } };
   const entry = { id: "e1", userId: "u1", category: "a", ts: 10, helpedBy: "h1", claimedBy: "h1", claimedTs: 20 };
