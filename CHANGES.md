@@ -370,6 +370,64 @@ adapts to any guild goal without a code change.
 - **Invariant #6 (record log) is N/A here** — a nudge resolves nothing and
   writes no record; it only reads open entries and reminds.
 
+## Polish sweep (M12) (latest round)
+
+A batch of deferred polish, chosen by the user (clusters A/B/C/D). Two behavior
+changes (M8, M9); the rest is hardening + test hygiene.
+
+- **Test hygiene (A):** the `.bak`/corruption-recovery test block is now
+  order-independent — each test resets its files via `resetDataFiles()` (was an
+  implicit chain where one test reused the corrupt `data.json` a prior test
+  left). Added the revive-at-cap test (revive an archived category while 25 are
+  already active → rejected, stays archived).
+- **`.bak` write is now atomic (B1):** `saveData` copies to `data.json.bak.tmp`
+  then `renameSync` over `data.json.bak` (was a direct `copyFileSync` a crash
+  mid-copy could truncate — the very file `loadData` falls back to). The
+  valid-primary guard + try/catch are unchanged; a `.bak` failure still never
+  blocks the primary save.
+- **`readAndShape` validates category item-shape (B2):** `shapeCategories`
+  rebuilds each `{id,label,emoji,archived}` field-by-field (like `currentSeason`)
+  — keeps only items with a string `id`+`label`, defaults emoji, coerces
+  `archived` (`=== true || === "true"`, so a hand-edited `"false"` stays
+  **active**, not silently archived). Well-formed arrays round-trip unchanged;
+  empty-after-clean → defaults. Hand-edited/foreign `data.json` files no longer
+  smuggle a malformed category through to a later crash.
+- **Nudge digest overflow field counted in the budget (B3):** `nudgeDigestEmbed`
+  now includes the "…and N more" overflow field's own length in the `< 6000`
+  accounting (was inconsistent; safe today only via the ~500-char margin).
+- **`moveto` autocomplete excludes the category being removed (C1):**
+  `categorySuggestions(data, typed, excludeId)` — the `moveto` suggestions no
+  longer offer the category you're deleting (server-side `moveto===id` reject
+  stays as the backstop).
+- **`/stats` member view keeps the prior view selected (C3):** a new pure
+  `selectedViewFrom(components)` recovers the active `stats:view` option from the
+  panel message, so a member lookup no longer snaps the dropdown back to
+  "Current season". Falls back to `"current"` if unrecoverable.
+- **Board refreshes sooner on category remove (C2):** `refreshBoard` moved before
+  the per-card re-render loop (it rebuilds purely from saved `data`). The
+  per-card lag is inherent to ack-before-REST and left as-is.
+- **M8 — a claim held by a member who LEFT the guild auto-releases (behavior).**
+  The claim marker was already hidden at every render site; the gap was the
+  claim-button `"blocked"` branch never clearing `entry.claimedBy`, so the
+  request stayed permanently unclaimable. Now: when blocked, the branch checks
+  the holder's membership (`members.fetch`) and, **only on a genuine "Unknown
+  Member/User" (`isGoneError` → codes 10007/10013)**, releases the stale claim
+  (`releaseClaim`) and lets the clicker take it — via **re-load-patch-save** with
+  a **TOCTOU recheck** (`applyStaleClaimRelease`: release only if the fresh claim
+  is still the departed holder's, else treat as a live claim). A transient API
+  error does **not** release (avoids stealing a present officer's claim). No
+  record is written (a claim change is not a terminal moment — invariant #6).
+- **M9 — the `/season` panel refreshes in place after a modal submit
+  (behavior).** Both `handleSeasonModal` branches now
+  `ModalMessageModalSubmitInteraction.update()` the source panel (rebuilding
+  `seasonPanelEmbed`+`seasonPanelComponents`) instead of posting a separate
+  ephemeral reply. `update()` is the first ack; it's wrapped in try/catch with an
+  ephemeral-reply fallback so the post-ack `resolveCard`/`refreshBoard` always
+  run.
+- Key helpers/handlers: `resetDataFiles` (test), `shapeCategories`,
+  `selectedViewFrom`, `releaseClaim`, `applyStaleClaimRelease`, `isGoneError`,
+  `categorySuggestions(…, excludeId)`. New path constant `BAK_TMP_FILE`.
+
 ## ⚠️ Invariants — please keep these to avoid re-introducing bugs
 
 1. **No `await` between `loadData()` and `saveData()` in a handler.** The whole

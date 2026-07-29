@@ -59,7 +59,9 @@ Every request posts a **request card** with these buttons:
 - **🙌 Claim** — flag that you're handling this one (optional). Your name shows on
   the card and next to the member's name on the board, so two officers don't
   double up. Click again to un-claim. It's informational only — it never blocks
-  Sorted or Remove, and another officer can't steal an active claim.
+  Sorted or Remove, and another officer can't steal an active claim. (If the
+  officer who claimed it has since left the server, the next officer to click
+  Claim takes it over automatically.)
 - **✅ Sorted** — marks that member sorted. The card updates to show who sorted
   them, the board updates, and the member gets a DM.
 - **🗑️ Remove** — removes the entry (e.g. posted by mistake).
