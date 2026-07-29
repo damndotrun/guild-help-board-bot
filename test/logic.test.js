@@ -1202,3 +1202,89 @@ test("closeEntries: no-op on an empty selection (no record, nothing removed)", (
   assert.deepEqual(data.entries.map((e) => e.id), ["1"]);
   assert.equal((data.records || []).length, 0);
 });
+
+// ---------- M13-T3: /helped + /remove shared "resolve:" picker panel ----------
+
+test("resolveEntryAsSorted: sets done/doneTs/helpedBy and logs one \"sorted\" record BEFORE the caller saves", () => {
+  const entry = { id: "1", userId: "u1", username: "Alice", category: "a", done: false, ts: 5 };
+  const data = { entries: [entry] };
+  bot.resolveEntryAsSorted(data, entry, "manager1", 999);
+  assert.equal(entry.done, true);
+  assert.equal(entry.doneTs, 999);
+  assert.equal(entry.helpedBy, "manager1");
+  // invariant #6 — exactly one record, logged for this entry.
+  assert.equal(data.records.length, 1);
+  assert.equal(data.records[0].reqId, "1");
+  assert.equal(data.records[0].resolution, "sorted");
+  assert.equal(data.records[0].helperId, "manager1");
+  assert.equal(data.records[0].resolvedTs, 999);
+  // Entry stays in data.entries (helped never removes it — just marks done).
+  assert.deepEqual(data.entries.map((e) => e.id), ["1"]);
+});
+
+test("resolveEntryAsRemoved: logs one \"removed\" record BEFORE dropping the entry, no DM/done fields set", () => {
+  const entry = { id: "1", userId: "u1", username: "Alice", category: "a", done: false, ts: 5 };
+  const other = { id: "2", userId: "u2", username: "Bob", category: "b", done: false };
+  const data = { entries: [entry, other] };
+  bot.resolveEntryAsRemoved(data, entry, 777);
+  assert.equal(data.records.length, 1);
+  assert.equal(data.records[0].reqId, "1");
+  assert.equal(data.records[0].resolution, "removed");
+  assert.equal(data.records[0].resolvedTs, 777);
+  // helped-only fields never touched (remove never marks done).
+  assert.equal(entry.done, false);
+  assert.equal(entry.helpedBy, undefined);
+  // Entry gone, the other one untouched.
+  assert.deepEqual(data.entries.map((e) => e.id), ["2"]);
+});
+
+test("resolveEntryPanelEmbed: shows the no-dead-end message when the member has zero open entries", () => {
+  const embed = bot.resolveEntryPanelEmbed("helped", "Alice", 0);
+  const json = JSON.stringify(embed.data);
+  assert.match(json, /Alice/);
+  assert.match(json, /no open requests/i);
+});
+
+test("resolveEntryPanelEmbed: shows the open-request count for helped and remove", () => {
+  const helpedEmbed = bot.resolveEntryPanelEmbed("helped", "Alice", 2);
+  assert.match(JSON.stringify(helpedEmbed.data), /Alice.*2.*open request/is);
+  const removeEmbed = bot.resolveEntryPanelEmbed("remove", "Bob", 1);
+  assert.match(JSON.stringify(removeEmbed.data), /Bob.*1.*open request/is);
+});
+
+test("resolveMemberPanelComponents: wires the resolve:<action>:member UserSelect customId", () => {
+  const helped = JSON.stringify(bot.resolveMemberPanelComponents("helped"));
+  assert.match(helped, /resolve:helped:member/);
+  const remove = JSON.stringify(bot.resolveMemberPanelComponents("remove"));
+  assert.match(remove, /resolve:remove:member/);
+});
+
+test("resolveEntryPanelComponents: wires the resolve:<action>:entry StringSelect customId and options", () => {
+  const options = bot.imsortedSelectOptions({ categories: [{ id: "a", label: "A", emoji: "🅰", archived: false }] }, [
+    { id: "e1", category: "a", ts: 0 },
+  ], 0);
+  const helped = JSON.stringify(bot.resolveEntryPanelComponents("helped", options));
+  assert.match(helped, /resolve:helped:entry/);
+  assert.match(helped, /"value":"e1"/);
+  const remove = JSON.stringify(bot.resolveEntryPanelComponents("remove", options));
+  assert.match(remove, /resolve:remove:entry/);
+});
+
+test("openEntriesFor: only the picked member's open entries appear as select options (M13-T3 reuse)", () => {
+  const data = {
+    categories: [
+      { id: "a", label: "Season Run 5K", emoji: "🏃", archived: false },
+      { id: "b", label: "MVP 5K", emoji: "🏆", archived: false },
+    ],
+    entries: [
+      { id: "1", userId: "member1", category: "a", done: false, ts: 0 },
+      { id: "2", userId: "member1", category: "b", done: true, ts: 0 }, // done — excluded
+      { id: "3", userId: "member2", category: "a", done: false, ts: 0 }, // other member — excluded
+    ],
+  };
+  const mine = bot.openEntriesFor(data, "member1");
+  const options = bot.imsortedSelectOptions(data, mine, 0);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].value, "1");
+  assert.equal(options[0].label, "🏃 Season Run 5K");
+});

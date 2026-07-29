@@ -450,6 +450,27 @@ function closeEntries(data, entries, resolution, now) {
   data.entries = data.entries.filter((e) => !ids.has(e.id));
 }
 
+// Mark a single entry sorted: sets done/doneTs/helpedBy and logs the "sorted"
+// record BEFORE the caller's saveData (invariant #6). Pure — no REST, no
+// saveData. This is the exact /helped close logic, pulled out so both the
+// @member+category fast-path AND the resolve:helped panel (M13-T3) call the
+// same tested core.
+function resolveEntryAsSorted(data, entry, helperId, now) {
+  entry.done = true;
+  entry.doneTs = now;
+  entry.helpedBy = helperId;
+  logRecord(data, makeRecord(data, entry, "sorted", now));
+}
+
+// Remove a single entry (no "done" mark) and log the "removed" record BEFORE
+// the caller's saveData (invariant #6). Pure — no REST, no saveData. This is
+// the exact /remove logic, pulled out so both the @member+category fast-path
+// AND the resolve:remove panel (M13-T3) call the same tested core.
+function resolveEntryAsRemoved(data, entry, now) {
+  logRecord(data, makeRecord(data, entry, "removed", now));
+  data.entries = data.entries.filter((e) => e !== entry);
+}
+
 // ---------- pure query helpers (read-only, derived from records) ----------
 
 function recordsForSeason(records, seasonStartedTs) {
@@ -997,6 +1018,53 @@ function imsortedPanelComponents(options) {
   return [new ActionRowBuilder().addComponents(select), buttons];
 }
 
+// ---------- /helped + /remove shared "resolve:" picker panel (M13-T3) ----------
+// One two-step panel (pick member → pick which of their open requests) shared
+// by both commands. They differ only in the resolve:<action>: namespace, the
+// title/description text, and (in the handler) whether a DM is sent.
+
+function resolveActionCopy(action) {
+  return action === "helped"
+    ? { title: "✅ Mark a member as sorted", memberDesc: "Pick the member you helped." }
+    : { title: "🗑️ Remove a member's entry", memberDesc: "Pick the member to remove." };
+}
+
+function resolveMemberPanelEmbed(action) {
+  const copy = resolveActionCopy(action);
+  return new EmbedBuilder().setColor(0x5ac9a1).setTitle(copy.title).setDescription(copy.memberDesc);
+}
+
+function resolveMemberPanelComponents(action) {
+  const placeholder = action === "helped" ? "Pick the member you helped…" : "Pick the member to remove…";
+  const member = new UserSelectMenuBuilder()
+    .setCustomId(`resolve:${action}:member`)
+    .setPlaceholder(placeholder)
+    .setMinValues(1)
+    .setMaxValues(1);
+  return [new ActionRowBuilder().addComponents(member)];
+}
+
+// The entry-step embed: named member's open-request count, or the no-dead-end
+// "no open requests" message when they have none (the whole point of M13-T3).
+function resolveEntryPanelEmbed(action, memberDisplayName, count) {
+  const copy = resolveActionCopy(action);
+  const desc =
+    count === 0
+      ? `**${memberDisplayName}** has no open requests.`
+      : `**${memberDisplayName}** has **${count}** open request${count === 1 ? "" : "s"}. Pick which one.`;
+  return new EmbedBuilder().setColor(0x5ac9a1).setTitle(copy.title).setDescription(desc);
+}
+
+function resolveEntryPanelComponents(action, options) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`resolve:${action}:entry`)
+    .setPlaceholder("Pick which request…")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(options);
+  return [new ActionRowBuilder().addComponents(select)];
+}
+
 function newHelpEntry(userId, username, categoryId, note) {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1315,13 +1383,12 @@ const commands = [
     .setName("helped")
     .setDescription("Mark a member as sorted / helped")
     .addUserOption((opt) =>
-      opt.setName("member").setDescription("Who got helped").setRequired(true)
+      opt.setName("member").setDescription("Who got helped (leave empty to pick from a panel)")
     )
     .addStringOption((opt) =>
       opt
         .setName("category")
-        .setDescription("Which category")
-        .setRequired(true)
+        .setDescription("Which category (leave empty to pick from a panel)")
         .setAutocomplete(true)
     ),
 
@@ -1329,13 +1396,12 @@ const commands = [
     .setName("remove")
     .setDescription("Remove a member's entry without marking it done")
     .addUserOption((opt) =>
-      opt.setName("member").setDescription("Who to remove").setRequired(true)
+      opt.setName("member").setDescription("Who to remove (leave empty to pick from a panel)")
     )
     .addStringOption((opt) =>
       opt
         .setName("category")
-        .setDescription("Which category")
-        .setRequired(true)
+        .setDescription("Which category (leave empty to pick from a panel)")
         .setAutocomplete(true)
     ),
 
@@ -1858,6 +1924,79 @@ async function handleImsortedButton(interaction) {
   await closeImsortedEntries(interaction, data, mine);
 }
 
+// resolve:<action>:member — the manager picked a member. Re-check isManager
+// server-side (a component click doesn't re-run the slash-command permission
+// gate). No dead-end: if the member has no open entries, say so instead of
+// erroring.
+async function handleResolveMemberSelect(interaction) {
+  const action = interaction.customId.split(":")[1];
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  await interaction.deferUpdate();
+  const memberId = interaction.values[0];
+  const name = (await memberName(interaction.guild, memberId)) || "(left the server)";
+  const mine = openEntriesFor(data, memberId);
+  if (mine.length === 0) {
+    await interaction.editReply({ embeds: [resolveEntryPanelEmbed(action, name, 0)], components: [] });
+    return;
+  }
+  const options = imsortedSelectOptions(data, mine, Date.now());
+  await interaction.editReply({
+    embeds: [resolveEntryPanelEmbed(action, name, mine.length)],
+    components: resolveEntryPanelComponents(action, options),
+  });
+}
+
+// Terminal step shared by both resolve:helped:entry and resolve:remove:entry —
+// applies the exact /helped or /remove close/record logic (invariant #6: the
+// record is logged before saveData), acks the panel, then does the slow REST
+// (card + optional DM + board refresh) after the ack (invariant #1).
+async function finishResolveEntry(interaction, action, entry, data) {
+  const now = Date.now();
+  if (action === "helped") {
+    resolveEntryAsSorted(data, entry, interaction.user.id, now);
+  } else {
+    resolveEntryAsRemoved(data, entry, now);
+  }
+  saveData(data);
+  const byName = interaction.member?.displayName || interaction.user.username;
+  const confirmText =
+    action === "helped"
+      ? `✅ Marked **${entry.username}** as sorted for ${catOf(data, entry.category).label}.`
+      : `Removed ${entry.username}'s entry.`;
+  await interaction.update({ content: confirmText, embeds: [], components: [] });
+  if (action === "helped") {
+    await resolveCard(client, entry, `✅ Sorted by ${byName}`);
+    await dmSorted(client, data, entry.userId, entry.category);
+  } else {
+    await resolveCard(client, entry, `🗑️ Removed by ${byName}`);
+  }
+  await refreshBoard(client, data);
+}
+
+// resolve:<action>:entry — the manager picked which of the member's open
+// requests to resolve. Fresh loadData() + re-find by id here (invariant #1):
+// this is a separate interaction from the member-pick step, so nothing
+// carried over from it is trusted as still-current.
+async function handleResolveEntrySelect(interaction) {
+  const action = interaction.customId.split(":")[1];
+  const data = loadData();
+  if (!isManager(interaction, data)) {
+    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+    return;
+  }
+  const entryId = interaction.values[0];
+  const entry = data.entries.find((e) => e.id === entryId && !e.done);
+  if (!entry) {
+    await interaction.update({ content: "That request is already gone.", embeds: [], components: [] });
+    return;
+  }
+  await finishResolveEntry(interaction, action, entry, data);
+}
+
 client.on("interactionCreate", async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
@@ -1899,8 +2038,22 @@ client.on("interactionCreate", async (interaction) => {
       await handleStatsView(interaction);
       return;
     }
+    if (
+      interaction.isStringSelectMenu() &&
+      (interaction.customId === "resolve:helped:entry" || interaction.customId === "resolve:remove:entry")
+    ) {
+      await handleResolveEntrySelect(interaction);
+      return;
+    }
     if (interaction.isUserSelectMenu() && interaction.customId === "stats:member") {
       await handleStatsMember(interaction);
+      return;
+    }
+    if (
+      interaction.isUserSelectMenu() &&
+      (interaction.customId === "resolve:helped:member" || interaction.customId === "resolve:remove:member")
+    ) {
+      await handleResolveMemberSelect(interaction);
       return;
     }
     if (interaction.isModalSubmit()) {
@@ -2057,6 +2210,16 @@ client.on("interactionCreate", async (interaction) => {
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
+      if (!member || !category) {
+        // No (or partial) args — resolve:helped picker panel (M13-T3).
+        await respond(interaction, {
+          embeds: [resolveMemberPanelEmbed("helped")],
+          components: resolveMemberPanelComponents("helped"),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      // Fast path (both given) — unchanged direct-resolve behavior.
       if (!categoryMap(data)[category]) {
         await respond(interaction, {
           content: "That isn't a known category. Pick one from the list.",
@@ -2074,10 +2237,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      entry.done = true;
-      entry.doneTs = Date.now();
-      entry.helpedBy = interaction.user.id;
-      logRecord(data, makeRecord(data, entry, "sorted", Date.now()));
+      resolveEntryAsSorted(data, entry, interaction.user.id, Date.now());
       saveData(data);
       await respond(
         interaction,
@@ -2096,6 +2256,16 @@ client.on("interactionCreate", async (interaction) => {
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
+      if (!member || !category) {
+        // No (or partial) args — resolve:remove picker panel (M13-T3).
+        await respond(interaction, {
+          embeds: [resolveMemberPanelEmbed("remove")],
+          components: resolveMemberPanelComponents("remove"),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      // Fast path (both given) — unchanged direct-resolve behavior.
       if (!categoryMap(data)[category]) {
         await respond(interaction, {
           content: "That isn't a known category. Pick one from the list.",
@@ -2113,8 +2283,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      logRecord(data, makeRecord(data, target, "removed", Date.now()));
-      data.entries = data.entries.filter((e) => e !== target);
+      resolveEntryAsRemoved(data, target, Date.now());
       saveData(data);
       await respond(interaction, {
         content: `Removed ${member.username}'s entry.`,
@@ -2400,6 +2569,12 @@ module.exports = {
   hasOpenEntry,
   openEntriesFor,
   imsortedSelectOptions,
+  resolveEntryAsSorted,
+  resolveEntryAsRemoved,
+  resolveMemberPanelEmbed,
+  resolveMemberPanelComponents,
+  resolveEntryPanelEmbed,
+  resolveEntryPanelComponents,
   imsortedPanelEmbed,
   newHelpEntry,
   cardDescription,
