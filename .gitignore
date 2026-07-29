@@ -4,6 +4,7 @@
 # Local runtime data (contains member user IDs)
 data.json
 data.json.bak
+data.json.bak.tmp
 data.json.tmp
 bot.lock
 

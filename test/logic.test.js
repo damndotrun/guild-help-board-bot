@@ -123,6 +123,7 @@ test("tallyHelpers: counts done+helpedBy, sorted desc", () => {
 function resetDataFiles() {
   fs.rmSync(path.join(TMP, "data.json"), { force: true });
   fs.rmSync(path.join(TMP, "data.json.bak"), { force: true });
+  fs.rmSync(path.join(TMP, "data.json.bak.tmp"), { force: true });
   fs.rmSync(path.join(TMP, "data.json.tmp"), { force: true });
 }
 
@@ -136,6 +137,19 @@ test("saveData keeps last-known-good in data.json.bak", () => {
   assert.equal(bak.entries.length, 1); // previous good state
   const live = JSON.parse(fs.readFileSync(path.join(TMP, "data.json"), "utf8"));
   assert.equal(live.entries.length, 2);
+});
+
+test("saveData writes .bak atomically: correct round-trip, no .bak.tmp left behind", () => {
+  resetDataFiles();
+  bot.saveData({ entries: [{ id: "A" }] });
+  bot.saveData({ entries: [{ id: "A" }, { id: "B" }] });
+  // The .bak must be the previous good state, fully written (not truncated) and
+  // round-trippable as valid JSON via the shaped loader.
+  const bak = JSON.parse(fs.readFileSync(path.join(TMP, "data.json.bak"), "utf8"));
+  assert.equal(bak.entries.length, 1);
+  assert.equal(bak.entries[0].id, "A");
+  // The atomic-rename step must leave no leftover .bak.tmp on disk.
+  assert.equal(fs.existsSync(path.join(TMP, "data.json.bak.tmp")), false);
 });
 
 test("loadData restores from .bak when data.json is corrupt", () => {
@@ -199,6 +213,38 @@ test("loadData preserves a non-empty categories array as-is", () => {
   const custom = [{ id: "boss", label: "Boss", emoji: "👹", archived: false }];
   fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: custom }));
   assert.deepEqual(bot.loadData().categories, custom);
+});
+
+test("loadData cleans malformed category items, defaulting emoji/archived and dropping shapeless ones", () => {
+  resetDataFiles();
+  const malformed = [
+    { id: "boss", label: "Boss" }, // missing emoji/archived — should default, not drop
+    { id: "", label: "No id" }, // empty id — dropped
+    { label: "No id field" }, // missing id — dropped
+    { id: "no-label" }, // missing label — dropped
+    { id: 5, label: "Numeric id" }, // non-string id — dropped
+    "not-an-object", // dropped
+    null, // dropped
+  ];
+  fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: malformed }));
+  const cats = bot.loadData().categories;
+  assert.deepEqual(cats, [{ id: "boss", label: "Boss", emoji: "📌", archived: false }]);
+});
+
+test("loadData coerces a string archived flag to boolean", () => {
+  resetDataFiles();
+  const custom = [{ id: "boss", label: "Boss", emoji: "👹", archived: "true" }];
+  fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: custom }));
+  const cats = bot.loadData().categories;
+  assert.equal(cats.length, 1);
+  assert.strictEqual(cats[0].archived, true);
+});
+
+test("loadData falls back to defaults when every category item is malformed", () => {
+  resetDataFiles();
+  const allBad = [{ label: "No id" }, { id: "" , label: "Empty id" }];
+  fs.writeFileSync(path.join(TMP, "data.json"), JSON.stringify({ entries: [], categories: allBad }));
+  assert.deepEqual(bot.loadData().categories.map((c) => c.id).sort(), ["mvp5k", "seasonrun5k"]);
 });
 
 test("isLockFresh: fresh, stale, and missing", () => {
@@ -915,8 +961,16 @@ test("nudgeDigestEmbed: budgets total embed size under heavy load (8 cats x 30 s
     }
   }
   const embed = bot.nudgeDigestEmbed(data, stale, names, now);
+  // This load actually exceeds the internal MAX_CHARS budget (8 x ~1024-char
+  // fields), so the truncation path — and its appended overflow field — is
+  // genuinely exercised here, not just field-count capping.
+  const last = embed.data.fields[embed.data.fields.length - 1];
+  assert.equal(last.name, "…", "expected an overflow field to be appended");
   const totalFieldChars = embed.data.fields.reduce((sum, f) => sum + f.name.length + f.value.length, 0);
-  assert.ok(totalFieldChars < 6000, `expected total field chars < 6000, got ${totalFieldChars}`);
+  // TRUE total incl. the overflow field's own size — this is the exact
+  // accounting the overflow-budget fix guarantees, not just an accident of
+  // the ~500-char margin between MAX_CHARS (5500) and Discord's hard 6000.
+  assert.ok(totalFieldChars < 6000, `expected total field chars (incl. overflow) < 6000, got ${totalFieldChars}`);
   assert.ok(embed.data.fields.length <= 25, `expected <= 25 fields, got ${embed.data.fields.length}`);
   assert.match(embed.data.title, /240/); // true total, not the shown subset
 });

@@ -31,6 +31,7 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 const BAK_FILE = path.join(DATA_DIR, "data.json.bak");
+const BAK_TMP_FILE = path.join(DATA_DIR, "data.json.bak.tmp");
 
 // ---------- storage ----------
 // The two categories the bot shipped with. Private — always handed out as a
@@ -205,11 +206,20 @@ function readAndShape(raw) {
             startedTs: parsed.currentSeason.startedTs ?? null,
           }
         : { name: null, startedTs: null },
-    categories:
-      Array.isArray(parsed.categories) && parsed.categories.length
-        ? parsed.categories
-        : defaultCategories(),
+    categories: shapeCategories(parsed.categories),
   };
+}
+
+function shapeCategories(rawCategories) {
+  const cleaned = (Array.isArray(rawCategories) ? rawCategories : [])
+    .filter((item) => item && typeof item.id === "string" && item.id && typeof item.label === "string")
+    .map((item) => ({
+      id: item.id,
+      label: item.label,
+      emoji: typeof item.emoji === "string" && item.emoji ? item.emoji : "📌",
+      archived: Boolean(item.archived),
+    }));
+  return cleaned.length ? cleaned : defaultCategories();
 }
 
 function loadData() {
@@ -248,7 +258,10 @@ function saveData(data) {
   try {
     if (fs.existsSync(DATA_FILE)) {
       readAndShape(fs.readFileSync(DATA_FILE, "utf8")); // throws if corrupt or mis-shaped → skip backup
-      fs.copyFileSync(DATA_FILE, BAK_FILE);
+      // Atomic like the primary write: copy to a temp file, then rename over
+      // BAK_FILE — a crash mid-copy can't leave a truncated/corrupt .bak.
+      fs.copyFileSync(DATA_FILE, BAK_TMP_FILE);
+      fs.renameSync(BAK_TMP_FILE, BAK_FILE);
     }
   } catch (err) {
     console.error(
@@ -539,16 +552,37 @@ function nudgeDigestEmbed(data, stale, names, now) {
   if (cutIndex < catIds.length) {
     // Truncated. Make room for one overflow field if every slot is already used.
     if (fields.length >= MAX_FIELDS) {
-      fields.pop();
+      const evicted = fields.pop();
+      runningChars -= evicted.name.length + evicted.value.length;
       cutIndex -= 1; // the evicted category is now also dropped
     }
-    let droppedReqCount = 0;
-    for (let j = cutIndex; j < catIds.length; j++) droppedReqCount += byCat[catIds[j]].length;
-    const droppedCatCount = catIds.length - cutIndex;
-    fields.push({
-      name: "…",
-      value: `_…and ${droppedReqCount} more request(s) across ${droppedCatCount} more categor${droppedCatCount === 1 ? "y" : "ies"}_`,
-    });
+
+    const buildOverflow = () => {
+      let droppedReqCount = 0;
+      for (let j = cutIndex; j < catIds.length; j++) droppedReqCount += byCat[catIds[j]].length;
+      const droppedCatCount = catIds.length - cutIndex;
+      return {
+        name: "…",
+        value: `_…and ${droppedReqCount} more request(s) across ${droppedCatCount} more categor${droppedCatCount === 1 ? "y" : "ies"}_`,
+      };
+    };
+
+    let overflow = buildOverflow();
+    let overflowLen = overflow.name.length + overflow.value.length;
+    // The overflow field's own size was never counted against the budget above —
+    // guard the TRUE total (all fields incl. this one) against Discord's hard
+    // 6000-char embed ceiling by evicting more regular fields if needed, folding
+    // their drop into the overflow message.
+    while (runningChars + overflowLen >= 6000 && fields.length) {
+      const evicted = fields.pop();
+      runningChars -= evicted.name.length + evicted.value.length;
+      cutIndex -= 1;
+      overflow = buildOverflow();
+      overflowLen = overflow.name.length + overflow.value.length;
+    }
+
+    fields.push(overflow);
+    runningChars += overflowLen;
   }
 
   return new EmbedBuilder()
