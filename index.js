@@ -836,6 +836,40 @@ async function announceEntry(client, entry, fallbackChannelId) {
   await refreshBoard(client, fresh);
 }
 
+// Hourly timer body: if nudges are on, a day has passed, and stale requests
+// exist, post one digest and stamp lastNudgeTs. Guarded so a transient error
+// never crashes the process or blocks the next tick.
+async function nudgeTick(client) {
+  try {
+    const data = loadData();
+    if (!data.nudgeChannelId) return;                 // disabled
+    const now = Date.now();
+    if (!dueForNudge(data, now, NUDGE_CADENCE_MS)) return;
+    const thresholdMs = (data.nudgeThresholdHours ?? 48) * 60 * 60 * 1000;
+    const stale = staleEntries(data.entries, now, thresholdMs);
+    if (stale.length === 0) return;
+
+    const channel = await client.channels.fetch(data.nudgeChannelId).catch(() => null);
+    if (!channel || typeof channel.send !== "function") return; // gone/unusable → retry next tick (day not claimed)
+
+    const names = await resolveNames(channel.guild, data); // read-only
+    const embed = nudgeDigestEmbed(data, stale, names, now);
+    await channel.send({
+      content: data.notifyRoleId ? `<@&${data.notifyRoleId}>` : undefined,
+      embeds: [embed],
+      allowedMentions: data.notifyRoleId ? { roles: [data.notifyRoleId] } : { parse: [] },
+    });
+
+    // Invariant #1: an await (the post) happened since loadData — re-load, patch
+    // the single field, save the fresh copy so concurrent writes aren't clobbered.
+    const fresh = loadData();
+    fresh.lastNudgeTs = now;
+    saveData(fresh);
+  } catch (err) {
+    console.error("nudgeTick failed:", err.message);
+  }
+}
+
 // Look up one member's current display name (for the /stats leaderboard).
 async function memberName(guild, userId) {
   if (!guild) return null;
@@ -1178,6 +1212,8 @@ const client = new Client({
 
 client.once("clientReady", () => {
   console.log(`Logged in as ${client.user.tag}`);
+  const nudgeTimer = setInterval(() => nudgeTick(client), NUDGE_TICK_MS);
+  nudgeTimer.unref(); // never keep the process alive for the nudge timer alone
 });
 
 // ---------- button handling (one-click officer actions) ----------
