@@ -860,10 +860,26 @@ function resetWarningEmbed(data) {
     );
 }
 
-function resetWarningComponents() {
+// Freshness window for a reset warning panel's Confirm button (F1): a panel
+// older than this is refused instead of wiped, so a minutes-old (or a second
+// officer's) panel can't close requests filed after the officer last saw the
+// waiting count.
+const RESET_CONFIRM_TTL_MS = 5 * 60 * 1000;
+
+// Pure staleness check for the reset:confirm freshness token — no discord.js
+// state, directly unit-testable. `issuedTs` is the Date.now() encoded in the
+// customId when the warning panel was (re-)rendered.
+function resetConfirmStale(issuedTs, now, ttlMs) {
+  return now - issuedTs > ttlMs;
+}
+
+// issuedTs is Date.now() at render time — encoded into the confirm button's
+// customId (F1) so handleResetButton can refuse a stale panel instead of
+// wiping against whatever is current.
+function resetWarningComponents(issuedTs) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("reset:confirm").setLabel("Confirm reset").setEmoji("⚠️").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`reset:confirm:${issuedTs}`).setLabel("Confirm reset").setEmoji("⚠️").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId("reset:cancel").setLabel("Cancel").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -1064,6 +1080,22 @@ function resolveEntryPanelComponents(action, options) {
     .setMaxValues(1)
     .addOptions(options);
   return [new ActionRowBuilder().addComponents(select)];
+}
+
+// Builds the entry-step panel payload (embeds + components) for a given
+// member — shared by the resolve:<action>:member select handler and the
+// /helped + /remove "member given, category omitted" fast path (F5), so a
+// member pick is never discarded just because category was left blank.
+function entryStepPanelPayload(data, action, memberId, memberDisplayName) {
+  const mine = openEntriesFor(data, memberId);
+  if (mine.length === 0) {
+    return { embeds: [resolveEntryPanelEmbed(action, memberDisplayName, 0)], components: [] };
+  }
+  const options = imsortedSelectOptions(data, mine, Date.now());
+  return {
+    embeds: [resolveEntryPanelEmbed(action, memberDisplayName, mine.length)],
+    components: resolveEntryPanelComponents(action, options),
+  };
 }
 
 // ---------- /config roles panel (M13-T5) ----------
@@ -1924,12 +1956,14 @@ async function handleSeasonModal(interaction) {
 
 // /config category add's no-arg fallback modal. A plain ModalSubmitInteraction
 // (opened straight from the slash command, not a message component) — so ack
-// with reply(), never .update(). Re-check isManager: a modal submit is a fresh
-// interaction, and the slash-command check that gated opening it doesn't carry
-// over.
+// with reply(), never .update(). F3: re-check ManageGuild (not the weaker
+// isManager) — this modal is spawned by /config, which is itself gated on
+// ManageGuild, so its re-check must match; a modal submit is a fresh
+// interaction, and the slash-command check that gated opening it doesn't
+// carry over.
 async function handleCatAddModal(interaction) {
   const data = loadData();
-  if (!isManager(interaction, data)) { await respond(interaction, { content: "Managers only.", flags: MessageFlags.Ephemeral }); return; }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) { await respond(interaction, { content: "Manage Server only.", flags: MessageFlags.Ephemeral }); return; }
   const label = interaction.fields.getTextInputValue("label");
   const emoji = interaction.fields.getTextInputValue("emoji") || undefined;
   const r = addCategory(data, label, emoji);
@@ -1951,22 +1985,47 @@ function roleNameResolver(interaction) {
 }
 
 async function updateRolesPanel(interaction, data) {
-  await interaction.update({
-    embeds: [rolesPanelEmbed(data)],
-    components: rolesPanelComponents(data, roleNameResolver(interaction)),
-  });
+  // F2: wrap for consistency with the other panel handlers, even though
+  // there's no post-ack slow REST here to protect — a failed ack shouldn't
+  // surface as an unhandled throw up to the top-level "Something went wrong".
+  try {
+    await interaction.update({
+      embeds: [rolesPanelEmbed(data)],
+      components: rolesPanelComponents(data, roleNameResolver(interaction)),
+    });
+  } catch {
+    await respond(interaction, {
+      embeds: [rolesPanelEmbed(data)],
+      components: rolesPanelComponents(data, roleNameResolver(interaction)),
+      flags: MessageFlags.Ephemeral,
+    });
+  }
 }
 
-// roles:add — RoleSelectMenu pick to add a manager role. Re-check isManager:
-// the panel's customIds aren't bound to the member who ran /config roles, so
-// a differently-permissioned member could click it.
+// roles:add — RoleSelectMenu pick to add a manager role. F3: re-check
+// ManageGuild (not the weaker isManager) — this panel is spawned by
+// /config roles, which is itself gated on ManageGuild; the panel's customIds
+// aren't bound to the member who ran the command, so a differently-
+// permissioned member could click it.
 async function handleRolesAddSelect(interaction) {
   const data = loadData();
-  if (!isManager(interaction, data)) {
-    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
     return;
   }
   const roleId = interaction.values[0];
+  // F4: a RoleSelectMenu offers every role including @everyone and
+  // integration-managed (bot) roles. @everyone would grant every member
+  // manager status (member.roles.cache always includes it); a managed role
+  // can't be assigned to members anyway. Refuse and refresh instead.
+  if (roleId === interaction.guild.id || interaction.guild.roles.cache.get(roleId)?.managed) {
+    await interaction.update({
+      content: "You can't add @everyone or a bot-managed role as a manager role.",
+      embeds: [rolesPanelEmbed(data)],
+      components: rolesPanelComponents(data, roleNameResolver(interaction)),
+    });
+    return;
+  }
   if (!data.managerRoleIds.includes(roleId)) {
     data.managerRoleIds.push(roleId); // dedupe: already-present role is a no-op refresh
     saveData(data);
@@ -1978,8 +2037,8 @@ async function handleRolesAddSelect(interaction) {
 // (rolesRemoveSelectOptions), so the picked id is always a real manager role.
 async function handleRolesRemoveSelect(interaction) {
   const data = loadData();
-  if (!isManager(interaction, data)) {
-    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
     return;
   }
   const roleId = interaction.values[0];
@@ -1991,20 +2050,32 @@ async function handleRolesRemoveSelect(interaction) {
 // roles:notify — RoleSelectMenu pick to set the request-ping role.
 async function handleRolesNotifySelect(interaction) {
   const data = loadData();
-  if (!isManager(interaction, data)) {
-    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
     return;
   }
-  data.notifyRoleId = interaction.values[0];
+  const roleId = interaction.values[0];
+  // F4: same @everyone/managed-role guard as roles:add, for UX consistency
+  // (an @everyone notify ping wouldn't fire anyway under allowedMentions).
+  if (roleId === interaction.guild.id || interaction.guild.roles.cache.get(roleId)?.managed) {
+    await interaction.update({
+      content: "You can't set @everyone or a bot-managed role as the notify role.",
+      embeds: [rolesPanelEmbed(data)],
+      components: rolesPanelComponents(data, roleNameResolver(interaction)),
+    });
+    return;
+  }
+  data.notifyRoleId = roleId;
   saveData(data);
   await updateRolesPanel(interaction, data);
 }
 
-// roles:notifyclear — button to turn request pings back off.
+// roles:notifyclear — button to turn request pings back off. F3: ManageGuild
+// re-check, matching the other /config roles handlers.
 async function handleRolesNotifyClear(interaction) {
   const data = loadData();
-  if (!isManager(interaction, data)) {
-    await interaction.update({ content: "Managers only.", embeds: [], components: [] });
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
     return;
   }
   data.notifyRoleId = null;
@@ -2022,20 +2093,43 @@ async function handleResetButton(interaction) {
     await interaction.update({ content: "Managers only.", embeds: [], components: [] });
     return;
   }
-  const action = interaction.customId.split(":")[1]; // confirm | cancel
+  const parts = interaction.customId.split(":");
+  const action = parts[1]; // confirm | cancel
 
   if (action === "cancel") {
     await interaction.update({ content: "Cancelled — nothing changed.", embeds: [], components: [] });
     return;
   }
   if (action === "confirm") {
+    // F1: the confirm customId carries the issuedTs of the warning panel it
+    // came from. A panel left open for minutes (or a second officer's panel)
+    // could otherwise wipe against whatever is current, silently closing
+    // requests filed after the officer last saw the waiting count. Refuse
+    // and re-render a fresh warning instead of wiping when stale.
+    const issuedTs = Number(parts[2]);
+    if (!Number.isFinite(issuedTs) || resetConfirmStale(issuedTs, Date.now(), RESET_CONFIRM_TTL_MS)) {
+      await interaction.update({
+        content: "⚠️ This confirmation expired — review and confirm again.",
+        embeds: [resetWarningEmbed(data)],
+        components: resetWarningComponents(Date.now()),
+      });
+      return;
+    }
     // Invariant #1: no await between loadData and saveData — closeSeason is
     // synchronous, so this mirrors the old direct /reset wipe exactly, just
     // moved behind the confirm click.
     const pending = data.entries.filter((e) => !e.done);
     closeSeason(data, Date.now());
     saveData(data);
-    await interaction.update({ content: "Season reset — the board is clear.", embeds: [], components: [] });
+    // F2: the ack can fail on its own (panel dismissed, transient 5xx,
+    // Unknown Message 10008) — wrap it so a throw here can't skip the
+    // post-ack REST below (resolveCard loop + refreshBoard), which must
+    // always run since saveData already committed the season wipe.
+    try {
+      await interaction.update({ content: "Season reset — the board is clear.", embeds: [], components: [] });
+    } catch {
+      await respond(interaction, { content: "Season reset — the board is clear.", flags: MessageFlags.Ephemeral });
+    }
     // Slow REST after the ack + save: close any open request cards so they
     // don't linger looking actionable, then refresh the live board.
     for (const e of pending) {
@@ -2054,11 +2148,16 @@ async function handleResetButton(interaction) {
 async function closeImsortedEntries(interaction, data, mine) {
   closeEntries(data, mine, "self", Date.now());
   saveData(data);
-  await interaction.update({
-    content: `Marked ${mine.length} request${mine.length === 1 ? "" : "s"} sorted.`,
-    embeds: [],
-    components: [],
-  });
+  const confirmText = `Marked ${mine.length} request${mine.length === 1 ? "" : "s"} sorted.`;
+  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
+  // Message 10008) — wrap it so a throw here can't skip the post-ack REST
+  // below (resolveCard loop + refreshBoard), which must always run since
+  // saveData already committed the close.
+  try {
+    await interaction.update({ content: confirmText, embeds: [], components: [] });
+  } catch {
+    await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
+  }
   for (const e of mine) {
     await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
   }
@@ -2111,16 +2210,7 @@ async function handleResolveMemberSelect(interaction) {
   await interaction.deferUpdate();
   const memberId = interaction.values[0];
   const name = (await memberName(interaction.guild, memberId)) || "(left the server)";
-  const mine = openEntriesFor(data, memberId);
-  if (mine.length === 0) {
-    await interaction.editReply({ embeds: [resolveEntryPanelEmbed(action, name, 0)], components: [] });
-    return;
-  }
-  const options = imsortedSelectOptions(data, mine, Date.now());
-  await interaction.editReply({
-    embeds: [resolveEntryPanelEmbed(action, name, mine.length)],
-    components: resolveEntryPanelComponents(action, options),
-  });
+  await interaction.editReply(entryStepPanelPayload(data, action, memberId, name));
 }
 
 // Terminal step shared by both resolve:helped:entry and resolve:remove:entry —
@@ -2140,7 +2230,15 @@ async function finishResolveEntry(interaction, action, entry, data) {
     action === "helped"
       ? `✅ Marked **${entry.username}** as sorted for ${catOf(data, entry.category).label}.`
       : `Removed ${entry.username}'s entry.`;
-  await interaction.update({ content: confirmText, embeds: [], components: [] });
+  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
+  // Message 10008) — wrap it so a throw here can't skip the post-ack REST
+  // below (resolveCard/dmSorted/refreshBoard), which must always run since
+  // saveData already committed the close.
+  try {
+    await interaction.update({ content: confirmText, embeds: [], components: [] });
+  } catch {
+    await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
+  }
   if (action === "helped") {
     await resolveCard(client, entry, `✅ Sorted by ${byName}`);
     await dmSorted(client, data, entry.userId, entry.category);
@@ -2397,11 +2495,24 @@ client.on("interactionCreate", async (interaction) => {
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
-      if (!member || !category) {
-        // No (or partial) args — resolve:helped picker panel (M13-T3).
+      if (!member) {
+        // No member arg at all — resolve:helped picker panel (M13-T3).
         await respond(interaction, {
           embeds: [resolveMemberPanelEmbed("helped")],
           components: resolveMemberPanelComponents("helped"),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (!category) {
+        // F5: member given, category omitted — skip the UserSelect and go
+        // straight to that member's entry-step panel instead of discarding
+        // the pick. getMember() reads the GuildMember Discord already
+        // resolved into the interaction payload — no extra REST fetch, so
+        // there's no slow work before the ack.
+        const name = interaction.options.getMember("member")?.displayName || member.username;
+        await respond(interaction, {
+          ...entryStepPanelPayload(data, "helped", member.id, name),
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -2443,11 +2554,24 @@ client.on("interactionCreate", async (interaction) => {
       }
       const member = interaction.options.getUser("member");
       const category = interaction.options.getString("category");
-      if (!member || !category) {
-        // No (or partial) args — resolve:remove picker panel (M13-T3).
+      if (!member) {
+        // No member arg at all — resolve:remove picker panel (M13-T3).
         await respond(interaction, {
           embeds: [resolveMemberPanelEmbed("remove")],
           components: resolveMemberPanelComponents("remove"),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (!category) {
+        // F5: member given, category omitted — skip the UserSelect and go
+        // straight to that member's entry-step panel instead of discarding
+        // the pick. getMember() reads the GuildMember Discord already
+        // resolved into the interaction payload — no extra REST fetch, so
+        // there's no slow work before the ack.
+        const name = interaction.options.getMember("member")?.displayName || member.username;
+        await respond(interaction, {
+          ...entryStepPanelPayload(data, "remove", member.id, name),
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -2541,7 +2665,7 @@ client.on("interactionCreate", async (interaction) => {
       // handleResetButton) — this just shows the warning + waiting count.
       await respond(interaction, {
         embeds: [resetWarningEmbed(data)],
-        components: resetWarningComponents(),
+        components: resetWarningComponents(Date.now()),
         flags: MessageFlags.Ephemeral,
       });
     }
@@ -2800,6 +2924,10 @@ module.exports = {
   seasonPanelEmbed,
   seasonSelectOptions,
   resetWarningEmbed,
+  resetWarningComponents,
+  resetConfirmStale,
+  RESET_CONFIRM_TTL_MS,
+  entryStepPanelPayload,
   makeRecord,
   logRecord,
   closeEntries,

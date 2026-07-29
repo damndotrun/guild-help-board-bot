@@ -675,6 +675,23 @@ test("resetWarningEmbed: reports the waiting (not-done) count, singular vs plura
   assert.match(JSON.stringify(none.data), /0 members are still waiting/);
 });
 
+test("resetConfirmStale (F1): stale past the TTL, fresh within it", () => {
+  const now = 10_000_000;
+  const ttl = 5 * 60_000;
+  assert.equal(bot.resetConfirmStale(now - 6 * 60_000, now, ttl), true);
+  assert.equal(bot.resetConfirmStale(now - 4 * 60_000, now, ttl), false);
+  // exactly at the boundary is not stale (strictly greater-than only)
+  assert.equal(bot.resetConfirmStale(now - ttl, now, ttl), false);
+  assert.equal(bot.resetConfirmStale(now - ttl - 1, now, ttl), true);
+});
+
+test("resetWarningComponents (F1): confirm customId carries the issuedTs freshness token", () => {
+  const issuedTs = 123456789;
+  const rows = bot.resetWarningComponents(issuedTs);
+  const json = JSON.stringify(rows.map((r) => r.toJSON()));
+  assert.match(json, new RegExp(`reset:confirm:${issuedTs}`));
+});
+
 test("makeRecord: sorted carries helper + claim + season identity", () => {
   const data = { currentSeason: { name: "S5", startedTs: 100 } };
   const entry = { id: "e1", userId: "u1", category: "a", ts: 10, helpedBy: "h1", claimedBy: "h1", claimedTs: 20 };
@@ -1287,6 +1304,29 @@ test("openEntriesFor: only the picked member's open entries appear as select opt
   assert.equal(options.length, 1);
   assert.equal(options[0].value, "1");
   assert.equal(options[0].label, "🏃 Season Run 5K");
+});
+
+test("entryStepPanelPayload (F5): no-dead-end panel when the member has zero open entries", () => {
+  const data = { categories: [], entries: [] };
+  const payload = bot.entryStepPanelPayload(data, "helped", "member1", "Alice");
+  assert.deepEqual(payload.components, []);
+  assert.match(JSON.stringify(payload.embeds[0].data), /Alice/);
+  assert.match(JSON.stringify(payload.embeds[0].data), /no open requests/i);
+});
+
+test("entryStepPanelPayload (F5): entry-step select for the member's open requests, skipping the UserSelect step", () => {
+  const data = {
+    categories: [{ id: "a", label: "Season Run 5K", emoji: "🏃", archived: false }],
+    entries: [
+      { id: "1", userId: "member1", category: "a", done: false, ts: 0 },
+      { id: "2", userId: "member2", category: "a", done: false, ts: 0 }, // other member — excluded
+    ],
+  };
+  const payload = bot.entryStepPanelPayload(data, "remove", "member1", "Bob");
+  assert.match(JSON.stringify(payload.embeds[0].data), /Bob.*1.*open request/is);
+  const json = JSON.stringify(payload.components);
+  assert.match(json, /resolve:remove:entry/);
+  assert.match(json, /"value":"1"/);
 });
 
 // ---------- /config roles panel (M13-T5) ----------
