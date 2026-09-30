@@ -1,6 +1,6 @@
 // Module loading and normalisation. Every module exports a plain object:
 //   { name, aliases?, dataFile? (null = no ctx.store), commands?, handle? | onCommand?/components?/
-//     modals?/autocomplete?, bind?, onReady?, jobs?, managerRoles?, menu? }
+//     modals?/autocomplete?, bind?, onReady?, jobs?, managerRoles?, menu?, web? }
 // The router only ever calls `handle(interaction, ctx)`; modules that prefer
 // per-action tables get a `handle` built from them here.
 
@@ -22,6 +22,35 @@ function normalizeMenu(mod) {
   }
   if (guide !== undefined && typeof guide !== "function") throw new Error(`[${mod.name}] menu.guide must be a function`);
   return { section, render, guide: guide || null };
+}
+
+// A module's web pages (M3): { title, nav: [{ label, path, minLevel? }], routes(router, web) }.
+// Mounted at /<name>; nav paths are relative to it ("/" = the module's first
+// page). minLevel is "officer" (default) or "owner" — the web admin has no
+// member pages. These top-level paths belong to the web core, so a module
+// with pages cannot be named after them.
+const WEB_RESERVED = new Set(["auth", "static", "login", "teammates"]);
+const NAV_PATH = /^\/[a-z0-9\-/]*$/;
+
+function normalizeWeb(mod) {
+  if (mod.web == null) return null;
+  const { title, nav, routes } = mod.web;
+  const where = `[${mod.name}] web`;
+  if (WEB_RESERVED.has(mod.name)) throw new Error(`${where}: "${mod.name}" is a reserved web path — rename the module`);
+  if (typeof routes !== "function") throw new Error(`${where}.routes must be a function`);
+  if (typeof title !== "string" || title.trim() === "") throw new Error(`${where}.title must be a non-empty string`);
+  if (!Array.isArray(nav) || nav.length === 0) throw new Error(`${where}.nav must be a non-empty array`);
+  return {
+    title,
+    routes,
+    nav: nav.map((item, i) => {
+      if (!item || typeof item.label !== "string" || item.label.trim() === "") throw new Error(`${where}.nav[${i}].label must be a non-empty string`);
+      if (typeof item.path !== "string" || !NAV_PATH.test(item.path)) throw new Error(`${where}.nav[${i}].path must look like "/" or "/seasons"`);
+      const minLevel = item.minLevel === undefined ? "officer" : item.minLevel;
+      if (minLevel !== "officer" && minLevel !== "owner") throw new Error(`${where}.nav[${i}].minLevel must be "officer" or "owner"`);
+      return { label: item.label, path: item.path, minLevel };
+    }),
+  };
 }
 
 function buildHandle(mod) {
@@ -84,6 +113,8 @@ function normalizeModule(mod) {
     managerRoles: typeof mod.managerRoles === "function" ? mod.managerRoles : null,
     // The /menu section (core/menu.js): { section, render, guide } or null.
     menu: normalizeMenu(mod),
+    // The web admin pages (web/server.js): { title, nav, routes } or null.
+    web: normalizeWeb(mod),
   };
 }
 
@@ -101,4 +132,4 @@ function loadModules(names, available = AVAILABLE) {
   });
 }
 
-module.exports = { AVAILABLE, buildHandle, normalizeModule, loadModules };
+module.exports = { AVAILABLE, WEB_RESERVED, buildHandle, normalizeModule, loadModules };

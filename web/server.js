@@ -14,6 +14,7 @@ const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter } = require(
 const session = require("./session");
 const { renderView } = require("./render");
 const { HTMX, HTMX_CONFIG } = require("./vendor");
+const { createWebCtx } = require("./context");
 
 const VIEWS = path.join(__dirname, "views");
 const PUBLIC = path.join(__dirname, "public");
@@ -48,6 +49,35 @@ const TEXT = Object.freeze({
   badRequest: "That request couldn't be processed.",
   broken: "Something went wrong on our side.",
 });
+
+const OWNER_ONLY = "Only members with Manage Server can change bot settings.";
+
+// Enforces a module's nav `minLevel` on the paths behind it, server-side: an
+// owner-level nav item guards its page AND everything below it (a nav item
+// "/config" also guards POST /config/roles/add), whatever the module's routes
+// do. The nav hiding the link is convenience; this is the protection. The
+// comparison is on a normalised path (lower-case, slashes collapsed, both the
+// raw and the percent-decoded form) so spelling variants cannot slip past a
+// router that matches case-insensitively. A "/" item guards only the root page.
+function navGate(mod) {
+  const guarded = mod.web.nav.filter((item) => item.minLevel !== "officer");
+  if (guarded.length === 0) return null;
+  const normalise = (p) => p.toLowerCase().replace(/\/{2,}/g, "/");
+  return (req, res, next) => {
+    const forms = new Set([normalise(req.path)]);
+    try {
+      forms.add(normalise(decodeURIComponent(req.path)));
+    } catch {
+      // a malformed escape: the raw form alone is checked (the router will 400/404 it)
+    }
+    for (const item of guarded) {
+      const base = item.path.replace(/\/+$/, "");
+      const hit = [...forms].some((p) => (item.path === "/" ? p === "/" : p === base || p.startsWith(`${base}/`)));
+      if (hit && !atLeast(req.viewer.level, item.minLevel)) return next(httpError(403, OWNER_ONLY));
+    }
+    return next();
+  };
+}
 
 function helmetFor(web) {
   return helmet({
@@ -263,6 +293,16 @@ function createWebApp({
   });
 
   app.get("/teammates", (req, res) => sendPage(req, res, { title: "Teammates", file: view("soon") }));
+
+  // Module pages at /<name>, behind the gate above (req.viewer is an officer
+  // or owner) and each nav item's own minLevel.
+  for (const mod of webModules) {
+    const router = express.Router();
+    const gate = navGate(mod);
+    if (gate) router.use(gate);
+    mod.web.routes(router, createWebCtx({ ctx: ctxFor(mod), sendPage, access, now, runAfter: after }));
+    app.use(`/${mod.name}`, router);
+  }
 
   app.use((req, res, next) => next(httpError(404, TEXT.notFound)));
 
