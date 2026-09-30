@@ -157,7 +157,9 @@ test(`callback: more than ${CALLBACKS_PER_MINUTE} token exchanges a minute → 4
     const res = await w.request(`/auth/callback?code=x&state=${state}`);
     assert.equal(res.status, 429);
     assert.equal(w.discord.calls.length, calls);
-    assert.ok(w.log.lines.slice(before).some((l) => /rate limit/i.test(l)), "the limiter hit is logged");
+    assert.ok(w.log.lines.length > before);
+    assert.ok(w.log.warns.some((l) => /rate limit/i.test(l)), "the limiter hit is logged at warn level");
+    assert.ok(!w.log.errors.some((l) => /rate limit/i.test(l)), "...and not as an error");
     t += 60_000;
     await w.signIn(OWNER);
   });
@@ -329,7 +331,43 @@ test("security headers: CSP self-only scripts/styles, no framing, form-action se
     assert.match(csp, /form-action 'self'/);
     assert.equal(res.headers.get("x-powered-by"), null);
     assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(res.headers.get("referrer-policy"), "no-referrer");
+    // "same-origin", never "no-referrer": a no-referrer page sends `Origin: null`
+    // on a plain (non-CORS) form POST, which sameOriginGuard refuses — Sign out
+    // and every no-JS form would break in real browsers. same-origin still
+    // sends nothing to Discord or other outside sites.
+    assert.equal(res.headers.get("referrer-policy"), "same-origin");
+  });
+});
+
+// What a browser sends for a plain <form method=post> under the page's referrer
+// policy: the page's real origin + Sec-Fetch-Site: same-origin. (The harness's
+// post() hard-codes both, so this spells them out on purpose.)
+test("a plain form POST as the browser sends it under the page's referrer policy is accepted (Sign out works)", async () => {
+  await withWeb({}, async (w) => {
+    await w.signIn(OWNER);
+    const policy = (await w.request("/teammates")).headers.get("referrer-policy");
+    assert.equal(policy, "same-origin");
+    // Origin is sent for a same-origin POST under same-origin (only `no-referrer` turns it into "null").
+    const out = await w.request("/auth/logout", {
+      method: "POST",
+      form: {},
+      headers: { origin: ORIGIN, "sec-fetch-site": "same-origin" },
+    });
+    assert.equal(out.status, 303);
+    assert.equal(out.headers.get("location"), "/login");
+  });
+});
+
+test("the CSRF guard refuses `Origin: null` (what a no-referrer page would send) — so the referrer policy must stay same-origin", async () => {
+  await withWeb({}, async (w) => {
+    await w.signIn(OWNER);
+    const res = await w.request("/auth/logout", {
+      method: "POST",
+      form: {},
+      headers: { origin: "null", "sec-fetch-site": "same-origin" },
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await w.page("/teammates")).res.status, 200, "still signed in");
   });
 });
 
@@ -401,6 +439,24 @@ test("startWeb: a busy port rejects (index.js stops before bot.lock) instead of 
     );
   } finally {
     await new Promise((r) => blocker.close(r));
+  }
+});
+
+test("startWeb: after listening, a server error is logged (code only), not swallowed once and fatal the second time", async () => {
+  const { startWeb: startServer } = require("../web/server");
+  const { createPerms } = require("../core/perms");
+  const lines = [];
+  const log = { log() {}, warn() {}, error: (...a) => lines.push(a.map(String).join(" ")) };
+  const server = await startServer({ web: { ...WEB, port: 0 }, modules: [], ctxFor: () => ({}), perms: createPerms(), getGuild: async () => null, log });
+  try {
+    assert.equal(server.listenerCount("error"), 1, "the startup reject listener is gone, a permanent one is in");
+    server.emit("error", Object.assign(new Error("SECRET-DETAIL"), { code: "EIO" }));
+    server.emit("error", Object.assign(new Error("SECRET-DETAIL"), { code: "EIO" })); // the second one must not throw either
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /\[web\] server error: EIO/);
+    assert.doesNotMatch(lines.join("\n"), /SECRET/);
+  } finally {
+    await new Promise((r) => server.close(r));
   }
 });
 

@@ -65,7 +65,11 @@ function helmetFor(web) {
         "upgrade-insecure-requests": web.secure ? [] : null,
       },
     },
-    referrerPolicy: { policy: "no-referrer" },
+    // "same-origin", NOT "no-referrer": under the Fetch spec a no-referrer page
+    // sends `Origin: null` on a non-CORS form POST, and sameOriginGuard would
+    // refuse every plain form (Sign out, all no-JS forms). same-origin still
+    // sends no referrer to Discord or any other outside site.
+    referrerPolicy: { policy: "same-origin" },
   });
 }
 
@@ -288,12 +292,19 @@ function createWebApp({
 
 // Listen on web.port. Resolves with the http.Server once listening; rejects
 // (e.g. EADDRINUSE) so the caller can stop the bot before its first side effect.
+// After that a server error is logged (code/name only), never thrown: an
+// 'error' event without a listener would crash the bot.
 function startWeb(options) {
   const app = createWebApp(options);
+  const log = options.log || console;
   return new Promise((resolve, reject) => {
     const server = app.listen(options.web.port);
-    server.once("listening", () => resolve(server));
     server.once("error", reject);
+    server.once("listening", () => {
+      server.removeListener("error", reject);
+      server.on("error", (e) => log.error("[web] server error:", e?.code || e?.name || "Error"));
+      resolve(server);
+    });
   });
 }
 

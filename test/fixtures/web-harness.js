@@ -78,9 +78,25 @@ function fakeDiscord() {
 }
 
 function logSink() {
+  // `lines` holds every line; `warns` / `errors` only those logged at that level.
   const lines = [];
-  const push = (...a) => lines.push(a.map(String).join(" "));
-  return { lines, log: push, warn: push, error: push };
+  const warns = [];
+  const errors = [];
+  const fmt = (a) => a.map(String).join(" ");
+  return {
+    lines,
+    warns,
+    errors,
+    log: (...a) => lines.push(fmt(a)),
+    warn: (...a) => {
+      lines.push(fmt(a));
+      warns.push(fmt(a));
+    },
+    error: (...a) => {
+      lines.push(fmt(a));
+      errors.push(fmt(a));
+    },
+  };
 }
 
 // startWeb({ modules?, guild?, now?, client?, ready?, lookupTimeoutMs? }) → harness
