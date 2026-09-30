@@ -175,6 +175,90 @@ The daily digest timing can't be forced by hand, but the switch and status can:
 
 ---
 
+## Phase 10 — `/menu` on a phone (M2b, test server)
+
+Run this on the **BB Bot Test** server against the `dev` bot, **on the Discord
+mobile app** — most members use a phone, and there is no documentation of how
+Components V2 menus look there. You need your officer account **and a 2nd
+account without a manager role** (both steps marked **(2nd account)** are
+required, not optional).
+
+**Entry and layout**
+- [ ] **`/menu`** → one message only you can see: **Menu**, "You: Officer",
+      a **Help board · N open** row with **Open**, and **How it works**. No
+      "Web admin" button yet (no `PUBLIC_URL`).
+- [ ] **Edits in place (engine check):** tap **Open**, then **← Back**, then
+      **How it works** — the screen must change **in the same message** (no new
+      message appears per tap, the old screen is gone). If every tap instead
+      opens a *new* message, record it as a **finding**: the engine decides
+      "edit vs. new reply" from the Ephemeral bit in the tapped message's flags,
+      and this phone/client would not be sending it.
+- [ ] **Board Menu button:** on the pinned board tap **Menu** (an existing
+      board gains the button on its next refresh — post or sort a request if it
+      is missing) → your own private menu appears; **the public board itself
+      does not change** (ask the 2nd account to confirm it still looks the same
+      for them, and that they see no menu of yours).
+- [ ] **Mobile layout:** on the home, Help board, Officer, picker and
+      confirmation screens — buttons readable and easy to tap, **no button row
+      wraps or overflows**, no label is cut ("Repost board", "Mark helped",
+      "How it works"), **← Back** is always the last row. Anything truncated or
+      awkward → note the screen and a screenshot.
+- [ ] **How it works** → the `/help` text; **← Back** → home.
+
+**Member side (2nd account)**
+- [ ] **Open** → Help board shows **Need help / I'm sorted / Stats** and Back —
+      **no Officer row**.
+- [ ] **Need help** → pick a category → back on the Help board with
+      "✅ Request posted: …" and an **Add note** button; the card and the
+      board update in the channel.
+- [ ] **Add note** → a form → type a note → "✅ Note added."; the card and the
+      board show the note.
+- [ ] **Need help** the same category again → "⚠️ You're already on the board…".
+- [ ] **I'm sorted** with one request → it closes at once ("✅ Marked 1 request
+      sorted."), the card says "marked themselves sorted".
+- [ ] Post two requests → **I'm sorted** → a picker + **Close all** → pick one →
+      only that one closes.
+- [ ] **Close all** → a confirmation (red **Close all** + **Cancel**) →
+      **Cancel** returns to the picker; **Close all** closes the rest.
+- [ ] **Expired confirmation:** open the Close all confirmation, wait **6
+      minutes**, tap it → "⚠️ That confirmation expired…" and a fresh
+      confirmation; nothing closed.
+- [ ] **Stats** → today's stats; switch the view in the select; look up a
+      member → their stats, the view stays.
+- [ ] **Forbidden officer action (2nd account):** there is no Officer row — the
+      2nd account cannot reach Mark helped / Remove / Repost at all.
+
+**Officer side**
+- [ ] **Open** → the **Officer** row: Mark helped / Remove / Repost board.
+- [ ] **Mark helped** → pick the 2nd account (one request) → "✅ <name> marked
+      as helped." at once; the 2nd account gets the DM; the card is finalised.
+      With two requests → a category picker first.
+- [ ] **Remove** → pick → a confirmation (red **Remove** + **Cancel**) →
+      **Remove** → "✅ Removed <name>'s request."; the card says "Removed by".
+- [ ] **Repost board** from a *different* channel → the board is posted and
+      pinned there; the old one is retired.
+
+**Role change while a menu is open (2nd account + officer)**
+- [ ] With your officer menu open on the Help board, have the admin **remove
+      your manager role** (you are now an ordinary member, like the 2nd
+      account), then tap **Mark helped** (or any Officer button) → **refused**:
+      you land on home with "⚠️ You don't have access to that anymore…", the
+      Officer row is gone, and **nothing was changed** (no request closed, no
+      DM sent). Give the role back afterwards.
+
+**Old menus and the legacy paths**
+- [ ] **15+ minutes old:** open `/menu`, leave it on screen (don't dismiss) for
+      **16+ minutes**, then tap a button (e.g. **Open**). Record what happens:
+      it should still work (each tap has its own token); if Discord says
+      "interaction failed", note it — `/menu` or the board's Menu button always
+      gives a fresh one.
+- [ ] Dismiss the menu, run `/menu` again → a fresh menu.
+- [ ] The old paths still work: `/needhelp`, `/imsorted`, `/stats`, `/helped`,
+      `/remove`, `/board`, the board's **Need help** button, the card buttons.
+- [ ] `/config addrole @everyone` → refused ("You can't add @everyone…").
+
+---
+
 ## What this can't cover by hand
 
 These are verified in code / at the host, not clickable here — listed so you know
