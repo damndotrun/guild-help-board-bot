@@ -8,6 +8,48 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-09-30 — M2b `/menu` core
+
+- **`/menu`** (and a **Menu** button on the pinned board, next to Need help)
+  opens one ephemeral, self-editing **Components V2** message: a home screen
+  with one row per module ("Help board · N open"), **How it works** (today's
+  `/help` text) and, on the Help board, Need help / I'm sorted / Stats for
+  everyone plus an **Officer** row (Mark helped / Remove / Repost board).
+  Settings stay off the Discord menu — they go to the web admin (M3). The old
+  slash commands keep working until M6.
+- **Actions layer — `modules/help/actions.js`:** every help-board write is an
+  `action(ctx, actor, args) → { ok, …, effects } | { ok: false, code, error }`
+  (`needHelp`, `sorted`, `closeAll`, `setNote`, `helped`, `remove`,
+  `repostBoard`, `newSeason`, `renameSeason`, `reset`, `addCategory`,
+  `archiveCategory`, `addManagerRole`, `removeManagerRole`, `setNotifyRole`,
+  `setNudge`, `nudgeOff`). The slash commands, their panels, the menu and (M3)
+  the web call these, so they can't drift. Each action checks the actor's
+  level itself; slow REST comes back as `effects` and runs after the ack. (The
+  request-card buttons `help:claim/sorted/remove` keep their inline logic.)
+- **Permissions — `core/perms.js`:** `computeLevel()` is the one rule (Manage
+  Server → owner, a manager role → officer, else member); help's `isManager()`
+  delegates to it. `ctx.perms.levelOf(member)` / `levelOfInteraction(i)`. The
+  manager roles come from the help module's `managerRoles()` provider — the
+  core never reads `data.json`.
+- **Menu engine — `core/menu.js` + `core/panel.js`:** `menu` is a core
+  pseudo-module (owns `/menu` and the `menu:` prefix; no module may be named
+  `menu`). customIds: `menu:<module>:<screen>[:<arg>]`. Every tap re-checks the
+  level — an officer screen tapped after losing the role falls back to home
+  with one line. A `menu:` button on a non-menu message (the public board)
+  always opens a *new* ephemeral menu; it never edits that message. Every
+  screen goes through a mobile-limit validator (≤ 3 buttons/row, ≤ 4 button
+  rows, labels ≤ 20, ≤ 40 components, depth ≤ 3, one Primary); an invalid
+  screen is logged and replaced by home.
+- **Behaviour changes:** `/config addrole` and `/config notify` now refuse
+  @everyone and bot-managed roles (the `/config roles` panel already did);
+  `/board` answers with an explicit error when it can't post in the channel.
+- **Cost of a tap:** 3–5 `data.json` reads per menu tap (≈ 22–40 ms at the
+  5000-record cap, dev machine) — far inside Discord's 3 s ack window.
+- `PUBLIC_URL` (unset until M3) turns on the **Web admin** link for officers;
+  it must be a full `http(s)://…` URL, otherwise the bot refuses to start.
+
+---
+
 ## 2026-09-30 — M1 platform skeleton
 
 - **Layout:** `index.js` is now a thin core entry; the help board's code moved
@@ -129,7 +171,14 @@ Manage-Server check).
   single-instance advisory: on startup it writes a `bot.lock` heartbeat and warns
   (never blocks) if a fresh one already exists; a `SIGTERM`/`SIGINT` handler removes
   the lock on graceful shutdown so a fast redeploy doesn't false-warn.
-- `isManager(interaction, data)` — permission gate for officer actions.
+- `isManager(interaction, data)` — permission gate for officer actions; a thin
+  wrapper over `core/perms.js` `computeLevel()` (the one level rule).
+- `modules/help/actions.js` — every help-board write (see the M2b note). New
+  write path for slash, menu or web = a new action here.
+- `core/menu.js` (`createMenuModule`, `homeScreen`, `parseMenuId`,
+  `isMenuMessage`), `core/panel.js` (`buildScreenPayload`, `screenErrors`,
+  `textFromEmbed`) and `modules/help/menu.js` (`section`, `render`, the
+  Help board screens) — the `/menu`.
 - `buildBoardEmbed(data, names)` / `renderField(lines)` / `catOf(category)` —
   board rendering. `renderField` keeps each field ≤1024 chars and appends
   "…and N more". `catOf` is a safe category lookup (won't throw on unknown data).
@@ -510,7 +559,7 @@ fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
    read-modify-write must be synchronous, or a concurrent interaction's write
    gets clobbered. Where an await is unavoidable before persisting (e.g.
    `/needhelp` saving the card message id), re-`loadData()`, patch the entry by
-   `id`, and save that fresh copy — see `/needhelp`.
+   `id`, and save that fresh copy — see `announceEntry()`.
 2. **`resolveNames()` must never call `saveData()`.** It runs after other awaits
    with a possibly-stale snapshot; persisting it would clobber concurrent writes.
    It only builds a `{ userId: name }` map.
@@ -530,6 +579,15 @@ fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
    append-only `data.records` log is the substrate for all of `/stats`; a new
    deletion path that forgets to log silently undercounts every report. If you
    add a way for an entry to leave `data.entries`, add its record too.
+7. **`menu:` is the core's prefix; menu messages are V2-only.** First reply
+   `Ephemeral | IsComponentsV2`, edits `IsComponentsV2`, never `content` /
+   `embeds`. `update()` only on the ephemeral menu message itself
+   (`isMenuMessage`) — the public board and the request cards stay V1, and a
+   V2 flag can never be taken off a message again.
+8. **Writes go through `modules/help/actions.js`.** Every action checks the
+   actor's level itself (menu filtering is a convenience), runs
+   `loadData()` → `saveData()` without an `await`, and returns its slow REST
+   as `effects` for the caller to run after the ack.
 
 ## Updating
 

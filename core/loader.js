@@ -1,6 +1,6 @@
 // Module loading and normalisation. Every module exports a plain object:
 //   { name, aliases?, dataFile? (null = no ctx.store), commands?, handle? | onCommand?/components?/
-//     modals?/autocomplete?, bind?, onReady?, jobs? }
+//     modals?/autocomplete?, bind?, onReady?, jobs?, managerRoles?, menu? }
 // The router only ever calls `handle(interaction, ctx)`; modules that prefer
 // per-action tables get a `handle` built from them here.
 
@@ -10,6 +10,19 @@ const AVAILABLE = {
 };
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/;
+
+// "menu" is the core's: the /menu command and the menu: customId prefix (M2 spec §4).
+const RESERVED = new Set(["menu"]);
+
+function normalizeMenu(mod) {
+  if (mod.menu == null) return null;
+  const { section, render, guide } = mod.menu;
+  if (typeof section !== "function" || typeof render !== "function") {
+    throw new Error(`[${mod.name}] menu needs section() and render() functions`);
+  }
+  if (guide !== undefined && typeof guide !== "function") throw new Error(`[${mod.name}] menu.guide must be a function`);
+  return { section, render, guide: guide || null };
+}
 
 function buildHandle(mod) {
   const onCommand = mod.onCommand || {};
@@ -55,6 +68,7 @@ function normalizeModule(mod) {
   if (!mod || typeof mod.name !== "string" || !NAME_RE.test(mod.name)) {
     throw new Error(`Invalid module name: ${mod && mod.name}`);
   }
+  if (RESERVED.has(mod.name)) throw new Error(`Module name "${mod.name}" is reserved for the core`);
   return {
     name: mod.name,
     aliases: mod.aliases || [],
@@ -65,6 +79,11 @@ function normalizeModule(mod) {
     bind: mod.bind || null,
     onReady: mod.onReady || null,
     jobs: normalizeJobs(mod),
+    // Optional: the one module that owns the manager-role list (help) exposes
+    // it read-only for core/perms.
+    managerRoles: typeof mod.managerRoles === "function" ? mod.managerRoles : null,
+    // The /menu section (core/menu.js): { section, render, guide } or null.
+    menu: normalizeMenu(mod),
   };
 }
 

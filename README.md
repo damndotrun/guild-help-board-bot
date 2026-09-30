@@ -168,6 +168,13 @@ default `help`) selects which modules run — e.g. `MODULES: "help"`. Leave it
 unset to run exactly the help board. Each module keeps its own `<name>.json` in
 `DATA_DIR`; the help board keeps `data.json`.
 
+**Optional: `PUBLIC_URL`.** The web admin's address, as a full `https://…` URL.
+It is unset by default and only matters once the web admin exists (M3): when
+set, officers see a **Web admin** link button on the `/menu` home screen; when
+unset the button is simply not shown. It is not needed for the bot to run, but a
+value that is not a valid `http(s)://…` URL stops the bot at startup with a
+message naming `PUBLIC_URL`.
+
 **Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
 the start command needs).
 

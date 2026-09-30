@@ -27,6 +27,13 @@ require("dotenv").config();
 // data.json lives in the platform DATA_DIR (default: the repo root, as before
 // the move into modules/help/) — see core/config.js.
 const { DATA_DIR } = require("../../core/config");
+const { computeLevel } = require("../../core/perms");
+
+// ./actions requires this file, so it is loaded lazily (at call time) to keep
+// the require graph acyclic.
+function actions() {
+  return require("./actions");
+}
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 const BAK_FILE = path.join(DATA_DIR, "data.json.bak");
@@ -290,13 +297,26 @@ let lastNudgePostTs = 0;
 // a role that an admin added via /config. With no manager roles set, it falls
 // back to Manage Server only — so you can never lock yourself out.
 function isManager(interaction, data) {
-  const perms = interaction.memberPermissions;
-  if (perms && perms.has(PermissionFlagsBits.ManageGuild)) return true;
-  const roleIds = data.managerRoleIds || [];
-  if (roleIds.length === 0) return false;
-  const cache = interaction.member?.roles?.cache;
-  if (cache) return roleIds.some((id) => cache.has(id));
-  return false;
+  return levelOfInteraction(interaction, data) !== "member";
+}
+
+// The one place help feeds an interaction into the shared core/perms rule.
+function levelOfInteraction(interaction, data) {
+  return computeLevel({
+    permissions: interaction.memberPermissions,
+    roleCache: interaction.member?.roles?.cache,
+    managerRoleIds: data.managerRoleIds,
+  });
+}
+
+// The actor the shared actions (./actions) receive: who is acting, the name
+// cards show, and the level from the same rule as isManager.
+function actorOf(interaction, data) {
+  return {
+    userId: interaction.user.id,
+    displayName: interaction.member?.displayName || interaction.user.username,
+    level: levelOfInteraction(interaction, data),
+  };
 }
 
 // Resolve a category id to its current {label, emoji}. Returns a FRESH object
@@ -1146,13 +1166,19 @@ function cardDescription(cat, entry, claimerName) {
 // writes, and refresh the board. Slow REST — call AFTER acking the user.
 async function announceEntry(client, entry, fallbackChannelId) {
   const data = loadData();
-  await postRequestCard(client, data, entry, fallbackChannelId);
+  // Render from the stored entry, not the caller's copy: a note saved since then is in it.
+  const current = data.entries.find((e) => e.id === entry.id) || entry;
+  const postedNote = current.note;
+  await postRequestCard(client, data, current, fallbackChannelId);
   const fresh = loadData();
   const target = fresh.entries.find((e) => e.id === entry.id);
   if (target) {
-    target.requestChannelId = entry.requestChannelId;
-    target.requestMessageId = entry.requestMessageId;
+    target.requestChannelId = current.requestChannelId;
+    target.requestMessageId = current.requestMessageId;
     saveData(fresh);
+    // A note added while the card POST was in flight found no message to edit —
+    // bring the just-posted card up to date.
+    if (!target.done && target.note !== postedNote) await rerenderCard(client, fresh, target);
   }
   await refreshBoard(client, fresh);
 }
@@ -1216,6 +1242,25 @@ async function resolveIds(guild, ids) {
   return names;
 }
 
+// The embed for one /stats view: "current", "alltime" or a past season's
+// endedTs. null = that season is gone. Read-only; the name lookups are REST,
+// so callers defer first. Shared by /stats, the stats:view select and the
+// /menu Stats screen.
+async function statsEmbedFor(guild, data, view) {
+  if (view === "current") {
+    const top = tallyHelpers(data.entries).slice(0, 15);
+    return currentStatsEmbed(data, await resolveIds(guild, top.map(([id]) => id)));
+  }
+  if (view === "alltime") {
+    const top = helperTotals(data.records || []).slice(0, 15);
+    return allTimeEmbed(data, await resolveIds(guild, top.map(([id]) => id)));
+  }
+  const season = (data.seasons || []).find((s) => s.endedTs === Number(view));
+  if (!season) return null;
+  const top = helperTotals(recordsForSeason(data.records || [], season.startedTs)).slice(0, 15);
+  return seasonHelperEmbed(data, season, await resolveIds(guild, top.map(([id]) => id)));
+}
+
 async function refreshBoard(client, data) {
   if (!data.boardChannelId || !data.boardMessageId) return;
   try {
@@ -1235,13 +1280,20 @@ function categorySelectOptions(data) {
     .map((c) => ({ label: `${c.emoji} ${c.label}`.slice(0, 100), value: c.id }));
 }
 
+// The public board's button row. "Menu" opens the viewer's own ephemeral
+// /menu (core-owned customId — the board message itself stays V1 and is never
+// edited by the menu).
 function needHelpRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("board:needhelp")
       .setLabel("Need help")
       .setEmoji("🙋")
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("menu:home")
+      .setLabel("Menu")
+      .setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -1397,6 +1449,51 @@ async function respond(interaction, payload) {
   } catch (err) {
     console.error("Failed to respond to interaction:", err?.message ?? err);
   }
+}
+
+// The /help text. The /menu "How it works" screen shows the same text as V2 markdown.
+function howItWorksEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle("🛡️ Guild Help Board — how it works")
+    .setDescription(
+      "Tracks who needs help with the guild's help categories this " +
+        "season, and lets officers mark them as sorted once helped. The board " +
+        "message updates automatically."
+    )
+    .addFields(
+      {
+        name: "🟢 Everyone",
+        value:
+          "`/needhelp` — add yourself (posts a request officers can action)\n" +
+          "`/imsorted` — remove yourself once you've been helped\n" +
+          "`/stats` — season stats & top helpers\n" +
+          "`/help` — show this message",
+      },
+      {
+        name: "🛡️ Officers (Manage Server, or a manager role)",
+        value:
+          "Click **✅ Sorted** / **🗑️ Remove** on a request card, or:\n" +
+          "`/helped @member <category>` — mark them as sorted\n" +
+          "`/remove @member <category>` — remove an entry\n" +
+          "`/board` — post & pin the live board\n" +
+          "`/reset` — clear the board for a new season",
+      },
+      {
+        name: "⚙️ Admins (Manage Server)",
+        value:
+          "`/config addrole @role` — let a role manage the board\n" +
+          "`/config removerole @role` — remove a role\n" +
+          "`/config notify @role` — ping a role on new requests\n" +
+          "`/config roles` — panel: manage roles & the notify role\n" +
+          "`/config category add [label] [emoji]` — add/update a category (opens a form if left blank)\n" +
+          "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
+          "`/config category list` — list categories\n" +
+          "`/config nudge set #channel [hours]` — daily digest for long-waiting requests\n" +
+          "`/config nudge off` — turn nudges off\n" +
+          "`/config nudge status` — show nudge settings",
+      }
+    );
 }
 
 // ---------- slash commands ----------
@@ -1557,6 +1654,11 @@ function bind(c) {
   client = c;
 }
 
+// The ctx the help handlers hand to ./actions (only .client is used there).
+function helpCtx() {
+  return { client };
+}
+
 // Called by the core on clientReady.
 function onReady() {
   const nudgeTimer = setInterval(() => nudgeTick(client), NUDGE_TICK_MS);
@@ -1711,57 +1813,38 @@ async function handleBoardButton(interaction) {
 
 async function handleBoardSelect(interaction) {
   const data = loadData();
-  const category = interaction.values[0];
-  const cats = categoryMap(data);
-  if (!cats[category] || cats[category].archived) {
-    await interaction.update({ content: "That category isn't available anymore.", components: [] });
+  const categoryId = interaction.values[0];
+  const r = actions().needHelp(helpCtx(), actorOf(interaction, data), { categoryId, channelId: interaction.channelId });
+  if (!r.ok) {
+    const content =
+      r.code === "invalid"
+        ? "That category isn't available anymore."
+        : r.code === "duplicate"
+          ? `You're already on the board for **${catOf(data, categoryId).label}**.`
+          : r.error;
+    await interaction.update({ content, components: [] });
     return;
   }
-  if (hasOpenEntry(data, interaction.user.id, category)) {
-    await interaction.update({ content: `You're already on the board for **${catOf(data, category).label}**.`, components: [] });
-    return;
-  }
-  const entry = newHelpEntry(
-    interaction.user.id,
-    interaction.member?.displayName || interaction.user.username,
-    category,
-    ""
-  );
-  data.entries.push(entry);
-  saveData(data);
-  await interaction.update({ content: `Added you to the board for **${catOf(data, category).label}** ${catOf(data, category).emoji} ✅`, components: [] });
-  await announceEntry(client, entry, interaction.channelId);
+  await interaction.update({ content: `Added you to the board for **${r.category.label}** ${r.category.emoji} ✅`, components: [] });
+  await r.effects();
 }
 
 async function handleStatsCommand(interaction, data) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const top = tallyHelpers(data.entries).slice(0, 15);
-  const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-  await interaction.editReply({ embeds: [currentStatsEmbed(data, names)], components: statsPanelComponents(data, "current") });
+  const embed = await statsEmbedFor(interaction.guild, data, "current");
+  await interaction.editReply({ embeds: [embed], components: statsPanelComponents(data, "current") });
 }
 
 async function handleStatsView(interaction) {
   await interaction.deferUpdate();
   const data = loadData();
   const value = interaction.values[0];
-  if (value === "current") {
-    const top = tallyHelpers(data.entries).slice(0, 15);
-    const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-    await interaction.editReply({ embeds: [currentStatsEmbed(data, names)], components: statsPanelComponents(data, "current") });
+  const embed = await statsEmbedFor(interaction.guild, data, value);
+  if (!embed) {
+    await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") });
     return;
   }
-  if (value === "alltime") {
-    const top = helperTotals(data.records || []).slice(0, 15);
-    const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-    await interaction.editReply({ embeds: [allTimeEmbed(data, names)], components: statsPanelComponents(data, "alltime") });
-    return;
-  }
-  const endedTs = Number(value);
-  const season = (data.seasons || []).find((s) => s.endedTs === endedTs);
-  if (!season) { await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") }); return; }
-  const top = helperTotals(recordsForSeason(data.records || [], season.startedTs)).slice(0, 15);
-  const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-  await interaction.editReply({ embeds: [seasonHelperEmbed(data, season, names)], components: statsPanelComponents(data, value) });
+  await interaction.editReply({ embeds: [embed], components: statsPanelComponents(data, value) });
 }
 
 async function handleStatsMember(interaction) {
@@ -1836,54 +1919,43 @@ async function handleSeasonModal(interaction) {
   const name = interaction.fields.getTextInputValue("name");
 
   if (interaction.customId === "season:newmodal") {
-    const pending = data.entries.filter((e) => !e.done);
-    const archived = closeSeason(data, Date.now());
-    beginSeason(data, name, Date.now());
-    saveData(data);                 // persist BEFORE slow REST
-    const sortedNow = data.entries.filter((e) => e.done).length;
-    // Refresh the season panel this modal was opened from, in place — falls
-    // back to a fresh ephemeral ack if the submit somehow didn't come from a
-    // message component (shouldn't happen: both modals are button-triggered).
-    if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
-      // F3: the ack can fail on its own (panel dismissed mid-modal, message-
-      // target errors) — wrap it so a throw here can't skip the post-ack REST
-      // below (resolveCard for every pending entry + refreshBoard), which must
-      // always run since saveData already committed the season reset.
-      try {
-        await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
-      } catch {
-        const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
-        await respond(interaction, { content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
-      }
-    } else {
-      const archivedNote = archived ? "Previous season archived, board cleared." : "Board cleared.";
-      await interaction.reply({ content: `Started season **${seasonLabel(data.currentSeason)}**. ${archivedNote} 🌱`, flags: MessageFlags.Ephemeral });
-    }
-    for (const e of pending) await resolveCard(client, e, "Season reset — this request is closed.");
-    await refreshBoard(client, data);
+    const r = actions().newSeason(helpCtx(), actorOf(interaction, data), { name });
+    if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+    const archivedNote = r.archived ? "Previous season archived, board cleared." : "Board cleared.";
+    await ackSeasonPanel(interaction, r.data, `Started season **${seasonLabel(r.data.currentSeason)}**. ${archivedNote} 🌱`);
+    await r.effects(); // close the pending cards, refresh the board
     return;
   }
 
   if (interaction.customId.startsWith("season:renamemodal:")) {
     const rawTarget = interaction.customId.slice("season:renamemodal:".length);
     const target = rawTarget === "current" ? "current" : Number(rawTarget);
-    const r = renameSeason(data, target, name);
-    if (!r.ok) { await respond(interaction, { content: "Couldn't rename that season (it may be gone, or the name was blank).", flags: MessageFlags.Ephemeral }); return; }
-    saveData(data);
-    const sortedNow = data.entries.filter((e) => e.done).length;
-    if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
-      // F3: same ack-can-fail guard as the newmodal branch above — the fallback
-      // reply must fire so refreshBoard below still runs after saveData.
-      try {
-        await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
-      } catch {
-        await respond(interaction, { content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
-      }
-    } else {
-      await interaction.reply({ content: `Renamed to **${seasonLabel(target === "current" ? data.currentSeason : data.seasons.find((s) => s.endedTs === target))}**.`, flags: MessageFlags.Ephemeral });
-    }
-    if (target === "current") await refreshBoard(client, data); // board may show the season name later; safe no-op otherwise
+    const r = actions().renameSeason(helpCtx(), actorOf(interaction, data), { target, name });
+    if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
+    const season = target === "current" ? r.data.currentSeason : r.data.seasons.find((s) => s.endedTs === target);
+    await ackSeasonPanel(interaction, r.data, `Renamed to **${seasonLabel(season)}**.`);
+    if (r.effects) await r.effects(); // the board may show the season name later; a no-op otherwise
     return;
+  }
+}
+
+// Acks a season modal by refreshing the season panel it was opened from, in
+// place — falls back to a fresh ephemeral ack if the submit somehow didn't come
+// from a message component (shouldn't happen: both modals are button-triggered).
+// F3: the ack can fail on its own (panel dismissed mid-modal, message-target
+// errors) — the fallback reply keeps a throw here from skipping the caller's
+// post-ack REST (cards + board), which must always run since the save already
+// committed.
+async function ackSeasonPanel(interaction, data, doneText) {
+  if (typeof interaction.update === "function" && interaction.isFromMessage?.()) {
+    const sortedNow = data.entries.filter((e) => e.done).length;
+    try {
+      await interaction.update({ embeds: [seasonPanelEmbed(data, sortedNow)], components: seasonPanelComponents(data) });
+    } catch {
+      await respond(interaction, { content: doneText, flags: MessageFlags.Ephemeral });
+    }
+  } else {
+    await interaction.reply({ content: doneText, flags: MessageFlags.Ephemeral });
   }
 }
 
@@ -1897,16 +1969,16 @@ async function handleSeasonModal(interaction) {
 async function handleCatAddModal(interaction) {
   const data = loadData();
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) { await respond(interaction, { content: "Manage Server only.", flags: MessageFlags.Ephemeral }); return; }
-  const label = interaction.fields.getTextInputValue("label");
-  const emoji = interaction.fields.getTextInputValue("emoji") || undefined;
-  const r = addCategory(data, label, emoji);
+  const r = actions().addCategory(helpCtx(), actorOf(interaction, data), {
+    label: interaction.fields.getTextInputValue("label"),
+    emoji: interaction.fields.getTextInputValue("emoji") || undefined,
+  });
   if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
-  saveData(data);
   await respond(interaction, {
     content: `Category **${r.category.label}** ${r.category.emoji} is ready.`,
     flags: MessageFlags.Ephemeral,
   });
-  await refreshBoard(client, data);
+  await r.effects();
 }
 
 // ---------- /config roles panel handlers (M13-T5) ----------
@@ -1941,79 +2013,65 @@ async function updateRolesPanel(interaction, data) {
 // aren't bound to the member who ran the command, so a differently-
 // permissioned member could click it.
 async function handleRolesAddSelect(interaction) {
-  const data = loadData();
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
-    return;
-  }
-  const roleId = interaction.values[0];
   // F4: a RoleSelectMenu offers every role including @everyone and
-  // integration-managed (bot) roles. @everyone would grant every member
-  // manager status (member.roles.cache always includes it); a managed role
-  // can't be assigned to members anyway. Refuse and refresh instead.
-  if (roleId === interaction.guild.id || interaction.guild.roles.cache.get(roleId)?.managed) {
-    await interaction.update({
-      content: "You can't add @everyone or a bot-managed role as a manager role.",
-      embeds: [rolesPanelEmbed(data)],
-      components: rolesPanelComponents(data, roleNameResolver(interaction)),
-    });
-    return;
-  }
-  if (!data.managerRoleIds.includes(roleId)) {
-    data.managerRoleIds.push(roleId); // dedupe: already-present role is a no-op refresh
-    saveData(data);
-  }
-  await updateRolesPanel(interaction, data);
+  // integration-managed (bot) roles; the action refuses both (see `unassignable`).
+  await rolesPanelAction(interaction, (actor) =>
+    actions().addManagerRole(helpCtx(), actor, { role: pickedRole(interaction), guildId: interaction.guild.id })
+  );
 }
 
 // roles:remove — StringSelect populated with only the CURRENT manager roles
 // (rolesRemoveSelectOptions), so the picked id is always a real manager role.
 async function handleRolesRemoveSelect(interaction) {
-  const data = loadData();
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
-    return;
-  }
-  const roleId = interaction.values[0];
-  data.managerRoleIds = data.managerRoleIds.filter((id) => id !== roleId);
-  saveData(data);
-  await updateRolesPanel(interaction, data);
+  await rolesPanelAction(interaction, (actor) =>
+    actions().removeManagerRole(helpCtx(), actor, { roleId: interaction.values[0] })
+  );
 }
 
-// roles:notify — RoleSelectMenu pick to set the request-ping role.
+// roles:notify — RoleSelectMenu pick to set the request-ping role. Same
+// @everyone/managed-role guard as roles:add.
 async function handleRolesNotifySelect(interaction) {
-  const data = loadData();
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
-    return;
-  }
-  const roleId = interaction.values[0];
-  // F4: same @everyone/managed-role guard as roles:add, for UX consistency
-  // (an @everyone notify ping wouldn't fire anyway under allowedMentions).
-  if (roleId === interaction.guild.id || interaction.guild.roles.cache.get(roleId)?.managed) {
-    await interaction.update({
-      content: "You can't set @everyone or a bot-managed role as the notify role.",
-      embeds: [rolesPanelEmbed(data)],
-      components: rolesPanelComponents(data, roleNameResolver(interaction)),
-    });
-    return;
-  }
-  data.notifyRoleId = roleId;
-  saveData(data);
-  await updateRolesPanel(interaction, data);
+  await rolesPanelAction(interaction, (actor) =>
+    actions().setNotifyRole(helpCtx(), actor, { role: pickedRole(interaction), guildId: interaction.guild.id })
+  );
 }
 
 // roles:notifyclear — button to turn request pings back off. F3: ManageGuild
 // re-check, matching the other /config roles handlers.
 async function handleRolesNotifyClear(interaction) {
+  await rolesPanelAction(interaction, (actor) =>
+    actions().setNotifyRole(helpCtx(), actor, { role: null, guildId: interaction.guild?.id })
+  );
+}
+
+// The role a RoleSelectMenu pick points at, in the shape the actions take.
+function pickedRole(interaction) {
+  const id = interaction.values[0];
+  return { id, managed: interaction.guild.roles.cache.get(id)?.managed === true };
+}
+
+// Shared body of the four /config roles panel handlers. F3: re-check
+// ManageGuild (not the weaker isManager) — the panel is spawned by /config
+// roles, which is itself gated on ManageGuild, but its customIds aren't bound
+// to the member who ran the command, so a differently-permissioned member
+// could click it. `run(actor)` calls the action; a refusal re-renders the
+// panel with the reason, a success re-renders it from the saved data.
+async function rolesPanelAction(interaction, run) {
   const data = loadData();
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     await interaction.update({ content: "Manage Server only.", embeds: [], components: [] });
     return;
   }
-  data.notifyRoleId = null;
-  saveData(data);
-  await updateRolesPanel(interaction, data);
+  const r = run(actorOf(interaction, data));
+  if (!r.ok) {
+    await interaction.update({
+      content: r.error,
+      embeds: [rolesPanelEmbed(data)],
+      components: rolesPanelComponents(data, roleNameResolver(interaction)),
+    });
+    return;
+  }
+  await updateRolesPanel(interaction, r.data);
 }
 
 // The /reset confirm/cancel buttons. A different member could click these than
@@ -2048,16 +2106,16 @@ async function handleResetButton(interaction) {
       });
       return;
     }
-    // Invariant #1: no await between loadData and saveData — closeSeason is
-    // synchronous, so this mirrors the old direct /reset wipe exactly, just
-    // moved behind the confirm click.
-    const pending = data.entries.filter((e) => !e.done);
-    closeSeason(data, Date.now());
-    saveData(data);
+    // The wipe itself is the shared action (sync load → closeSeason → save).
+    const r = actions().reset(helpCtx(), actorOf(interaction, data));
+    if (!r.ok) {
+      await interaction.update({ content: r.error, embeds: [], components: [] });
+      return;
+    }
     // F2: the ack can fail on its own (panel dismissed, transient 5xx,
     // Unknown Message 10008) — wrap it so a throw here can't skip the
-    // post-ack REST below (resolveCard loop + refreshBoard), which must
-    // always run since saveData already committed the season wipe.
+    // post-ack REST below (cards + board), which must always run since the
+    // save already committed the season wipe.
     try {
       await interaction.update({ content: "Season reset — the board is clear.", embeds: [], components: [] });
     } catch {
@@ -2065,52 +2123,37 @@ async function handleResetButton(interaction) {
     }
     // Slow REST after the ack + save: close any open request cards so they
     // don't linger looking actionable, then refresh the live board.
-    for (const e of pending) {
-      await resolveCard(client, e, "Season reset — this request is closed.");
-    }
-    await refreshBoard(client, data);
+    await r.effects();
     return;
   }
   await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
 }
 
-// Closes the given (already ownership-filtered) entries: logs a "self" record
-// for each BEFORE saveData (invariant #6), saves, acks the panel, then does the
-// slow REST (resolveCard/refreshBoard) after the ack (invariant #1). Shared by
-// both the imsorted:pick select and the imsorted:all button.
-async function closeImsortedEntries(interaction, data, mine) {
-  closeEntries(data, mine, "self", Date.now());
-  saveData(data);
-  const confirmText = `Marked ${mine.length} request${mine.length === 1 ? "" : "s"} sorted.`;
-  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
-  // Message 10008) — wrap it so a throw here can't skip the post-ack REST
-  // below (resolveCard loop + refreshBoard), which must always run since
-  // saveData already committed the close.
+// Acks the imsorted panel for a sorted/closeAll action result, then runs its
+// slow REST (cards + board) after the ack. The ack can fail on its own (panel
+// dismissed, 5xx, Unknown Message 10008) — the save already happened, so the
+// effects must still run.
+async function finishImsorted(interaction, r, emptyText) {
+  if (!r.ok) {
+    await interaction.update({ content: r.code === "not_found" ? emptyText : r.error, embeds: [], components: [] });
+    return;
+  }
+  const n = r.closed.length;
+  const confirmText = `Marked ${n} request${n === 1 ? "" : "s"} sorted.`;
   try {
     await interaction.update({ content: confirmText, embeds: [], components: [] });
   } catch {
     await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
   }
-  for (const e of mine) {
-    await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
-  }
-  await refreshBoard(client, data);
+  await r.effects();
 }
 
 // imsorted:pick — the caller multi-selected specific entries to close. Never
-// trust the select values alone: filter to entries actually owned by the
-// clicking user (and still open) before closing anything.
+// trust the select values alone: the action filters to entries actually owned
+// by the clicking user (and still open) before closing anything.
 async function handleImsortedSelect(interaction) {
-  const data = loadData();
-  const ids = new Set(interaction.values);
-  const mine = data.entries.filter(
-    (e) => ids.has(e.id) && e.userId === interaction.user.id && !e.done
-  );
-  if (mine.length === 0) {
-    await interaction.update({ content: "Those requests are already gone.", embeds: [], components: [] });
-    return;
-  }
-  await closeImsortedEntries(interaction, data, mine);
+  const r = actions().sorted(helpCtx(), actorOf(interaction, loadData()), { entryIds: interaction.values });
+  await finishImsorted(interaction, r, "Those requests are already gone.");
 }
 
 // imsorted:all — the "close all" convenience button from the panel.
@@ -2120,13 +2163,8 @@ async function handleImsortedButton(interaction) {
     await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
     return;
   }
-  const data = loadData();
-  const mine = openEntriesFor(data, interaction.user.id);
-  if (mine.length === 0) {
-    await interaction.update({ content: "You have no open requests.", embeds: [], components: [] });
-    return;
-  }
-  await closeImsortedEntries(interaction, data, mine);
+  const r = actions().closeAll(helpCtx(), actorOf(interaction, loadData()));
+  await finishImsorted(interaction, r, "You have no open requests.");
 }
 
 // resolve:<action>:member — the manager picked a member. Re-check isManager
@@ -2146,41 +2184,6 @@ async function handleResolveMemberSelect(interaction) {
   await interaction.editReply(entryStepPanelPayload(data, action, memberId, name));
 }
 
-// Terminal step shared by both resolve:helped:entry and resolve:remove:entry —
-// applies the exact /helped or /remove close/record logic (invariant #6: the
-// record is logged before saveData), acks the panel, then does the slow REST
-// (card + optional DM + board refresh) after the ack (invariant #1).
-async function finishResolveEntry(interaction, action, entry, data) {
-  const now = Date.now();
-  if (action === "helped") {
-    resolveEntryAsSorted(data, entry, interaction.user.id, now);
-  } else {
-    resolveEntryAsRemoved(data, entry, now);
-  }
-  saveData(data);
-  const byName = interaction.member?.displayName || interaction.user.username;
-  const confirmText =
-    action === "helped"
-      ? `✅ Marked **${entry.username}** as sorted for ${catOf(data, entry.category).label}.`
-      : `Removed ${entry.username}'s entry.`;
-  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
-  // Message 10008) — wrap it so a throw here can't skip the post-ack REST
-  // below (resolveCard/dmSorted/refreshBoard), which must always run since
-  // saveData already committed the close.
-  try {
-    await interaction.update({ content: confirmText, embeds: [], components: [] });
-  } catch {
-    await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
-  }
-  if (action === "helped") {
-    await resolveCard(client, entry, `✅ Sorted by ${byName}`);
-    await dmSorted(client, data, entry.userId, entry.category);
-  } else {
-    await resolveCard(client, entry, `🗑️ Removed by ${byName}`);
-  }
-  await refreshBoard(client, data);
-}
-
 // resolve:<action>:entry — the manager picked which of the member's open
 // requests to resolve. Fresh loadData() + re-find by id here (invariant #1):
 // this is a separate interaction from the member-pick step, so nothing
@@ -2192,13 +2195,29 @@ async function handleResolveEntrySelect(interaction) {
     await interaction.update({ content: "Managers only.", embeds: [], components: [] });
     return;
   }
-  const entryId = interaction.values[0];
-  const entry = data.entries.find((e) => e.id === entryId && !e.done);
-  if (!entry) {
-    await interaction.update({ content: "That request is already gone.", embeds: [], components: [] });
+  const act = action === "helped" ? actions().helped : actions().remove;
+  const r = act(helpCtx(), actorOf(interaction, data), { entryId: interaction.values[0] });
+  if (!r.ok) {
+    await interaction.update({
+      content: r.code === "not_found" ? "That request is already gone." : r.error,
+      embeds: [],
+      components: [],
+    });
     return;
   }
-  await finishResolveEntry(interaction, action, entry, data);
+  const confirmText =
+    action === "helped"
+      ? `✅ Marked **${r.entry.username}** as sorted for ${r.category.label}.`
+      : `Removed ${r.entry.username}'s entry.`;
+  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
+  // Message 10008) — the save already happened, so the effects (card, DM,
+  // board) must still run.
+  try {
+    await interaction.update({ content: confirmText, embeds: [], components: [] });
+  } catch {
+    await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
+  }
+  await r.effects();
 }
 
 // The whole legacy dispatch; the core router calls it for every interaction
@@ -2285,69 +2304,36 @@ async function dispatch(interaction) {
     const data = loadData();
 
     if (interaction.commandName === "needhelp") {
-      const category = interaction.options.getString("category");
-      const note = interaction.options.getString("note") || "";
-      const cats = categoryMap(data);
-      if (!cats[category] || cats[category].archived) {
-        await respond(interaction, {
-          content: "That isn't an active category. Pick one from the list.",
-          flags: MessageFlags.Ephemeral,
-        });
+      const r = actions().needHelp(helpCtx(), actorOf(interaction, data), {
+        categoryId: interaction.options.getString("category"),
+        note: interaction.options.getString("note") || "",
+        channelId: interaction.channelId,
+      });
+      if (!r.ok) {
+        await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral });
         return;
       }
-      if (hasOpenEntry(data, interaction.user.id, category)) {
-        await respond(interaction, {
-          content: `You're already on the board for ${catOf(data, category).label}.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      const entry = newHelpEntry(
-        interaction.user.id,
-        interaction.member?.displayName || interaction.user.username,
-        category,
-        note
-      );
-      data.entries.push(entry);
-      saveData(data);
       await respond(interaction, {
-        content: `Added you to the board for **${catOf(data, category).label}**. ${catOf(data, category).emoji}`,
+        content: `Added you to the board for **${r.category.label}**. ${r.category.emoji}`,
         flags: MessageFlags.Ephemeral,
       });
-      await announceEntry(client, entry, interaction.channelId);
+      await r.effects();
     }
 
     if (interaction.commandName === "imsorted") {
       const category = interaction.options.getString("category");
-      if (category && !categoryMap(data)[category]) {
-        await respond(interaction, {
-          content: "That isn't a known category. Pick one from the list.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
       if (category) {
-        // Fast path (category given) — unchanged direct-close behavior.
-        const mine = data.entries.filter(
-          (e) => e.userId === interaction.user.id && !e.done && e.category === category
-        );
-        if (mine.length === 0) {
+        // Fast path (category given) — the shared action; legacy texts kept.
+        const r = actions().sorted(helpCtx(), actorOf(interaction, data), { categoryId: category });
+        if (!r.ok) {
           await respond(interaction, {
-            content: "You're not on the board right now.",
+            content: r.code === "not_found" ? "You're not on the board right now." : r.error,
             flags: MessageFlags.Ephemeral,
           });
           return;
         }
-        closeEntries(data, mine, "self", Date.now());
-        saveData(data);
-        await respond(interaction, {
-          content: "Took you off the board. Glad you got sorted! 🎉",
-          flags: MessageFlags.Ephemeral,
-        });
-        for (const e of mine) {
-          await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
-        }
-        await refreshBoard(client, data);
+        await respond(interaction, { content: "Took you off the board. Glad you got sorted! 🎉", flags: MessageFlags.Ephemeral });
+        await r.effects();
         return;
       }
       // No category — self-service select panel (M13-T2).
@@ -2376,51 +2362,7 @@ async function dispatch(interaction) {
     }
 
     if (interaction.commandName === "help") {
-      const embed = new EmbedBuilder()
-        .setColor(0x5ac9a1)
-        .setTitle("🛡️ Guild Help Board — how it works")
-        .setDescription(
-          "Tracks who needs help with the guild's help categories this " +
-            "season, and lets officers mark them as sorted once helped. The board " +
-            "message updates automatically."
-        )
-        .addFields(
-          {
-            name: "🟢 Everyone",
-            value:
-              "`/needhelp` — add yourself (posts a request officers can action)\n" +
-              "`/imsorted` — remove yourself once you've been helped\n" +
-              "`/stats` — season stats & top helpers\n" +
-              "`/help` — show this message",
-          },
-          {
-            name: "🛡️ Officers (Manage Server, or a manager role)",
-            value:
-              "Click **✅ Sorted** / **🗑️ Remove** on a request card, or:\n" +
-              "`/helped @member <category>` — mark them as sorted\n" +
-              "`/remove @member <category>` — remove an entry\n" +
-              "`/board` — post & pin the live board\n" +
-              "`/reset` — clear the board for a new season",
-          },
-          {
-            name: "⚙️ Admins (Manage Server)",
-            value:
-              "`/config addrole @role` — let a role manage the board\n" +
-              "`/config removerole @role` — remove a role\n" +
-              "`/config notify @role` — ping a role on new requests\n" +
-              "`/config roles` — panel: manage roles & the notify role\n" +
-              "`/config category add [label] [emoji]` — add/update a category (opens a form if left blank)\n" +
-              "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
-              "`/config category list` — list categories\n" +
-              "`/config nudge set #channel [hours]` — daily digest for long-waiting requests\n" +
-              "`/config nudge off` — turn nudges off\n" +
-              "`/config nudge status` — show nudge settings",
-          }
-        );
-      await respond(interaction, {
-        embeds: [embed],
-        flags: MessageFlags.Ephemeral,
-      });
+      await respond(interaction, { embeds: [howItWorksEmbed()], flags: MessageFlags.Ephemeral });
     }
 
     if (interaction.commandName === "helped") {
@@ -2452,34 +2394,20 @@ async function dispatch(interaction) {
         });
         return;
       }
-      // Fast path (both given) — unchanged direct-resolve behavior.
-      if (!categoryMap(data)[category]) {
+      // Fast path (both given) — the shared action; legacy texts kept.
+      const r = actions().helped(helpCtx(), actorOf(interaction, data), { userId: member.id, categoryId: category });
+      if (!r.ok) {
         await respond(interaction, {
-          content: "That isn't a known category. Pick one from the list.",
+          content:
+            r.code === "not_found"
+              ? `No pending entry found for ${member.username} in ${catOf(data, category).label}.`
+              : r.error,
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      const entry = data.entries.find(
-        (e) => e.userId === member.id && e.category === category && !e.done
-      );
-      if (!entry) {
-        await respond(interaction, {
-          content: `No pending entry found for ${member.username} in ${catOf(data, category).label}.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      resolveEntryAsSorted(data, entry, interaction.user.id, Date.now());
-      saveData(data);
-      await respond(
-        interaction,
-        `✅ Marked **${entry.username}** as sorted for ${catOf(data, category).label}.`
-      );
-      const byName = interaction.member?.displayName || interaction.user.username;
-      await resolveCard(client, entry, `✅ Sorted by ${byName}`);
-      await dmSorted(client, data, entry.userId, entry.category);
-      await refreshBoard(client, data);
+      await respond(interaction, `✅ Marked **${r.entry.username}** as sorted for ${r.category.label}.`);
+      await r.effects();
     }
 
     if (interaction.commandName === "remove") {
@@ -2511,33 +2439,20 @@ async function dispatch(interaction) {
         });
         return;
       }
-      // Fast path (both given) — unchanged direct-resolve behavior.
-      if (!categoryMap(data)[category]) {
+      // Fast path (both given) — the shared action; legacy texts kept.
+      const r = actions().remove(helpCtx(), actorOf(interaction, data), { userId: member.id, categoryId: category });
+      if (!r.ok) {
         await respond(interaction, {
-          content: "That isn't a known category. Pick one from the list.",
+          content:
+            r.code === "not_found"
+              ? `No pending entry found for ${member.username} in ${catOf(data, category).label}.`
+              : r.error,
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      const target = data.entries.find(
-        (e) => e.userId === member.id && e.category === category && !e.done
-      );
-      if (!target) {
-        await respond(interaction, {
-          content: `No pending entry found for ${member.username} in ${catOf(data, category).label}.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      resolveEntryAsRemoved(data, target, Date.now());
-      saveData(data);
-      await respond(interaction, {
-        content: `Removed ${member.username}'s entry.`,
-        flags: MessageFlags.Ephemeral,
-      });
-      const byName = interaction.member?.displayName || interaction.user.username;
-      await resolveCard(client, target, `🗑️ Removed by ${byName}`);
-      await refreshBoard(client, data);
+      await respond(interaction, { content: `Removed ${member.username}'s entry.`, flags: MessageFlags.Ephemeral });
+      await r.effects();
     }
 
     if (interaction.commandName === "board") {
@@ -2548,52 +2463,13 @@ async function dispatch(interaction) {
       // Multiple REST calls follow — defer so we never miss the 3-second window.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const names = await resolveNames(interaction.guild, data);
-      const embed = buildBoardEmbed(data, names);
-      const message = await interaction.channel.send({ embeds: [embed], components: [needHelpRow()] });
-      // Pinning needs the separate "Pin Messages" permission (split from
-      // Manage Messages by Discord). Non-fatal, but never claim a pin we didn't get.
-      let pinned = true;
-      try {
-        await message.pin();
-      } catch (e) {
-        pinned = false;
-        console.error("Could not pin the board (bot needs Pin Messages):", e?.message ?? e);
-      }
-
-      // Retire the previous board, if any, so we don't leave a stale pinned copy.
-      if (
-        data.boardChannelId &&
-        data.boardMessageId &&
-        data.boardMessageId !== message.id
-      ) {
-        try {
-          const oldChannel = await client.channels.fetch(data.boardChannelId);
-          const oldMessage = await oldChannel.messages.fetch(data.boardMessageId);
-          await oldMessage.unpin().catch(() => {});
-          await oldMessage
-            .edit({
-              content: "_This board has been retired; a newer one was posted._",
-              embeds: [],
-              components: [],
-            })
-            .catch(() => {});
-        } catch (e) {
-          // old message already gone — nothing to retire
-        }
-      }
-
-      // Re-load fresh before saving: entries may have been added during the
-      // awaits above, and we must not clobber them with our stale snapshot.
-      const fresh = loadData();
-      fresh.boardChannelId = interaction.channel.id;
-      fresh.boardMessageId = message.id;
-      saveData(fresh);
-
+      const r = await actions().repostBoard(helpCtx(), actorOf(interaction, data), { channel: interaction.channel });
       await respond(interaction, {
-        content: pinned
-          ? "Board posted and pinned. It'll update live from now on."
-          : "Board posted — it'll update live from now on. I couldn't pin it: give me the **Pin Messages** permission in this channel, then run `/board` again.",
+        content: !r.ok
+          ? r.error
+          : r.pinned
+            ? "Board posted and pinned. It'll update live from now on."
+            : "Board posted — it'll update live from now on. I couldn't pin it: give me the **Pin Messages** permission in this channel, then run `/board` again.",
       });
     }
 
@@ -2655,42 +2531,33 @@ async function dispatch(interaction) {
             await interaction.showModal(modal);
             return;
           }
-          const emoji = interaction.options.getString("emoji") || "";
-          const r = addCategory(data, label, emoji);
+          const r = actions().addCategory(helpCtx(), actorOf(interaction, data), {
+            label,
+            emoji: interaction.options.getString("emoji") || "",
+          });
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
-          saveData(data);
           await respond(interaction, {
             content: `Category **${r.category.label}** ${r.category.emoji} is ready.`,
             flags: MessageFlags.Ephemeral,
           });
-          await refreshBoard(client, data);
+          await r.effects();
           return;
         }
 
         if (catSub === "remove") {
-          const id = interaction.options.getString("category");
-          const moveto = interaction.options.getString("moveto") || undefined;
-          const r = removeCategory(data, id, moveto);
+          const r = actions().archiveCategory(helpCtx(), actorOf(interaction, data), {
+            categoryId: interaction.options.getString("category"),
+            moveto: interaction.options.getString("moveto") || undefined,
+          });
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
-          const nowTs = Date.now();
-          for (const e of r.dropped || []) logRecord(data, makeRecord(data, e, "removed", nowTs));
-          saveData(data);
-          const label = catOf(data, id).label;
-          const extra = r.moved?.length
-            ? ` Moved ${r.moved.length} open request(s) to **${catOf(data, moveto).label}**.`
-            : "";
-          const merged = r.dropped?.length ? ` Merged ${r.dropped.length} duplicate(s).` : "";
+          const extra = r.moved.length ? ` Moved ${r.moved.length} open request(s) to **${r.movetoLabel}**.` : "";
+          const merged = r.dropped.length ? ` Merged ${r.dropped.length} duplicate(s).` : "";
           await respond(interaction, {
-            content: `Archived **${label}**.${extra}${merged}`,
+            content: `Archived **${r.label}**.${extra}${merged}`,
             flags: MessageFlags.Ephemeral,
           });
-          // Slow REST after the ack. `data` (with the reassigned categories) is
-          // already saved, so refresh the board FIRST — it rebuilds straight from
-          // `data` and needs no per-entry REST, so it's correct sooner. Only the
-          // individual request cards still need their own sequential REST edit.
-          await refreshBoard(client, data);
-          for (const e of r.dropped || []) await resolveCard(client, e, `Merged into ${catOf(data, moveto).label}.`);
-          for (const e of r.moved || []) await rerenderCard(client, data, e);
+          // Slow REST after the ack: the board first, then the dropped/moved cards.
+          await r.effects();
           return;
         }
 
@@ -2717,20 +2584,18 @@ async function dispatch(interaction) {
         if (nSub === "set") {
           const channel = interaction.options.getChannel("channel");
           const hours = interaction.options.getInteger("hours"); // null if omitted
-          const r = setNudgeConfig(data, channel.id, hours ?? undefined);
+          const r = actions().setNudge(helpCtx(), actorOf(interaction, data), { channelId: channel.id, hours: hours ?? undefined });
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
-          saveData(data);
           await respond(interaction, {
-            content: `Stale nudges **on** — daily digest to <#${channel.id}> for requests older than **${data.nudgeThresholdHours}h**.`,
+            content: `Stale nudges **on** — daily digest to <#${channel.id}> for requests older than **${r.data.nudgeThresholdHours}h**.`,
             flags: MessageFlags.Ephemeral,
           });
           return;
         }
 
         if (nSub === "off") {
-          clearNudge(data);
-          saveData(data);
-          await respond(interaction, { content: "Stale nudges **off**.", flags: MessageFlags.Ephemeral });
+          const r = actions().nudgeOff(helpCtx(), actorOf(interaction, data));
+          await respond(interaction, { content: r.ok ? "Stale nudges **off**." : r.error, flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -2751,47 +2616,32 @@ async function dispatch(interaction) {
 
       if (sub === "addrole") {
         const role = interaction.options.getRole("role");
-        if (data.managerRoleIds.includes(role.id)) {
-          await respond(interaction, {
-            content: `**${role.name}** is already a manager role.`,
-            flags: MessageFlags.Ephemeral,
-          });
-          return;
-        }
-        data.managerRoleIds.push(role.id);
-        saveData(data);
+        const r = actions().addManagerRole(helpCtx(), actorOf(interaction, data), { role, guildId: interaction.guildId });
+        if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
         await respond(interaction, {
-          content: `Added **${role.name}** as a manager role. Members with it can now run the officer commands.`,
+          content: r.added
+            ? `Added **${role.name}** as a manager role. Members with it can now run the officer commands.`
+            : `**${role.name}** is already a manager role.`,
           flags: MessageFlags.Ephemeral,
         });
       }
 
       if (sub === "removerole") {
         const role = interaction.options.getRole("role");
-        const before = data.managerRoleIds.length;
-        data.managerRoleIds = data.managerRoleIds.filter((id) => id !== role.id);
-        if (data.managerRoleIds.length === before) {
-          await respond(interaction, {
-            content: `**${role.name}** isn't a manager role.`,
-            flags: MessageFlags.Ephemeral,
-          });
-          return;
-        }
-        saveData(data);
+        const r = actions().removeManagerRole(helpCtx(), actorOf(interaction, data), { roleId: role.id });
+        if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
         await respond(interaction, {
-          content: `Removed **${role.name}** from manager roles.`,
+          content: r.removed ? `Removed **${role.name}** from manager roles.` : `**${role.name}** isn't a manager role.`,
           flags: MessageFlags.Ephemeral,
         });
       }
 
       if (sub === "notify") {
         const role = interaction.options.getRole("role");
-        data.notifyRoleId = role ? role.id : null;
-        saveData(data);
+        const r = actions().setNotifyRole(helpCtx(), actorOf(interaction, data), { role, guildId: interaction.guildId });
+        if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
         await respond(interaction, {
-          content: role
-            ? `New requests will now ping **${role.name}**.`
-            : "Turned off request pings.",
+          content: role ? `New requests will now ping **${role.name}**.` : "Turned off request pings.",
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -2820,6 +2670,7 @@ module.exports = {
   renderField,
   catOf,
   isManager,
+  actorOf,
   buildBoardEmbed,
   loadData,
   saveData,
@@ -2891,4 +2742,13 @@ module.exports = {
   dispatch,
   bind,
   onReady,
+  announceEntry,
+  resolveCard,
+  refreshBoard,
+  rerenderCard,
+  dmSorted,
+  needHelpRow,
+  howItWorksEmbed,
+  statsEmbedFor,
+  memberName,
 };

@@ -12,6 +12,8 @@ const { loadModules } = require("./core/loader");
 const { createRouter } = require("./core/router");
 const { registerCommands, collectCommands } = require("./core/registry");
 const { createCtxFor, runReady } = require("./core/runtime");
+const { createPerms, managerRolesFrom } = require("./core/perms");
+const { createMenuModule } = require("./core/menu");
 const help = require("./modules/help/help");
 
 // test/logic.test.js requires this file: keep re-exporting the help logic and
@@ -28,6 +30,14 @@ async function start() {
     process.exit(1);
   }
 
+  let publicUrl;
+  try {
+    publicUrl = config.parsePublicUrl(config.PUBLIC_URL);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+
   const modules = loadModules(config.parseModules(process.env.MODULES));
   console.log(`Modules: ${modules.map((m) => m.name).join(", ")}`);
 
@@ -39,9 +49,13 @@ async function start() {
     intents: [GatewayIntentBits.Guilds],
     allowedMentions: { parse: [] },
   });
-  const ctxFor = createCtxFor({ client, dataDir: config.DATA_DIR });
-  const route = createRouter({ modules, ctxFor }); // throws on customId-prefix collisions
-  collectCommands(modules); // throws on duplicate command names
+  // One shared permission object; throws if two modules claim the manager roles.
+  const perms = createPerms({ getManagerRoleIds: managerRolesFrom(modules) });
+  const ctxFor = createCtxFor({ client, dataDir: config.DATA_DIR, perms });
+  // The core's /menu hub routes and registers like a module (owns /menu + "menu:").
+  const routed = [...modules, createMenuModule({ modules, ctxFor, perms, publicUrl })];
+  const route = createRouter({ modules: routed, ctxFor }); // throws on customId-prefix collisions
+  collectCommands(routed); // throws on duplicate command names
 
   lock.acquireLock();
   for (const sig of ["SIGTERM", "SIGINT"]) {
@@ -58,7 +72,7 @@ async function start() {
     await runReady(modules, ctxFor);
   });
 
-  await registerCommands(modules);
+  await registerCommands(routed);
   await client.login(process.env.DISCORD_TOKEN);
 }
 

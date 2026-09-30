@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseModules } = require("../core/config");
+const { parseModules, parsePublicUrl } = require("../core/config");
 const { createStore } = require("../core/store");
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "bbcore-"));
@@ -23,6 +23,20 @@ test("parseModules: trims and drops empty items", () => {
 
 test("parseModules: duplicate is a hard error", () => {
   assert.throws(() => parseModules("help,help"), /twice/);
+});
+
+test("parsePublicUrl: unset/blank → null (no link); a valid http(s) URL is accepted", () => {
+  assert.equal(parsePublicUrl(undefined), null);
+  assert.equal(parsePublicUrl(""), null);
+  assert.equal(parsePublicUrl("   "), null);
+  assert.equal(parsePublicUrl("https://bb.example.com/admin"), "https://bb.example.com/admin");
+  assert.equal(parsePublicUrl(" http://localhost:3000 "), "http://localhost:3000");
+});
+
+test("parsePublicUrl: scheme-less, non-http(s), spaced or over-long values fail fast and name PUBLIC_URL", () => {
+  for (const bad of ["nas.local:3000", "admin.example.com", "https://a b", "ftp://example.com", "javascript:alert(1)", `https://example.com/${"x".repeat(520)}`]) {
+    assert.throws(() => parsePublicUrl(bad), /PUBLIC_URL/, bad);
+  }
 });
 
 test("store: load on a missing file returns a fresh copy of defaults", () => {

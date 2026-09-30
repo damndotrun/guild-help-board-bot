@@ -25,6 +25,8 @@ test("help module: owns exactly the 9 legacy customId prefixes", () => {
 // Text-input field ids inside modals: never routed (only the modal's own
 // customId is), so they carry no prefix.
 const MODAL_FIELD_IDS = ["name", "label", "emoji"];
+// Core-owned customIds help.js may carry: the board's Menu button (M2b).
+const CORE_IDS = ["menu:home"];
 
 test("help module: every setCustomId in help.js starts with an owned literal prefix", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "modules", "help", "help.js"), "utf8");
@@ -36,7 +38,9 @@ test("help module: every setCustomId in help.js starts with an owned literal pre
   // scan, so require that every single call is accounted for.
   assert.ok(total >= 20, `expected to find the setCustomId calls, found ${total}`);
   assert.equal(prefixed.length + fields.length, total, "a setCustomId call is neither a literal owned prefix nor a known modal field id");
-  for (const v of prefixed) assert.ok(LEGACY_PREFIXES.includes(v.split(":")[0]), `unowned customId prefix in "${v}"`);
+  for (const v of prefixed) {
+    assert.ok(LEGACY_PREFIXES.includes(v.split(":")[0]) || CORE_IDS.includes(v), `unowned customId prefix in "${v}"`);
+  }
   // ...and the customId comparisons in dispatch
   const cmp = [...src.matchAll(/customId\s*===\s*[`"']([a-z]+):/g)].map((x) => x[1]);
   assert.ok(cmp.length > 0);
