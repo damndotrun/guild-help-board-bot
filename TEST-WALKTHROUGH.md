@@ -180,19 +180,18 @@ The daily digest timing can't be forced by hand, but the switch and status can:
 Run this on the **BB Bot Test** server against the `dev` bot, **on the Discord
 mobile app** — most members use a phone, and there is no documentation of how
 Components V2 menus look there. You need your officer account **and a 2nd
-account without a manager role** (both steps marked **(2nd account)** are
-required, not optional).
+account without a manager role** (every step marked **(2nd account)** needs
+it, and the officer steps need a request the 2nd account has posted).
 
 **Entry and layout**
-- [ ] **`/menu`** → one message only you can see: **Menu**, "You: Officer",
-      a **Help board · N open** row with **Open**, and **How it works**. No
+- [ ] **`/menu`** → one message only you can see: **Menu**, "You: Owner"
+      (you have Manage Server; an account that only holds the manager role
+      shows "You: Officer"), a **Help board · N open** row with **Open**, and **How it works**. No
       "Web admin" button yet (no `PUBLIC_URL`).
 - [ ] **Edits in place (engine check):** tap **Open**, then **← Back**, then
       **How it works** — the screen must change **in the same message** (no new
-      message appears per tap, the old screen is gone). If every tap instead
-      opens a *new* message, record it as a **finding**: the engine decides
-      "edit vs. new reply" from the Ephemeral bit in the tapped message's flags,
-      and this phone/client would not be sending it.
+      message appears per tap, the old screen is gone). If every tap opens a
+      new message instead, record it as a **finding**.
 - [ ] **Board Menu button:** on the pinned board tap **Menu** (an existing
       board gains the button on its next refresh — post or sort a request if it
       is missing) → your own private menu appears; **the public board itself
@@ -219,7 +218,8 @@ required, not optional).
 - [ ] Post two requests → **I'm sorted** → a picker + **Close all** → pick one →
       only that one closes.
 - [ ] **Close all** → a confirmation (red **Close all** + **Cancel**) →
-      **Cancel** returns to the picker; **Close all** closes the rest.
+      **Cancel** returns to the **Help board** and closes nothing; **Close all**
+      closes the rest.
 - [ ] **Expired confirmation:** open the Close all confirmation, wait **6
       minutes**, tap it → "⚠️ That confirmation expired…" and a fresh
       confirmation; nothing closed.
@@ -230,19 +230,25 @@ required, not optional).
 
 **Officer side**
 - [ ] **Open** → the **Officer** row: Mark helped / Remove / Repost board.
-- [ ] **Mark helped** → pick the 2nd account (one request) → "✅ <name> marked
-      as helped." at once; the 2nd account gets the DM; the card is finalised.
-      With two requests → a category picker first.
-- [ ] **Remove** → pick → a confirmation (red **Remove** + **Cancel**) →
+- [ ] **Mark helped** — first have the **2nd account post a request** (Need
+      help → a category). Then pick that account (one request) → "✅ <name>
+      marked as helped." at once; the 2nd account gets the DM; the card is
+      finalised. With two open requests → a request picker ("Pick which
+      request…") comes first.
+- [ ] **Remove** — have the **2nd account post a request** again first. Pick
+      the account → a confirmation (red **Remove** + **Cancel**) → **Cancel**
+      returns to the member picker and removes nothing; repeat and tap
       **Remove** → "✅ Removed <name>'s request."; the card says "Removed by".
 - [ ] **Repost board** from a *different* channel → the board is posted and
       pinned there; the old one is retired.
 
 **Role change while a menu is open (2nd account + officer)**
-- [ ] With your officer menu open on the Help board, have the admin **remove
-      your manager role** (you are now an ordinary member, like the 2nd
+- [ ] Use an **officer account that does NOT have Manage Server** (the
+      manager role only — with Manage Server the account stays Owner and is
+      never demoted). With its menu open on the Help board, have the admin
+      **remove that manager role** (it is now an ordinary member, like the 2nd
       account), then tap **Mark helped** (or any Officer button) → **refused**:
-      you land on home with "⚠️ You don't have access to that anymore…", the
+      it lands on home with "⚠️ You don't have access to that anymore…", the
       Officer row is gone, and **nothing was changed** (no request closed, no
       DM sent). Give the role back afterwards.
 

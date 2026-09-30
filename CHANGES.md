@@ -43,13 +43,10 @@ tricky bits don't get re-broken.
 - **Behaviour changes:** `/config addrole` and `/config notify` now refuse
   @everyone and bot-managed roles (the `/config roles` panel already did);
   `/board` answers with an explicit error when it can't post in the channel.
-- **Cost of a tap:** a menu tap reads `data.json` 3–5 times (level, section
-  counter, screen, action). At the 5000-record cap: data.json 1097 KB
-  (5000 records, 25 categories, 200 entries), `loadData` median 7.74 ms / p95
-  9.45 ms; the home counter (`section()`) median 7.75 ms. Three reads ≈ 22 ms,
-  five ≈ 40 ms — far inside Discord's 3 s ack window. Measured on a dev
-  machine; the NAS will be slower but not by two orders of magnitude.
-- `PUBLIC_URL` (unset until M3) turns on the **Web admin** link for officers.
+- **Cost of a tap:** 3–5 `data.json` reads per menu tap (≈ 22–40 ms at the
+  5000-record cap, dev machine) — far inside Discord's 3 s ack window.
+- `PUBLIC_URL` (unset until M3) turns on the **Web admin** link for officers;
+  it must be a full `http(s)://…` URL, otherwise the bot refuses to start.
 
 ---
 
