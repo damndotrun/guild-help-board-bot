@@ -1274,13 +1274,20 @@ function categorySelectOptions(data) {
     .map((c) => ({ label: `${c.emoji} ${c.label}`.slice(0, 100), value: c.id }));
 }
 
+// The public board's button row. "Menu" opens the viewer's own ephemeral
+// /menu (core-owned customId — the board message itself stays V1 and is never
+// edited by the menu).
 function needHelpRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("board:needhelp")
       .setLabel("Need help")
       .setEmoji("🙋")
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("menu:home")
+      .setLabel("Menu")
+      .setStyle(ButtonStyle.Secondary)
   );
 }
 

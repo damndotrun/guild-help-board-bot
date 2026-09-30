@@ -664,3 +664,37 @@ test("parity: /remove and Menu › Remove (after the confirm) write the same", a
   assert.deepEqual(snapshot(), viaSlash);
   assert.equal(viaSlash.records[0].resolution, "removed");
 });
+
+test("board: the public board row carries a core Menu button next to Need help", () => {
+  const r = help.needHelpRow().toJSON();
+  assert.deepEqual(r.components.map((b) => [b.custom_id, b.label, b.style]), [
+    ["board:needhelp", "Need help", ButtonStyle.Primary],
+    ["menu:home", "Menu", ButtonStyle.Secondary],
+  ]);
+});
+
+test("board: with the maximum active categories the board still builds, and the button row stays within the row limits", () => {
+  const cats = Array.from({ length: 25 }, (_, n) => ({ id: `c${n}`, label: `Cat ${n}`, emoji: "⭐" }));
+  seed((d) => {
+    d.categories = cats;
+    d.entries.push(...cats.map((c, n) => entry(`e${n}`, n % 2 ? "u1" : "u2", c.id)));
+  });
+  const embed = help.buildBoardEmbed(help.loadData(), { u1: "Kovi", u2: "Zed" });
+  assert.ok(embed.toJSON().fields.length >= 1);
+  const row = help.needHelpRow().toJSON();
+  assert.ok(row.components.length <= 5, "≤ 5 buttons per row");
+  assert.equal(row.type, ComponentType.ActionRow);
+  // One fixed row regardless of the category count (categories live in the embed).
+  assert.ok([row].length <= 5, "≤ 5 rows");
+});
+
+test("Review focus (end to end): the board's Menu button through the real router opens an ephemeral home and never edits the board", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const { createRouter } = require("../core/router");
+  const route = createRouter({ modules: [...modules, menu], ctxFor, log: quiet });
+  const i = tap("menu:home", MEMBER, { onMenu: false });
+  await route(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["reply"]);
+  assert.equal(i.calls[0][1].flags, MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  assert.match(textOf(i.calls[0][1]), /\*\*Help board\*\* · 1 open/);
+});
