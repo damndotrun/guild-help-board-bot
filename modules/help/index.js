@@ -3,6 +3,7 @@
 // help keeps data.json with its own loadData()/saveData() (different .bak rules
 // than the platform store), so it declares dataFile: null and gets no ctx.store.
 const help = require("./help");
+const helpMenu = require("./menu");
 
 module.exports = {
   name: "help",
@@ -16,4 +17,6 @@ module.exports = {
   onReady: () => help.onReady(),
   // The single source of the manager-role list, read-only for core/perms.
   managerRoles: () => help.loadData().managerRoleIds,
+  // The /menu "Help board" section (M2b).
+  menu: { section: helpMenu.section, render: helpMenu.render, guide: helpMenu.guide },
 };

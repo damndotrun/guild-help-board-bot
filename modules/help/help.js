@@ -1419,6 +1419,51 @@ async function respond(interaction, payload) {
   }
 }
 
+// The /help text. The /menu "How it works" screen shows the same text as V2 markdown.
+function howItWorksEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x5ac9a1)
+    .setTitle("🛡️ Guild Help Board — how it works")
+    .setDescription(
+      "Tracks who needs help with the guild's help categories this " +
+        "season, and lets officers mark them as sorted once helped. The board " +
+        "message updates automatically."
+    )
+    .addFields(
+      {
+        name: "🟢 Everyone",
+        value:
+          "`/needhelp` — add yourself (posts a request officers can action)\n" +
+          "`/imsorted` — remove yourself once you've been helped\n" +
+          "`/stats` — season stats & top helpers\n" +
+          "`/help` — show this message",
+      },
+      {
+        name: "🛡️ Officers (Manage Server, or a manager role)",
+        value:
+          "Click **✅ Sorted** / **🗑️ Remove** on a request card, or:\n" +
+          "`/helped @member <category>` — mark them as sorted\n" +
+          "`/remove @member <category>` — remove an entry\n" +
+          "`/board` — post & pin the live board\n" +
+          "`/reset` — clear the board for a new season",
+      },
+      {
+        name: "⚙️ Admins (Manage Server)",
+        value:
+          "`/config addrole @role` — let a role manage the board\n" +
+          "`/config removerole @role` — remove a role\n" +
+          "`/config notify @role` — ping a role on new requests\n" +
+          "`/config roles` — panel: manage roles & the notify role\n" +
+          "`/config category add [label] [emoji]` — add/update a category (opens a form if left blank)\n" +
+          "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
+          "`/config category list` — list categories\n" +
+          "`/config nudge set #channel [hours]` — daily digest for long-waiting requests\n" +
+          "`/config nudge off` — turn nudges off\n" +
+          "`/config nudge status` — show nudge settings",
+      }
+    );
+}
+
 // ---------- slash commands ----------
 const commands = [
   new SlashCommandBuilder()
@@ -2298,51 +2343,7 @@ async function dispatch(interaction) {
     }
 
     if (interaction.commandName === "help") {
-      const embed = new EmbedBuilder()
-        .setColor(0x5ac9a1)
-        .setTitle("🛡️ Guild Help Board — how it works")
-        .setDescription(
-          "Tracks who needs help with the guild's help categories this " +
-            "season, and lets officers mark them as sorted once helped. The board " +
-            "message updates automatically."
-        )
-        .addFields(
-          {
-            name: "🟢 Everyone",
-            value:
-              "`/needhelp` — add yourself (posts a request officers can action)\n" +
-              "`/imsorted` — remove yourself once you've been helped\n" +
-              "`/stats` — season stats & top helpers\n" +
-              "`/help` — show this message",
-          },
-          {
-            name: "🛡️ Officers (Manage Server, or a manager role)",
-            value:
-              "Click **✅ Sorted** / **🗑️ Remove** on a request card, or:\n" +
-              "`/helped @member <category>` — mark them as sorted\n" +
-              "`/remove @member <category>` — remove an entry\n" +
-              "`/board` — post & pin the live board\n" +
-              "`/reset` — clear the board for a new season",
-          },
-          {
-            name: "⚙️ Admins (Manage Server)",
-            value:
-              "`/config addrole @role` — let a role manage the board\n" +
-              "`/config removerole @role` — remove a role\n" +
-              "`/config notify @role` — ping a role on new requests\n" +
-              "`/config roles` — panel: manage roles & the notify role\n" +
-              "`/config category add [label] [emoji]` — add/update a category (opens a form if left blank)\n" +
-              "`/config category remove <category> [moveto]` — archive (move open requests first)\n" +
-              "`/config category list` — list categories\n" +
-              "`/config nudge set #channel [hours]` — daily digest for long-waiting requests\n" +
-              "`/config nudge off` — turn nudges off\n" +
-              "`/config nudge status` — show nudge settings",
-          }
-        );
-      await respond(interaction, {
-        embeds: [embed],
-        flags: MessageFlags.Ephemeral,
-      });
+      await respond(interaction, { embeds: [howItWorksEmbed()], flags: MessageFlags.Ephemeral });
     }
 
     if (interaction.commandName === "helped") {
@@ -2728,4 +2729,5 @@ module.exports = {
   rerenderCard,
   dmSorted,
   needHelpRow,
+  howItWorksEmbed,
 };
