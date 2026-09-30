@@ -2551,10 +2551,14 @@ async function dispatch(interaction) {
       const names = await resolveNames(interaction.guild, data);
       const embed = buildBoardEmbed(data, names);
       const message = await interaction.channel.send({ embeds: [embed], components: [needHelpRow()] });
+      // Pinning needs the separate "Pin Messages" permission (split from
+      // Manage Messages by Discord). Non-fatal, but never claim a pin we didn't get.
+      let pinned = true;
       try {
         await message.pin();
       } catch (e) {
-        // missing perms to pin is non-fatal
+        pinned = false;
+        console.error("Could not pin the board (bot needs Pin Messages):", e?.message ?? e);
       }
 
       // Retire the previous board, if any, so we don't leave a stale pinned copy.
@@ -2587,7 +2591,9 @@ async function dispatch(interaction) {
       saveData(fresh);
 
       await respond(interaction, {
-        content: "Board posted and pinned. It'll update live from now on.",
+        content: pinned
+          ? "Board posted and pinned. It'll update live from now on."
+          : "Board posted — it'll update live from now on. I couldn't pin it: give me the **Pin Messages** permission in this channel, then run `/board` again.",
       });
     }
 

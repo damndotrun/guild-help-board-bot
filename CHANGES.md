@@ -12,8 +12,14 @@ tricky bits don't get re-broken.
 
 - **Layout:** `index.js` is now a thin core entry; the help board's code moved
   (`git mv`) to `modules/help/help.js`, changed only at its seams. `core/` holds
-  `config`, `store`, `loader`, `router`, `registry` and `lock`;
-  `modules/help/index.js` is the help module's contract.
+  `config`, `store`, `loader`, `router`, `registry`, `lock` and `runtime`
+  (per-module ctx, `onReady`, jobs); `modules/help/index.js` is the help
+  module's contract. Wherever the older notes below say `index.js` /
+  "the `interactionCreate` listener" for help-board logic, read
+  `modules/help/help.js` / its exported `dispatch()`.
+- **Pinning:** `/board` needs the separate **Pin Messages** permission (Discord
+  split it off Manage Messages). A failed pin is now logged and the reply says
+  so, instead of claiming "pinned".
 - **`MODULES` env** (comma-separated, default `help`) picks the modules to run.
   Blank/whitespace/trailing commas fall back to `help`; unknown or duplicate
   names fail loudly at startup.
@@ -92,7 +98,7 @@ tricky bits don't get re-broken.
 }
 ```
 
-## Commands (all handled in the `interactionCreate` listener, switched on `commandName`)
+## Commands (all handled in help's `dispatch()` — formerly the `interactionCreate` listener — switched on `commandName`)
 
 | Command | Access | Notes |
 |---|---|---|
