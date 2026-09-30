@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { ButtonStyle, ComponentType, EmbedBuilder, MessageFlags, SectionBuilder } = require("discord.js");
-const { text, button, row, select, ok, err, buildScreenPayload, screenErrors, textFromEmbed, walk } = require("../core/panel");
+const { text, button, row, select, ok, err, headerText, buildScreenPayload, screenErrors, textFromEmbed, walk } = require("../core/panel");
 
 const good = () => ({
   crumbs: ["Menu", "Help board"],
@@ -83,11 +83,27 @@ test("screenErrors: limits work correctly at exact boundary values (not just ove
   assert.deepEqual(screenErrors({ crumbs: ["Menu"], body: Array.from({ length: 36 }, (_, n) => text(`t${n}`)), back: "menu:y" }), []);
 
   // 4000 text characters (exactly at limit):
-  // Header: "**Menu**\n✅ ok" = 14 chars, so body should be 3986 chars to total 4000
-  const screenAt4000 = { crumbs: ["Menu"], notice: ok("ok"), body: [text("x".repeat(3986))], back: "menu:y" };
-  const p = buildScreenPayload(screenAt4000);
-  const errors = screenErrors(screenAt4000, p);
-  assert.deepEqual(errors, []);
+  // Compute body length from actual header text
+  const screenAt4000 = { crumbs: ["Menu"], notice: ok("ok"), body: [], back: "menu:y" };
+  const headerLen = headerText(screenAt4000).length;
+  const bodyLenAt4000 = 4000 - headerLen;
+  const screenAt4000Full = { ...screenAt4000, body: [text("x".repeat(bodyLenAt4000))] };
+  const p = buildScreenPayload(screenAt4000Full);
+  // Verify total text is exactly 4000
+  assert.equal(headerLen + bodyLenAt4000, 4000, `header ${headerLen} + body ${bodyLenAt4000} should equal 4000`);
+  assert.deepEqual(screenErrors(screenAt4000Full, p), []);
+
+  // 4001 text characters (over limit):
+  // Compute body length from actual header text to get exactly 4001 total
+  const screenAt4001 = { crumbs: ["Menu"], notice: ok("ok"), body: [], back: "menu:y" };
+  const headerLen4001 = headerText(screenAt4001).length;
+  const bodyLenAt4001 = 4001 - headerLen4001;
+  const screenAt4001Full = { ...screenAt4001, body: [text("x".repeat(bodyLenAt4001))] };
+  const p4001 = buildScreenPayload(screenAt4001Full);
+  // Verify total text is exactly 4001
+  assert.equal(headerLen4001 + bodyLenAt4001, 4001, `header ${headerLen4001} + body ${bodyLenAt4001} should equal 4001`);
+  const errors4001 = screenErrors(screenAt4001Full, p4001);
+  assert.ok(errors4001.some((e) => /text characters/.test(e)), `text limit error not reported for 4001 chars: ${JSON.stringify(errors4001)}`);
 });
 
 test("screenErrors: content / embeds / a missing V2 flag on a payload are reported", () => {
