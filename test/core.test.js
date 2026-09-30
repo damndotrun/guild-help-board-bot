@@ -309,7 +309,7 @@ test("runtime: ctxFor gives a store for a module with a dataFile and none for da
   assert.equal(cb.config.DATA_DIR, dir);
 });
 
-test("runtime: a throwing onReady is logged and the module's jobs still start", async () => {
+test("runtime: a throwing onReady is logged and the module's jobs still start", { timeout: 2000 }, async () => {
   const errors = [];
   let ran;
   const done = new Promise((r) => (ran = r));
@@ -322,8 +322,9 @@ test("runtime: a throwing onReady is logged and the module's jobs still start", 
     jobs: [{ name: "tick", intervalMs: 5, run: async () => ran("ran") }],
   });
   const keep = setInterval(() => {}, 50); // job timers are unref'd; keep the loop alive while we wait
-  const timers = await runReady([mod], () => ({}), { log: { error: (...a) => errors.push(a) } });
+  let timers = [];
   try {
+    timers = await runReady([mod], () => ({}), { log: { error: (...a) => errors.push(a) } });
     assert.equal(await done, "ran");
     assert.equal(errors.length, 1);
     assert.match(String(errors[0][0]), /\[r\] onReady failed/);
@@ -333,7 +334,7 @@ test("runtime: a throwing onReady is logged and the module's jobs still start", 
   }
 });
 
-test("runtime: a failing job run is logged and does not stop the interval", async () => {
+test("runtime: a failing job run is logged and does not stop the interval", { timeout: 2000 }, async () => {
   const errors = [];
   let n = 0;
   let third;
