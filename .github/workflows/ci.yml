@@ -18,6 +18,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Syntax check
         run: |
           for f in index.js $(find core modules -name '*.js' 2>/dev/null); do
