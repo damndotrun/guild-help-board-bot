@@ -82,7 +82,11 @@ Mode), then right-click your server icon → **Copy Server ID**. This is your
 Go to **OAuth2 → URL Generator** in the developer portal:
 - Scopes: `bot`, `applications.commands`
 - Bot permissions: `View Channel`, `Send Messages`, `Embed Links`,
-  `Read Message History`, `Manage Messages` (the last is needed to pin the board)
+  `Read Message History`, `Manage Messages`, `Pin Messages` (the last is needed
+  to pin the board — Discord split it off `Manage Messages`; without it `/board`
+  posts but can't pin). As a ready URL:
+  `https://discord.com/oauth2/authorize?client_id=<CLIENT_ID>&scope=bot+applications.commands&permissions=2251799813778432`
+  An already-invited bot: give its role **Pin Messages** in Server Settings → Roles.
 
 Copy the generated URL, open it in your browser, and add the bot to your
 server.
@@ -146,8 +150,13 @@ on a dataset so it survives restarts.
        command:
          - sh
          - -c
-         - "rm -rf /app && git clone --depth 1 https://github.com/damndotrun/guild-help-board-bot /app && cd /app && npm install --omit=dev && node index.js"
+         - "rm -rf /app && git clone --depth 1 https://github.com/damndotrun/guild-help-board-bot /app && cd /app && npm install --omit=dev && exec node index.js"
    ```
+
+   (`exec` makes `node` the container's main process, so **Stop/Restart**
+   reaches it as SIGTERM and it releases `bot.lock` cleanly. Without it `sh`
+   swallows the signal, Docker kills node after 10 s, and the next start logs a
+   harmless `bot.lock heartbeat is fresh` warning.)
 
 3. **Install**, then check the container **Logs** for `Slash commands
    registered.` and `Logged in as …`.
