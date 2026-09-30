@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseModules, parsePublicUrl } = require("../core/config");
+const { parseModules, parsePublicUrl, parseWebConfig } = require("../core/config");
 const { createStore } = require("../core/store");
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "bbcore-"));
@@ -25,17 +25,95 @@ test("parseModules: duplicate is a hard error", () => {
   assert.throws(() => parseModules("help,help"), /twice/);
 });
 
-test("parsePublicUrl: unset/blank → null (no link); a valid http(s) URL is accepted", () => {
+test("parsePublicUrl: unset/blank → null (no link); an http(s) origin comes back canonical", () => {
   assert.equal(parsePublicUrl(undefined), null);
   assert.equal(parsePublicUrl(""), null);
   assert.equal(parsePublicUrl("   "), null);
-  assert.equal(parsePublicUrl("https://bb.example.com/admin"), "https://bb.example.com/admin");
+  assert.equal(parsePublicUrl("https://bb.example.com"), "https://bb.example.com");
+  assert.equal(parsePublicUrl("https://BB.Example.com/"), "https://bb.example.com");
   assert.equal(parsePublicUrl(" http://localhost:3000 "), "http://localhost:3000");
+  assert.equal(parsePublicUrl("https://bot-test.damndot.run:443"), "https://bot-test.damndot.run");
 });
 
 test("parsePublicUrl: scheme-less, non-http(s), spaced or over-long values fail fast and name PUBLIC_URL", () => {
   for (const bad of ["nas.local:3000", "admin.example.com", "https://a b", "ftp://example.com", "javascript:alert(1)", `https://example.com/${"x".repeat(520)}`]) {
     assert.throws(() => parsePublicUrl(bad), /PUBLIC_URL/, bad);
+  }
+});
+
+// Polish backlog (M2b): an odd-but-valid URL such as "http:foo" passed new URL()
+// but Discord rejects it in a Link button (400) — officers got no /menu reply.
+test("parsePublicUrl: only the literal http(s)://host[:port] shape — no path, query, fragment or credentials", () => {
+  for (const bad of ["http:foo", "https:/bb.example.com", "https://", "https://bb.example.com/admin", "https://bb.example.com?x=1", "https://bb.example.com/#top", "https://user:pw@bb.example.com"]) {
+    assert.throws(() => parsePublicUrl(bad), /PUBLIC_URL/, bad);
+  }
+});
+
+// Controller ruling C4: a PUBLIC_URL may carry credentials (https://user:pw@host);
+// no error message may ever echo the raw value.
+test("parsePublicUrl: no error message echoes the raw value (credentials in a rejected URL stay out of the log)", () => {
+  for (const bad of [
+    "https://admin:hunter2-fake-pw@bb.example.com",
+    "https://admin:hunter2-fake-pw@bb.example.com/path",
+    "https://admin:hunter2-fake-pw@",
+    "ftp://admin:hunter2-fake-pw@bb.example.com",
+    `https://admin:hunter2-fake-pw@bb.example.com/${"x".repeat(520)}`,
+    "https://admin:hunter2-fake-pw@bb .example.com",
+  ]) {
+    assert.throws(
+      () => parsePublicUrl(bad),
+      (e) => /PUBLIC_URL/.test(e.message) && !/hunter2|admin:|@/.test(e.message),
+      bad
+    );
+  }
+});
+
+test("parseWebConfig: none of WEB_PORT / DISCORD_CLIENT_SECRET / SESSION_SECRET → null (web off, even with PUBLIC_URL)", () => {
+  assert.equal(parseWebConfig({}, null), null);
+  assert.equal(parseWebConfig({ PUBLIC_URL: "https://bb.example.com", WEB_PORT: " " }, "https://bb.example.com"), null);
+});
+
+const SECRET = "s".repeat(32);
+const FULL = { CLIENT_ID: "123", WEB_PORT: "3000", DISCORD_CLIENT_SECRET: "cs", SESSION_SECRET: SECRET };
+
+test("parseWebConfig: a complete https config", () => {
+  assert.deepEqual(parseWebConfig(FULL, "https://bb.example.com"), {
+    origin: "https://bb.example.com",
+    redirectUri: "https://bb.example.com/auth/callback",
+    secure: true,
+    port: 3000,
+    clientId: "123",
+    clientSecret: "cs",
+    sessionSecret: SECRET,
+  });
+  assert.equal(parseWebConfig(FULL, "http://localhost:3000").secure, false);
+});
+
+test("parseWebConfig: partly configured is a hard error naming what is missing, never echoing a secret", () => {
+  assert.throws(() => parseWebConfig({ WEB_PORT: "3000" }, "https://bb.example.com"), /DISCORD_CLIENT_SECRET, SESSION_SECRET are missing/);
+  assert.throws(() => parseWebConfig(FULL, null), /PUBLIC_URL is missing/);
+  assert.throws(
+    () => parseWebConfig({ ...FULL, SESSION_SECRET: "short-secret-value" }, "https://bb.example.com"),
+    (e) => /SESSION_SECRET must be at least 32 characters/.test(e.message) && !e.message.includes("short-secret-value")
+  );
+});
+
+test("parseWebConfig: no error message contains the client secret or the session secret", () => {
+  const env = { ...FULL, DISCORD_CLIENT_SECRET: "fake-client-secret-xyz", SESSION_SECRET: "fake-short-session-secret" };
+  const leaks = (e) => !e.message.includes("fake-client-secret-xyz") && !e.message.includes("fake-short-session-secret");
+  // too-short session secret
+  assert.throws(() => parseWebConfig(env, "https://bb.example.com"), leaks);
+  // bad port with both secrets present
+  assert.throws(() => parseWebConfig({ ...env, SESSION_SECRET: SECRET, WEB_PORT: "0" }, "https://bb.example.com"), (e) => leaks(e) && !e.message.includes(SECRET));
+  // missing PUBLIC_URL with both secrets present
+  assert.throws(() => parseWebConfig({ ...env, SESSION_SECRET: SECRET }, null), (e) => leaks(e) && !e.message.includes(SECRET));
+  // missing SESSION_SECRET while the client secret is set
+  assert.throws(() => parseWebConfig({ WEB_PORT: "3000", DISCORD_CLIENT_SECRET: "fake-client-secret-xyz" }, "https://bb.example.com"), leaks);
+});
+
+test("parseWebConfig: WEB_PORT must be 1–65535 digits", () => {
+  for (const bad of ["0", "65536", "30x", "-1", "3000.5"]) {
+    assert.throws(() => parseWebConfig({ ...FULL, WEB_PORT: bad }, "https://bb.example.com"), /WEB_PORT/, bad);
   }
 });
 
