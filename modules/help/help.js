@@ -28,6 +28,12 @@ require("dotenv").config();
 // the move into modules/help/) — see core/config.js.
 const { DATA_DIR } = require("../../core/config");
 const { computeLevel } = require("../../core/perms");
+
+// ./actions requires this file, so it is loaded lazily (at call time) to keep
+// the require graph acyclic.
+function actions() {
+  return require("./actions");
+}
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 const BAK_FILE = path.join(DATA_DIR, "data.json.bak");
@@ -1571,6 +1577,11 @@ function bind(c) {
   client = c;
 }
 
+// The ctx the help handlers hand to ./actions (only .client is used there).
+function helpCtx() {
+  return { client };
+}
+
 // Called by the core on clientReady.
 function onReady() {
   const nudgeTimer = setInterval(() => nudgeTick(client), NUDGE_TICK_MS);
@@ -1725,26 +1736,20 @@ async function handleBoardButton(interaction) {
 
 async function handleBoardSelect(interaction) {
   const data = loadData();
-  const category = interaction.values[0];
-  const cats = categoryMap(data);
-  if (!cats[category] || cats[category].archived) {
-    await interaction.update({ content: "That category isn't available anymore.", components: [] });
+  const categoryId = interaction.values[0];
+  const r = actions().needHelp(helpCtx(), actorOf(interaction, data), { categoryId, channelId: interaction.channelId });
+  if (!r.ok) {
+    const content =
+      r.code === "invalid"
+        ? "That category isn't available anymore."
+        : r.code === "duplicate"
+          ? `You're already on the board for **${catOf(data, categoryId).label}**.`
+          : r.error;
+    await interaction.update({ content, components: [] });
     return;
   }
-  if (hasOpenEntry(data, interaction.user.id, category)) {
-    await interaction.update({ content: `You're already on the board for **${catOf(data, category).label}**.`, components: [] });
-    return;
-  }
-  const entry = newHelpEntry(
-    interaction.user.id,
-    interaction.member?.displayName || interaction.user.username,
-    category,
-    ""
-  );
-  data.entries.push(entry);
-  saveData(data);
-  await interaction.update({ content: `Added you to the board for **${catOf(data, category).label}** ${catOf(data, category).emoji} ✅`, components: [] });
-  await announceEntry(client, entry, interaction.channelId);
+  await interaction.update({ content: `Added you to the board for **${r.category.label}** ${r.category.emoji} ✅`, components: [] });
+  await r.effects();
 }
 
 async function handleStatsCommand(interaction, data) {
@@ -2088,43 +2093,31 @@ async function handleResetButton(interaction) {
   await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
 }
 
-// Closes the given (already ownership-filtered) entries: logs a "self" record
-// for each BEFORE saveData (invariant #6), saves, acks the panel, then does the
-// slow REST (resolveCard/refreshBoard) after the ack (invariant #1). Shared by
-// both the imsorted:pick select and the imsorted:all button.
-async function closeImsortedEntries(interaction, data, mine) {
-  closeEntries(data, mine, "self", Date.now());
-  saveData(data);
-  const confirmText = `Marked ${mine.length} request${mine.length === 1 ? "" : "s"} sorted.`;
-  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
-  // Message 10008) — wrap it so a throw here can't skip the post-ack REST
-  // below (resolveCard loop + refreshBoard), which must always run since
-  // saveData already committed the close.
+// Acks the imsorted panel for a sorted/closeAll action result, then runs its
+// slow REST (cards + board) after the ack. The ack can fail on its own (panel
+// dismissed, 5xx, Unknown Message 10008) — the save already happened, so the
+// effects must still run.
+async function finishImsorted(interaction, r, emptyText) {
+  if (!r.ok) {
+    await interaction.update({ content: r.code === "not_found" ? emptyText : r.error, embeds: [], components: [] });
+    return;
+  }
+  const n = r.closed.length;
+  const confirmText = `Marked ${n} request${n === 1 ? "" : "s"} sorted.`;
   try {
     await interaction.update({ content: confirmText, embeds: [], components: [] });
   } catch {
     await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
   }
-  for (const e of mine) {
-    await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
-  }
-  await refreshBoard(client, data);
+  await r.effects();
 }
 
 // imsorted:pick — the caller multi-selected specific entries to close. Never
-// trust the select values alone: filter to entries actually owned by the
-// clicking user (and still open) before closing anything.
+// trust the select values alone: the action filters to entries actually owned
+// by the clicking user (and still open) before closing anything.
 async function handleImsortedSelect(interaction) {
-  const data = loadData();
-  const ids = new Set(interaction.values);
-  const mine = data.entries.filter(
-    (e) => ids.has(e.id) && e.userId === interaction.user.id && !e.done
-  );
-  if (mine.length === 0) {
-    await interaction.update({ content: "Those requests are already gone.", embeds: [], components: [] });
-    return;
-  }
-  await closeImsortedEntries(interaction, data, mine);
+  const r = actions().sorted(helpCtx(), actorOf(interaction, loadData()), { entryIds: interaction.values });
+  await finishImsorted(interaction, r, "Those requests are already gone.");
 }
 
 // imsorted:all — the "close all" convenience button from the panel.
@@ -2134,13 +2127,8 @@ async function handleImsortedButton(interaction) {
     await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
     return;
   }
-  const data = loadData();
-  const mine = openEntriesFor(data, interaction.user.id);
-  if (mine.length === 0) {
-    await interaction.update({ content: "You have no open requests.", embeds: [], components: [] });
-    return;
-  }
-  await closeImsortedEntries(interaction, data, mine);
+  const r = actions().closeAll(helpCtx(), actorOf(interaction, loadData()));
+  await finishImsorted(interaction, r, "You have no open requests.");
 }
 
 // resolve:<action>:member — the manager picked a member. Re-check isManager
@@ -2299,69 +2287,36 @@ async function dispatch(interaction) {
     const data = loadData();
 
     if (interaction.commandName === "needhelp") {
-      const category = interaction.options.getString("category");
-      const note = interaction.options.getString("note") || "";
-      const cats = categoryMap(data);
-      if (!cats[category] || cats[category].archived) {
-        await respond(interaction, {
-          content: "That isn't an active category. Pick one from the list.",
-          flags: MessageFlags.Ephemeral,
-        });
+      const r = actions().needHelp(helpCtx(), actorOf(interaction, data), {
+        categoryId: interaction.options.getString("category"),
+        note: interaction.options.getString("note") || "",
+        channelId: interaction.channelId,
+      });
+      if (!r.ok) {
+        await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral });
         return;
       }
-      if (hasOpenEntry(data, interaction.user.id, category)) {
-        await respond(interaction, {
-          content: `You're already on the board for ${catOf(data, category).label}.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      const entry = newHelpEntry(
-        interaction.user.id,
-        interaction.member?.displayName || interaction.user.username,
-        category,
-        note
-      );
-      data.entries.push(entry);
-      saveData(data);
       await respond(interaction, {
-        content: `Added you to the board for **${catOf(data, category).label}**. ${catOf(data, category).emoji}`,
+        content: `Added you to the board for **${r.category.label}**. ${r.category.emoji}`,
         flags: MessageFlags.Ephemeral,
       });
-      await announceEntry(client, entry, interaction.channelId);
+      await r.effects();
     }
 
     if (interaction.commandName === "imsorted") {
       const category = interaction.options.getString("category");
-      if (category && !categoryMap(data)[category]) {
-        await respond(interaction, {
-          content: "That isn't a known category. Pick one from the list.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
       if (category) {
-        // Fast path (category given) — unchanged direct-close behavior.
-        const mine = data.entries.filter(
-          (e) => e.userId === interaction.user.id && !e.done && e.category === category
-        );
-        if (mine.length === 0) {
+        // Fast path (category given) — the shared action; legacy texts kept.
+        const r = actions().sorted(helpCtx(), actorOf(interaction, data), { categoryId: category });
+        if (!r.ok) {
           await respond(interaction, {
-            content: "You're not on the board right now.",
+            content: r.code === "not_found" ? "You're not on the board right now." : r.error,
             flags: MessageFlags.Ephemeral,
           });
           return;
         }
-        closeEntries(data, mine, "self", Date.now());
-        saveData(data);
-        await respond(interaction, {
-          content: "Took you off the board. Glad you got sorted! 🎉",
-          flags: MessageFlags.Ephemeral,
-        });
-        for (const e of mine) {
-          await resolveCard(client, e, `✅ ${e.username} marked themselves sorted`);
-        }
-        await refreshBoard(client, data);
+        await respond(interaction, { content: "Took you off the board. Glad you got sorted! 🎉", flags: MessageFlags.Ephemeral });
+        await r.effects();
         return;
       }
       // No category — self-service select panel (M13-T2).
@@ -2906,4 +2861,8 @@ module.exports = {
   dispatch,
   bind,
   onReady,
+  announceEntry,
+  resolveCard,
+  refreshBoard,
+  rerenderCard,
 };
