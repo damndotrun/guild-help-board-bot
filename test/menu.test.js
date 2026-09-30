@@ -82,7 +82,7 @@ const makeMenu = (opts = {}) =>
   createMenuModule({ modules: [demo, vault, hidden, broken, plain], ctxFor: () => ({}), perms, log: quiet, ...opts });
 
 // A tap on the ephemeral menu message; onMenu: false = a tap on a public message (the board).
-function tap(customId, { level = "member", onMenu = true, command = false, failAck = false, failEdit = false, deferred = false } = {}) {
+function tap(customId, { level = "member", onMenu = true, command = false, failAck = false, failEdit = false, deferred = false, modal = false } = {}) {
   const calls = [];
   const i = {
     customId: command ? undefined : customId,
@@ -94,6 +94,7 @@ function tap(customId, { level = "member", onMenu = true, command = false, failA
     user: { id: "u1" },
     message: command ? undefined : { flags: new MessageFlagsBitField(onMenu ? EPHEMERAL_V2 : 0) },
     isChatInputCommand: () => command,
+    isModalSubmit: () => modal,
     isAutocomplete: () => false,
     isRepliable: () => true,
     deferUpdate: async () => { i.deferred = true; calls.push(["deferUpdate"]); },
@@ -244,6 +245,74 @@ test("C9: a committed action's `after` still runs when its screen is invalid or 
     assert.ok(textOf(answer(i)[1]).includes(`⚠️ ${MENU_TEXT.broken}`), id);
   }
   assert.deepEqual(afterRuns, ["wide", "nocrumbs"]);
+});
+
+test("final I1: a home screen whose Web admin link cannot be built → a static last-resort screen, never a throw", async () => {
+  for (const publicUrl of ["example.com", "nas.local:3000"]) {
+    const rec = recorder();
+    const menu = makeMenu({ publicUrl, log: rec.log });
+    for (const level of ["officer", "owner"]) {
+      const i = tap(null, { command: true, level });
+      await menu.handle(i); // must not reject
+      const [kind, payload] = answer(i);
+      assert.equal(kind, "reply");
+      assert.equal(payload.flags, EPHEMERAL_V2);
+      const shown = textOf(payload);
+      assert.match(shown, /^\*\*Menu\*\*/);
+      assert.ok(shown.includes(`⚠️ ${MENU_TEXT.broken}`));
+      assert.deepEqual(urlsOf(payload), []);
+      assert.deepEqual(idsOf(payload), [], "no module rows, no buttons");
+    }
+    assert.ok(rec.errors.some((e) => e.includes("render failed")));
+    // Back to home / a stale screen go through the same fallback.
+    const back = tap(HOME_ID, { level: "officer" });
+    await menu.handle(back);
+    assert.ok(textOf(answer(back)[1]).includes(MENU_TEXT.broken));
+    // A member never gets the link, so the normal home still works for them.
+    const member = tap(null, { command: true });
+    await menu.handle(member);
+    assert.deepEqual(idsOf(answer(member)[1]), ["menu:demo:main", "menu:home:how"]);
+  }
+});
+
+test("final I1(c): a committed action's `after` runs even when the result screen fails the limit check AND the home fallback throws", async () => {
+  afterRuns = [];
+  const rec = recorder();
+  const menu = makeMenu({ publicUrl: "example.com", log: rec.log });
+  for (const id of ["menu:demo:wide", "menu:demo:nocrumbs"]) {
+    const i = tap(id, { level: "officer" });
+    await menu.handle(i); // must not reject
+    assert.ok(textOf(answer(i)[1]).startsWith("**Menu**\n"), id);
+    assert.ok(textOf(answer(i)[1]).includes(MENU_TEXT.broken), id);
+  }
+  assert.deepEqual(afterRuns, ["wide", "nocrumbs"]);
+});
+
+test("final F-M1: a modal submit carrying a menu: id is served even if its message lacks the Ephemeral/V2 bits; permission is still re-checked", async () => {
+  // demo:main rendered (not home) although the message flags are 0.
+  const ok = tap("menu:demo:main", { onMenu: false, modal: true });
+  await makeMenu().handle(ok);
+  assert.ok(textOf(answer(ok)[1]).includes("hello"));
+  assert.equal(answer(ok)[0], "reply", "no update() on a message that is not the ephemeral menu");
+  // Permission: a member's modal submit for an officer-only section falls back to home.
+  const denied = tap("menu:vault:main", { onMenu: false, modal: true });
+  await makeMenu().handle(denied);
+  assert.ok(textOf(answer(denied)[1]).includes(MENU_TEXT.noAccess));
+  // A plain button on a public message is still not served (opens a fresh home).
+  const button = tap("menu:demo:main", { onMenu: false });
+  await makeMenu().handle(button);
+  assert.ok(!textOf(answer(button)[1]).includes("hello"));
+});
+
+test("final F-M4: a throwing section() is 'went wrong', not 'no access' — and is logged", async () => {
+  const rec = recorder();
+  const menu = makeMenu({ log: rec.log });
+  const i = tap("menu:broken:main");
+  await menu.handle(i);
+  const shown = textOf(answer(i)[1]);
+  assert.ok(shown.includes(`⚠️ ${MENU_TEXT.broken}`));
+  assert.ok(!shown.includes(MENU_TEXT.noAccess));
+  assert.ok(rec.errors.some((e) => e.includes("section kaput")));
 });
 
 test("a module section that throws is skipped on home and logged", async () => {

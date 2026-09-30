@@ -30,6 +30,14 @@ async function start() {
     process.exit(1);
   }
 
+  let publicUrl;
+  try {
+    publicUrl = config.parsePublicUrl(config.PUBLIC_URL);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+
   const modules = loadModules(config.parseModules(process.env.MODULES));
   console.log(`Modules: ${modules.map((m) => m.name).join(", ")}`);
 
@@ -45,7 +53,7 @@ async function start() {
   const perms = createPerms({ getManagerRoleIds: managerRolesFrom(modules) });
   const ctxFor = createCtxFor({ client, dataDir: config.DATA_DIR, perms });
   // The core's /menu hub routes and registers like a module (owns /menu + "menu:").
-  const routed = [...modules, createMenuModule({ modules, ctxFor, perms, publicUrl: config.PUBLIC_URL })];
+  const routed = [...modules, createMenuModule({ modules, ctxFor, perms, publicUrl })];
   const route = createRouter({ modules: routed, ctxFor }); // throws on customId-prefix collisions
   collectCommands(routed); // throws on duplicate command names
 

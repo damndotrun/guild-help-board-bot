@@ -56,10 +56,17 @@ function isMenuMessage(message) {
   );
 }
 
+// The module's home row for this viewer, or null when hidden / below minLevel.
+// Throws if section() itself throws — the caller decides what that means.
+function sectionFor(mod, ctx, viewer) {
+  const s = mod.menu.section(ctx, viewer);
+  return s && atLeast(viewer.level, s.minLevel || "member") ? s : null;
+}
+
+// Home-row variant: a throwing section() just hides that module's row.
 function visibleSection(mod, ctx, viewer, log) {
   try {
-    const s = mod.menu.section(ctx, viewer);
-    return s && atLeast(viewer.level, s.minLevel || "member") ? s : null;
+    return sectionFor(mod, ctx, viewer);
   } catch (e) {
     log.error(`[menu] ${mod.name} section failed:`, e);
     return null;
@@ -92,10 +99,24 @@ function createMenuModule({ modules, ctxFor, perms, publicUrl = null, log = cons
   const withMenu = modules.filter((m) => m.menu);
   const byName = new Map(withMenu.map((m) => [m.name, m]));
   const home = (viewer, notice) => homeScreen({ modules: withMenu, ctxFor, viewer, publicUrl, notice, log });
+  // The error fallback must never throw: if the home screen cannot be built
+  // (e.g. a Web admin link the builder rejects), fall back to a static screen
+  // that uses no configurable input — no link, no module rows.
+  function safeHome(viewer, notice) {
+    try {
+      return home(viewer, notice);
+    } catch (e) {
+      log.error("[menu] could not build the home screen:", e);
+      return { crumbs: ["Menu"], notice: err(MENU_TEXT.broken), body: [] };
+    }
+  }
 
   async function resolve(interaction, viewer) {
     if (interaction.isChatInputCommand()) return home(viewer);
-    if (!isMenuMessage(interaction.message)) return home(viewer); // e.g. the board's Menu button
+    // A modal submit with a menu: id can only come from a menu button's showModal,
+    // so it needs no menu-message check (a dropped note is silent data loss).
+    const fromModal = typeof interaction.isModalSubmit === "function" && interaction.isModalSubmit();
+    if (!fromModal && !isMenuMessage(interaction.message)) return home(viewer); // e.g. the board's Menu button
     const id = parseMenuId(interaction.customId);
     if (!id) return home(viewer, err(MENU_TEXT.unknown));
     if (id.target === "home") {
@@ -107,7 +128,8 @@ function createMenuModule({ modules, ctxFor, perms, publicUrl = null, log = cons
     if (!mod) return home(viewer, err(MENU_TEXT.unknown));
     const ctx = ctxFor(mod);
     // Permission again on every tap: the role may have changed since the screen was drawn.
-    if (!visibleSection(mod, ctx, viewer, log)) return home(viewer, err(MENU_TEXT.noAccess));
+    // A section() that throws is a bug ("went wrong", via handle's catch), not a missing permission.
+    if (!sectionFor(mod, ctx, viewer)) return home(viewer, err(MENU_TEXT.noAccess));
     const out = await mod.menu.render(interaction, ctx, viewer, id.screen, id.arg);
     if (!out) return home(viewer, err(MENU_TEXT.unknown));
     if (out.home) return home(viewer, err(out.home));
@@ -132,7 +154,7 @@ function createMenuModule({ modules, ctxFor, perms, publicUrl = null, log = cons
     } catch (e) {
       log.error(`[menu] could not build the screen for ${interaction.customId || "/menu"}:`, e);
     }
-    return buildScreenPayload(home(viewer, err(MENU_TEXT.broken)));
+    return buildScreenPayload(safeHome(viewer, err(MENU_TEXT.broken)));
   }
 
   async function handle(interaction) {
@@ -142,7 +164,7 @@ function createMenuModule({ modules, ctxFor, perms, publicUrl = null, log = cons
       out = await resolve(interaction, viewer);
     } catch (e) {
       log.error("[menu] render failed:", e);
-      out = home(viewer, err(MENU_TEXT.broken));
+      out = safeHome(viewer, err(MENU_TEXT.broken));
     }
     if (out.modal) {
       try {
@@ -157,13 +179,17 @@ function createMenuModule({ modules, ctxFor, perms, publicUrl = null, log = cons
     } catch (e) {
       // e.g. the ephemeral message is gone — the action was already committed, so `after` still runs.
       log.error("[menu] could not answer the interaction:", e);
+    } finally {
+      await runAfter(out);
     }
-    if (typeof out.after === "function") {
-      try {
-        await out.after();
-      } catch (e) {
-        log.error("[menu] follow-up work failed:", e);
-      }
+  }
+
+  async function runAfter(out) {
+    if (typeof out.after !== "function") return;
+    try {
+      await out.after();
+    } catch (e) {
+      log.error("[menu] follow-up work failed:", e);
     }
   }
 
