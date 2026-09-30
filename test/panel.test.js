@@ -53,7 +53,6 @@ test("screenErrors: every mobile limit is enforced", () => {
     [{ body: [rawButton(`menu:${"x".repeat(96)}`, "Long")] }, /over 100 characters/],
     [{ body: Array.from({ length: 37 }, (_, n) => text(`t${n}`)) }, /41 components/],
     [{ crumbs: ["Menu", "A", "B", "C"] }, /depth/],
-    [{ body: [{ type: ComponentType.TextDisplay, content: "x".repeat(4001) }] }, /text characters/],
     [{ body: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.StringSelect, custom_id: "menu:s", options: Array.from({ length: 26 }, (_, n) => ({ label: `o${n}`, value: `v${n}` })) }] }] }, /26 options/],
     [{ body: [row(button("menu:dup", "A")), row(button("menu:dup", "B"))] }, /duplicate customId "menu:dup"/],
   ];
@@ -61,6 +60,34 @@ test("screenErrors: every mobile limit is enforced", () => {
     const errors = screenErrors({ crumbs: ["Menu", "Test"], body: [], back: "menu:home", ...patch });
     assert.ok(errors.some((e) => re.test(e)), `${re} not reported: ${JSON.stringify(errors)}`);
   }
+});
+
+test("screenErrors: limits work correctly at exact boundary values (not just overages)", () => {
+  // 20-char button label (exactly at limit)
+  assert.deepEqual(screenErrors({ crumbs: ["Menu"], body: [row(button("menu:x", "x".repeat(20)))], back: "menu:y" }), []);
+
+  // 3 crumbs (exactly at limit)
+  assert.deepEqual(screenErrors({ crumbs: ["Menu", "A", "B"], body: [row(button("menu:x", "X"))], back: "menu:y" }), []);
+
+  // 100-char customId (exactly at limit): "menu:" (5) + "x" (95) = 100
+  const customIdAt100 = `menu:${"x".repeat(95)}`;
+  assert.equal(customIdAt100.length, 100);
+  assert.deepEqual(screenErrors({ crumbs: ["Menu"], body: [row(button(customIdAt100, "X"))], back: "menu:y" }), []);
+
+  // 25 options (exactly at limit)
+  const selectAt25 = { type: ComponentType.ActionRow, components: [{ type: ComponentType.StringSelect, custom_id: "menu:s", options: Array.from({ length: 25 }, (_, n) => ({ label: `o${n}`, value: `v${n}` })) }] };
+  assert.deepEqual(screenErrors({ crumbs: ["Menu"], body: [selectAt25], back: "menu:y" }), []);
+
+  // 40 components (exactly at limit):
+  // Container (1) + Header TextDisplay (1) + 36 body TextDisplays (36) + Back ActionRow (1) + Back Button (1) = 40
+  assert.deepEqual(screenErrors({ crumbs: ["Menu"], body: Array.from({ length: 36 }, (_, n) => text(`t${n}`)), back: "menu:y" }), []);
+
+  // 4000 text characters (exactly at limit):
+  // Header: "**Menu**\n✅ ok" = 14 chars, so body should be 3986 chars to total 4000
+  const screenAt4000 = { crumbs: ["Menu"], notice: ok("ok"), body: [text("x".repeat(3986))], back: "menu:y" };
+  const p = buildScreenPayload(screenAt4000);
+  const errors = screenErrors(screenAt4000, p);
+  assert.deepEqual(errors, []);
 });
 
 test("screenErrors: content / embeds / a missing V2 flag on a payload are reported", () => {
