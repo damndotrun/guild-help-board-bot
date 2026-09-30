@@ -207,4 +207,166 @@ async function repostBoard(ctx, actor, { channel } = {}) {
   return { ok: true, pinned, message };
 }
 
-module.exports = { MAX_NOTE, needHelp, sorted, closeAll, setNote, helped, remove, repostBoard };
+// Close the cards of requests a season change just closed, then refresh the board.
+function closePendingCards(ctx, pending, data) {
+  return async () => {
+    for (const e of pending) await help.resolveCard(ctx.client, e, "Season reset — this request is closed.");
+    await help.refreshBoard(ctx.client, data);
+  };
+}
+
+// Officer: archive the current season (pending → unresolved) and start a named one.
+function newSeason(ctx, actor, { name } = {}) {
+  const denied = gate(actor, "officer");
+  if (denied) return denied;
+  const data = help.loadData();
+  const pending = data.entries.filter((e) => !e.done);
+  const archived = help.closeSeason(data, Date.now());
+  help.beginSeason(data, name, Date.now());
+  help.saveData(data);
+  return { ok: true, data, archived, effects: closePendingCards(ctx, pending, data) };
+}
+
+function renameSeason(ctx, actor, { target, name } = {}) {
+  const denied = gate(actor, "officer");
+  if (denied) return denied;
+  const data = help.loadData();
+  const r = help.renameSeason(data, target, name);
+  if (!r.ok) return fail("invalid", "Couldn't rename that season (it may be gone, or the name was blank).");
+  help.saveData(data);
+  return {
+    ok: true,
+    data,
+    oldName: r.oldName,
+    effects: target === "current" ? () => help.refreshBoard(ctx.client, data) : null,
+  };
+}
+
+// Officer: the season wipe. The confirmation and its freshness check stay in
+// the UI layer (reset:confirm today, the web's own confirm in M3).
+function reset(ctx, actor) {
+  const denied = gate(actor, "officer");
+  if (denied) return denied;
+  const data = help.loadData();
+  const pending = data.entries.filter((e) => !e.done);
+  help.closeSeason(data, Date.now());
+  help.saveData(data);
+  return { ok: true, data, effects: closePendingCards(ctx, pending, data) };
+}
+
+function addCategory(ctx, actor, { label, emoji } = {}) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  const data = help.loadData();
+  const r = help.addCategory(data, String(label ?? ""), emoji);
+  if (!r.ok) return fail("invalid", r.error);
+  help.saveData(data);
+  return { ok: true, category: r.category, effects: () => help.refreshBoard(ctx.client, data) };
+}
+
+function archiveCategory(ctx, actor, { categoryId, moveto } = {}) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  const data = help.loadData();
+  const r = help.removeCategory(data, categoryId, moveto);
+  if (!r.ok) return fail("invalid", r.error);
+  const now = Date.now();
+  for (const e of r.dropped) help.logRecord(data, help.makeRecord(data, e, "removed", now)); // invariant #6
+  help.saveData(data);
+  const label = help.catOf(data, categoryId).label;
+  const movetoLabel = moveto ? help.catOf(data, moveto).label : null;
+  return {
+    ok: true,
+    label,
+    movetoLabel,
+    moved: r.moved,
+    dropped: r.dropped,
+    effects: async () => {
+      // The board rebuilds from `data` with no per-entry REST — refresh it first.
+      await help.refreshBoard(ctx.client, data);
+      for (const e of r.dropped) await help.resolveCard(ctx.client, e, `Merged into ${movetoLabel}.`);
+      for (const e of r.moved) await help.rerenderCard(ctx.client, data, e);
+    },
+  };
+}
+
+// A RoleSelect offers @everyone (id = guild id) and bot-managed roles; neither
+// may be a manager or notify role (@everyone would make every member an officer).
+function unassignable(role, guildId) {
+  return !role || role.id === guildId || role.managed === true;
+}
+
+function addManagerRole(ctx, actor, { role, guildId } = {}) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  if (unassignable(role, guildId)) return fail("invalid", "You can't add @everyone or a bot-managed role as a manager role.");
+  const data = help.loadData();
+  if (data.managerRoleIds.includes(role.id)) return { ok: true, added: false, data };
+  data.managerRoleIds.push(role.id);
+  help.saveData(data);
+  return { ok: true, added: true, data };
+}
+
+function removeManagerRole(ctx, actor, { roleId } = {}) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  const data = help.loadData();
+  const before = data.managerRoleIds.length;
+  data.managerRoleIds = data.managerRoleIds.filter((id) => id !== roleId);
+  if (data.managerRoleIds.length === before) return { ok: true, removed: false, data };
+  help.saveData(data);
+  return { ok: true, removed: true, data };
+}
+
+// role = null turns request pings off.
+function setNotifyRole(ctx, actor, { role = null, guildId } = {}) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  if (role && unassignable(role, guildId)) {
+    return fail("invalid", "You can't set @everyone or a bot-managed role as the notify role.");
+  }
+  const data = help.loadData();
+  data.notifyRoleId = role ? role.id : null;
+  help.saveData(data);
+  return { ok: true, data };
+}
+
+function setNudge(ctx, actor, { channelId, hours } = {}) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  const data = help.loadData();
+  const r = help.setNudgeConfig(data, channelId, hours);
+  if (!r.ok) return fail("invalid", r.error);
+  help.saveData(data);
+  return { ok: true, data };
+}
+
+function nudgeOff(ctx, actor) {
+  const denied = gate(actor, "owner");
+  if (denied) return denied;
+  const data = help.loadData();
+  help.clearNudge(data);
+  help.saveData(data);
+  return { ok: true, data };
+}
+
+module.exports = {
+  MAX_NOTE,
+  needHelp,
+  sorted,
+  closeAll,
+  setNote,
+  helped,
+  remove,
+  repostBoard,
+  newSeason,
+  renameSeason,
+  reset,
+  addCategory,
+  archiveCategory,
+  addManagerRole,
+  removeManagerRole,
+  setNotifyRole,
+  setNudge,
+  nudgeOff,
+};

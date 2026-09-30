@@ -505,3 +505,265 @@ test("/helped, resolve:remove:entry and /board via dispatch keep their legacy te
   await help.dispatch(board);
   assert.match(contentOf(board), /^Board posted — it'll update live from now on\. I couldn't pin it/);
 });
+
+test("newSeason: pending → unresolved, season archived, a new named season; officer only", () => {
+  seed((d) => {
+    d.currentSeason = { name: "S4", startedTs: 1 };
+    d.entries.push(entry("e1", "u1", "mvp5k", { done: true, helpedBy: "o1", doneTs: 5 }), entry("e2", "u2", "mvp5k"));
+  });
+  assert.equal(actions.newSeason(CTX, MEMBER, { name: "S5" }).code, "forbidden");
+  const r = actions.newSeason(CTX, OFFICER, { name: "  S5  " });
+  assert.equal(r.archived.name, "S4");
+  const d = help.loadData();
+  assert.equal(d.currentSeason.name, "S5");
+  assert.deepEqual(d.entries, []);
+  assert.deepEqual(d.seasons.map((s) => [s.name, s.sortedTotal]), [["S4", 1]]);
+  assert.deepEqual(d.records.map((x) => [x.reqId, x.resolution]), [["e2", "unresolved"]]);
+});
+
+test("renameSeason: current or past; blank / unknown → invalid", () => {
+  seed((d) => { d.seasons.push({ name: "Old", startedTs: 1, endedTs: 50, sortedTotal: 0, byCategory: {} }); });
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: "current", name: "  " }).code, "invalid");
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: 999, name: "X" }).code, "invalid");
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: 50, name: "Older" }).effects, null);
+  assert.equal(typeof actions.renameSeason(CTX, OFFICER, { target: "current", name: "S6" }).effects, "function");
+  const d = help.loadData();
+  assert.deepEqual([d.currentSeason.name, d.seasons[0].name], ["S6", "Older"]);
+});
+
+test("reset: pending closed as unresolved, board cleared; member refused", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  assert.equal(actions.reset(CTX, MEMBER).code, "forbidden");
+  assert.equal(help.loadData().entries.length, 1);
+  assert.equal(actions.reset(CTX, OFFICER).ok, true);
+  const d = help.loadData();
+  assert.deepEqual(d.entries, []);
+  assert.equal(d.records[0].resolution, "unresolved");
+});
+
+test("categories are owner-only: add (upsert) and archive with moveto; dropped duplicates logged (invariant #6)", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k"), entry("e2", "u2", "mvp5k"), entry("e3", "u2", "seasonrun5k")); });
+  assert.equal(actions.addCategory(CTX, OFFICER, { label: "Guild Boss" }).code, "forbidden");
+  assert.equal(actions.addCategory(CTX, OWNER, { label: "" }).code, "invalid");
+  assert.deepEqual(actions.addCategory(CTX, OWNER, { label: "Guild Boss", emoji: "👹" }).category, { id: "guild-boss", label: "Guild Boss", emoji: "👹", archived: false });
+  assert.equal(actions.archiveCategory(CTX, OWNER, { categoryId: "mvp5k" }).code, "invalid"); // open requests, no moveto
+  const r = actions.archiveCategory(CTX, OWNER, { categoryId: "mvp5k", moveto: "seasonrun5k" });
+  assert.deepEqual([r.label, r.movetoLabel, r.moved.map((e) => e.id), r.dropped.map((e) => e.id)], ["MVP 5K", "Season Run 5K", ["e1"], ["e2"]]);
+  const d = help.loadData();
+  assert.equal(d.categories.find((c) => c.id === "mvp5k").archived, true);
+  assert.deepEqual(d.records.map((x) => [x.reqId, x.resolution]), [["e2", "removed"]]);
+});
+
+test("manager and notify roles: @everyone and bot-managed refused; dedupe; null clears notify", () => {
+  seed();
+  const everyone = { id: "g1", managed: false };
+  const bot = { id: "b1", managed: true };
+  const mgr = { id: "r1", managed: false };
+  assert.equal(actions.addManagerRole(CTX, OFFICER, { role: mgr, guildId: "g1" }).code, "forbidden");
+  assert.equal(actions.addManagerRole(CTX, OWNER, { role: everyone, guildId: "g1" }).code, "invalid");
+  assert.equal(actions.addManagerRole(CTX, OWNER, { role: bot, guildId: "g1" }).code, "invalid");
+  assert.equal(actions.addManagerRole(CTX, OWNER, { role: mgr, guildId: "g1" }).added, true);
+  assert.equal(actions.addManagerRole(CTX, OWNER, { role: mgr, guildId: "g1" }).added, false);
+  assert.deepEqual(help.loadData().managerRoleIds, ["r1"]);
+  assert.equal(actions.removeManagerRole(CTX, OWNER, { roleId: "zz" }).removed, false);
+  assert.equal(actions.removeManagerRole(CTX, OWNER, { roleId: "r1" }).removed, true);
+  assert.equal(actions.setNotifyRole(CTX, OWNER, { role: everyone, guildId: "g1" }).code, "invalid");
+  actions.setNotifyRole(CTX, OWNER, { role: mgr, guildId: "g1" });
+  assert.equal(help.loadData().notifyRoleId, "r1");
+  actions.setNotifyRole(CTX, OWNER, { role: null, guildId: "g1" });
+  assert.equal(help.loadData().notifyRoleId, null);
+});
+
+test("nudge: owner-only; bad hours → invalid; set then off keeps the threshold", () => {
+  seed();
+  assert.equal(actions.setNudge(CTX, OFFICER, { channelId: "c1" }).code, "forbidden");
+  assert.equal(actions.setNudge(CTX, OWNER, { channelId: "c1", hours: 0 }).code, "invalid");
+  assert.equal(actions.setNudge(CTX, OWNER, { channelId: "c1", hours: 12 }).ok, true);
+  assert.equal(actions.nudgeOff(CTX, OWNER).ok, true);
+  const d = help.loadData();
+  assert.deepEqual([d.nudgeChannelId, d.nudgeThresholdHours], [null, 12]);
+});
+
+test("every settings action refuses a missing or under-levelled actor and writes nothing", () => {
+  seed((d) => { d.currentSeason = { name: "Keep", startedTs: 1 }; });
+  const before = JSON.stringify(help.loadData());
+  const role = { id: "r1", managed: false };
+  for (const who of [undefined, MEMBER]) {
+    assert.equal(actions.newSeason(CTX, who, { name: "X" }).code, "forbidden");
+    assert.equal(actions.renameSeason(CTX, who, { target: "current", name: "X" }).code, "forbidden");
+    assert.equal(actions.reset(CTX, who).code, "forbidden");
+    assert.equal(actions.addCategory(CTX, who, { label: "X" }).code, "forbidden");
+    assert.equal(actions.archiveCategory(CTX, who, { categoryId: "mvp5k", moveto: "seasonrun5k" }).code, "forbidden");
+    assert.equal(actions.addManagerRole(CTX, who, { role, guildId: "g1" }).code, "forbidden");
+    assert.equal(actions.removeManagerRole(CTX, who, { roleId: "r1" }).code, "forbidden");
+    assert.equal(actions.setNotifyRole(CTX, who, { role, guildId: "g1" }).code, "forbidden");
+    assert.equal(actions.setNudge(CTX, who, { channelId: "c1" }).code, "forbidden");
+    assert.equal(actions.nudgeOff(CTX, who).code, "forbidden");
+  }
+  assert.equal(JSON.stringify(help.loadData()), before);
+});
+
+test("newSeason/reset effects close every pending request card and refresh the board", async () => {
+  const card = (n) => ({ requestChannelId: "c9", requestMessageId: `card${n}` });
+  const build = () => seed((d) => {
+    d.boardChannelId = "b1";
+    d.boardMessageId = "bm1";
+    d.entries.push(
+      entry("e1", "u1", "mvp5k", { done: true, helpedBy: "o1", doneTs: 5, ...card(1) }),
+      entry("e2", "u2", "mvp5k", card(2)),
+      entry("e3", "u1", "seasonrun5k", card(3))
+    );
+  });
+  for (const run of [
+    (client) => actions.newSeason({ client }, OFFICER, { name: "S9" }),
+    (client) => actions.reset({ client }, OFFICER),
+  ]) {
+    build();
+    const client = fakeClient();
+    const r = run(client);
+    assert.deepEqual(client.log, [], "no REST before effects() is called");
+    await r.effects();
+    assert.deepEqual(
+      client.log.map((x) => [x.op, x.channelId, x.messageId]),
+      [["edit", "c9", "card2"], ["edit", "c9", "card3"], ["edit", "b1", "bm1"]]
+    );
+    assert.equal(client.log[0].payload.content, "Season reset — this request is closed.");
+    assert.deepEqual(client.log[0].payload.components, []);
+  }
+});
+
+test("renameSeason effects: the current season refreshes the board, a past one does nothing", async () => {
+  seed((d) => {
+    d.boardChannelId = "b1";
+    d.boardMessageId = "bm1";
+    d.seasons.push({ name: "Old", startedTs: 1, endedTs: 50, sortedTotal: 0, byCategory: {} });
+  });
+  const client = fakeClient();
+  await actions.renameSeason({ client }, OFFICER, { target: "current", name: "S6" }).effects();
+  assert.deepEqual(client.log.map((x) => [x.op, x.channelId, x.messageId]), [["edit", "b1", "bm1"]]);
+  assert.equal(actions.renameSeason({ client }, OFFICER, { target: 50, name: "Older" }).effects, null);
+});
+
+test("addCategory effects refresh the board", async () => {
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; });
+  const client = fakeClient();
+  await actions.addCategory({ client }, OWNER, { label: "Guild Boss", emoji: "👹" }).effects();
+  assert.deepEqual(client.log.map((x) => [x.op, x.channelId, x.messageId]), [["edit", "b1", "bm1"]]);
+  assert.equal(client.log[0].payload.embeds.length, 1);
+});
+
+test("archiveCategory effects: board first, then the dropped card is closed and the moved card re-rendered", async () => {
+  const card = (n) => ({ requestChannelId: "c9", requestMessageId: `card${n}` });
+  seed((d) => {
+    d.boardChannelId = "b1";
+    d.boardMessageId = "bm1";
+    d.entries.push(
+      entry("e1", "u1", "mvp5k", card(1)),
+      entry("e2", "u2", "mvp5k", card(2)),
+      entry("e3", "u2", "seasonrun5k", card(3))
+    );
+  });
+  const client = fakeClient();
+  const r = actions.archiveCategory({ client }, OWNER, { categoryId: "mvp5k", moveto: "seasonrun5k" });
+  assert.deepEqual(client.log, []);
+  await r.effects();
+  assert.deepEqual(
+    client.log.map((x) => [x.op, x.channelId, x.messageId]),
+    [["edit", "b1", "bm1"], ["edit", "c9", "card2"], ["edit", "c9", "card1"]]
+  );
+  assert.equal(client.log[1].payload.content, "Merged into Season Run 5K.");
+  assert.deepEqual(client.log[1].payload.components, []);
+  assert.equal(client.log[2].payload.components.length > 0, true); // the moved card keeps its buttons
+});
+
+test("settings actions return the saved values for the caller to render", () => {
+  seed();
+  const a = actions.addManagerRole(CTX, OWNER, { role: { id: "r1", managed: false }, guildId: "g1" });
+  assert.deepEqual(a.data.managerRoleIds, ["r1"]);
+  const n = actions.setNotifyRole(CTX, OWNER, { role: { id: "r2", managed: false }, guildId: "g1" });
+  assert.equal(n.data.notifyRoleId, "r2");
+  assert.equal(actions.setNudge(CTX, OWNER, { channelId: "c1", hours: 24 }).data.nudgeThresholdHours, 24);
+  assert.equal(actions.removeManagerRole(CTX, OWNER, { roleId: "r1" }).data.managerRoleIds.length, 0);
+});
+
+test("reset:confirm, season:newmodal and /config via dispatch go through the actions", async () => {
+  const boss = { manageGuild: true };
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const confirm = component("button", `reset:confirm:${Date.now()}`, OWNER, { rights: boss });
+  await help.dispatch(confirm);
+  assert.equal(contentOf(confirm), "Season reset — the board is clear.");
+  assert.deepEqual(help.loadData().entries, []);
+
+  const modal = component("modal", "season:newmodal", OWNER, { rights: boss, fields: { name: "S7" } });
+  await help.dispatch(modal);
+  assert.equal(help.loadData().currentSeason.name, "S7");
+  assert.equal(modal.calls[0][0], "update"); // the season panel refreshed in place
+
+  const everyone = slash("config", { sub: "addrole", role: { id: "g1", name: "@everyone", managed: false } }, OWNER, boss);
+  await help.dispatch(everyone);
+  assert.equal(contentOf(everyone), "You can't add @everyone or a bot-managed role as a manager role.");
+  const add = slash("config", { sub: "addrole", role: { id: "r1", name: "Officers", managed: false } }, OWNER, boss);
+  await help.dispatch(add);
+  assert.equal(contentOf(add), "Added **Officers** as a manager role. Members with it can now run the officer commands.");
+  const cat = slash("config", { group: "category", sub: "add", label: "Guild Boss", emoji: "👹" }, OWNER, boss);
+  await help.dispatch(cat);
+  assert.equal(contentOf(cat), "Category **Guild Boss** 👹 is ready.");
+  const nudge = slash("config", { group: "nudge", sub: "set", channel: { id: "c5" }, hours: 24 }, OWNER, boss);
+  await help.dispatch(nudge);
+  assert.equal(contentOf(nudge), "Stale nudges **on** — daily digest to <#c5> for requests older than **24h**.");
+});
+
+test("the /config roles panel via dispatch goes through the actions (guards unchanged)", async () => {
+  const boss = { manageGuild: true };
+  seed();
+  const bot = component("role", "roles:add", OWNER, { values: ["b1"], rights: boss });
+  bot.guild.roles.cache.set("b1", { managed: true, name: "Bot" });
+  await help.dispatch(bot);
+  assert.equal(contentOf(bot), "You can't add @everyone or a bot-managed role as a manager role.");
+  await help.dispatch(component("role", "roles:add", OWNER, { values: ["r1"], rights: boss }));
+  assert.deepEqual(help.loadData().managerRoleIds, ["r1"]);
+  await help.dispatch(component("string", "roles:remove", OWNER, { values: ["r1"], rights: boss }));
+  assert.deepEqual(help.loadData().managerRoleIds, []);
+  await help.dispatch(component("role", "roles:notify", OWNER, { values: ["r2"], rights: boss }));
+  assert.equal(help.loadData().notifyRoleId, "r2");
+  await help.dispatch(component("button", "roles:notifyclear", OWNER, { rights: boss }));
+  assert.equal(help.loadData().notifyRoleId, null);
+  const officerTry = component("role", "roles:add", OFFICER, { values: ["r3"] });
+  await help.dispatch(officerTry);
+  assert.equal(contentOf(officerTry), "Manage Server only.");
+});
+
+test("/config notify and the notify panel refuse @everyone and bot-managed roles", async () => {
+  const boss = { manageGuild: true };
+  seed();
+  const slashNotify = slash("config", { sub: "notify", role: { id: "b1", name: "Bot", managed: true } }, OWNER, boss);
+  await help.dispatch(slashNotify);
+  assert.equal(contentOf(slashNotify), "You can't set @everyone or a bot-managed role as the notify role.");
+  assert.equal(help.loadData().notifyRoleId, null);
+  const panel = component("role", "roles:notify", OWNER, { values: ["g1"], rights: boss });
+  await help.dispatch(panel);
+  assert.equal(contentOf(panel), "You can't set @everyone or a bot-managed role as the notify role.");
+  const ok = slash("config", { sub: "notify", role: { id: "r2", name: "Helpers", managed: false } }, OWNER, boss);
+  await help.dispatch(ok);
+  assert.equal(contentOf(ok), "New requests will now ping **Helpers**.");
+  assert.equal(help.loadData().notifyRoleId, "r2");
+  const off = slash("config", { sub: "notify" }, OWNER, boss);
+  await help.dispatch(off);
+  assert.equal(contentOf(off), "Turned off request pings.");
+  assert.equal(help.loadData().notifyRoleId, null);
+});
+
+test("/config category remove and nudge off via dispatch go through the actions", async () => {
+  const boss = { manageGuild: true };
+  seed((d) => {
+    d.nudgeChannelId = "c5";
+    d.entries.push(entry("e1", "u1", "mvp5k"), entry("e2", "u2", "mvp5k"), entry("e3", "u2", "seasonrun5k"));
+  });
+  const rm = slash("config", { group: "category", sub: "remove", category: "mvp5k", moveto: "seasonrun5k" }, OWNER, boss);
+  await help.dispatch(rm);
+  assert.equal(contentOf(rm), "Archived **MVP 5K**. Moved 1 open request(s) to **Season Run 5K**. Merged 1 duplicate(s).");
+  const off = slash("config", { group: "nudge", sub: "off" }, OWNER, boss);
+  await help.dispatch(off);
+  assert.equal(contentOf(off), "Stale nudges **off**.");
+  assert.equal(help.loadData().nudgeChannelId, null);
+});
