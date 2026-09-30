@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content="<%= layout.htmxConfig %>">
+<title><%= layout.title %> · <%= layout.serverName || "Bot admin" %></title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="<%= layout.htmxSrc %>" integrity="<%= layout.htmxIntegrity %>" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="server"><%= layout.serverName || "Bot admin" %></span>
+  <% if (layout.viewer) { %>
+  <span class="who"><span class="badge"><%= layout.viewer.level %></span> <%= layout.viewer.name %></span>
+  <% } %>
+  <% if (layout.signedIn) { %>
+  <form method="post" action="/auth/logout" class="signout"><button type="submit" class="btn">Sign out</button></form>
+  <% } %>
+</header>
+<% if (layout.nav) { %>
+<details class="mobile-nav">
+  <summary>Menu</summary>
+  <%- include("partials/nav", { nav: layout.nav }) %>
+</details>
+<% } %>
+<div class="shell">
+  <% if (layout.nav) { %>
+  <nav class="sidebar" aria-label="Sections">
+    <%- include("partials/nav", { nav: layout.nav }) %>
+  </nav>
+  <% } %>
+  <main id="content" hx-boost="true" hx-target="#content" hx-select="#content" hx-swap="outerHTML" hx-push-url="false">
+    <% if (layout.notice) { %>
+    <p class="notice <%= layout.notice.ok ? "notice-ok" : "notice-error" %>" role="status"><%= layout.notice.ok ? "✓" : "✕" %> <%= layout.notice.text %></p>
+    <% } %>
+    <%- page.html %>
+  </main>
+</div>
+</body>
+</html>

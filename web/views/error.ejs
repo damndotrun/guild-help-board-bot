@@ -1,0 +1,9 @@
+<section class="card narrow">
+  <h1><%= page.status === 403 ? "No access" : page.status === 404 ? "Not found" : "Something's off" %></h1>
+  <p><%= page.text %></p>
+  <% if (page.status === 400 || page.status === 401 || page.status === 502 || page.status === 429) { %>
+  <p><a class="btn" href="/login" hx-boost="false">Back to sign-in</a></p>
+  <% } else if (page.status !== 403) { %>
+  <p><a class="btn" href="/">Back to the start</a></p>
+  <% } %>
+</section>

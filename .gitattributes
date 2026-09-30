@@ -1,0 +1,2 @@
+# Vendored front-end files are hashed (web/vendor.js) — never touch their bytes.
+web/public/vendor/** -text

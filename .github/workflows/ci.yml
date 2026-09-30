@@ -22,7 +22,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
       - name: Syntax check
         run: |
-          for f in index.js $(find core modules -name '*.js' 2>/dev/null); do
+          for f in index.js $(find core modules web -name '*.js' 2>/dev/null); do
             node --check "$f" || exit 1
           done
       - run: npm test
