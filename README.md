@@ -133,7 +133,7 @@ on a dataset so it survives restarts.
    ```yaml
    services:
      guild-bot:
-       image: node:20
+       image: node:24
        container_name: guild-help-board-bot
        restart: unless-stopped
        environment:
@@ -153,6 +153,14 @@ on a dataset so it survives restarts.
    registered.` and `Logged in as …`.
 4. **To update later:** push new code to the repo, then **Restart** the app —
    it re-clones the latest `main`. `data.json` is untouched on the dataset.
+
+**Modules.** The bot is a small module platform: `MODULES` (comma-separated,
+default `help`) selects which modules run — e.g. `MODULES: "help"`. Leave it
+unset to run exactly the help board. Each module keeps its own `<name>.json` in
+`DATA_DIR`; the help board keeps `data.json`.
+
+**Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
+the start command needs).
 
 > Run only **one** instance of the bot. Multiple instances sharing one
 > `data.json` (e.g. `pm2` cluster mode, or a second copy elsewhere) can
@@ -181,4 +189,5 @@ so `data.json` survives restarts.
 Entries are stored in `data.json`. By default it sits next to `index.js`; set
 the `DATA_DIR` environment variable to keep it on a persistent volume instead
 (as the TrueNAS setup above does). Writes are atomic, and a corrupt file is
-detected and recovered from rather than crashing the bot.
+detected and recovered from rather than crashing the bot. Other modules store
+their data next to it as `<module>.json` (same atomic write + `.bak` safety).
