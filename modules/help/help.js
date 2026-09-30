@@ -1236,6 +1236,25 @@ async function resolveIds(guild, ids) {
   return names;
 }
 
+// The embed for one /stats view: "current", "alltime" or a past season's
+// endedTs. null = that season is gone. Read-only; the name lookups are REST,
+// so callers defer first. Shared by /stats, the stats:view select and the
+// /menu Stats screen.
+async function statsEmbedFor(guild, data, view) {
+  if (view === "current") {
+    const top = tallyHelpers(data.entries).slice(0, 15);
+    return currentStatsEmbed(data, await resolveIds(guild, top.map(([id]) => id)));
+  }
+  if (view === "alltime") {
+    const top = helperTotals(data.records || []).slice(0, 15);
+    return allTimeEmbed(data, await resolveIds(guild, top.map(([id]) => id)));
+  }
+  const season = (data.seasons || []).find((s) => s.endedTs === Number(view));
+  if (!season) return null;
+  const top = helperTotals(recordsForSeason(data.records || [], season.startedTs)).slice(0, 15);
+  return seasonHelperEmbed(data, season, await resolveIds(guild, top.map(([id]) => id)));
+}
+
 async function refreshBoard(client, data) {
   if (!data.boardChannelId || !data.boardMessageId) return;
   try {
@@ -1799,33 +1818,20 @@ async function handleBoardSelect(interaction) {
 
 async function handleStatsCommand(interaction, data) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const top = tallyHelpers(data.entries).slice(0, 15);
-  const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-  await interaction.editReply({ embeds: [currentStatsEmbed(data, names)], components: statsPanelComponents(data, "current") });
+  const embed = await statsEmbedFor(interaction.guild, data, "current");
+  await interaction.editReply({ embeds: [embed], components: statsPanelComponents(data, "current") });
 }
 
 async function handleStatsView(interaction) {
   await interaction.deferUpdate();
   const data = loadData();
   const value = interaction.values[0];
-  if (value === "current") {
-    const top = tallyHelpers(data.entries).slice(0, 15);
-    const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-    await interaction.editReply({ embeds: [currentStatsEmbed(data, names)], components: statsPanelComponents(data, "current") });
+  const embed = await statsEmbedFor(interaction.guild, data, value);
+  if (!embed) {
+    await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") });
     return;
   }
-  if (value === "alltime") {
-    const top = helperTotals(data.records || []).slice(0, 15);
-    const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-    await interaction.editReply({ embeds: [allTimeEmbed(data, names)], components: statsPanelComponents(data, "alltime") });
-    return;
-  }
-  const endedTs = Number(value);
-  const season = (data.seasons || []).find((s) => s.endedTs === endedTs);
-  if (!season) { await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") }); return; }
-  const top = helperTotals(recordsForSeason(data.records || [], season.startedTs)).slice(0, 15);
-  const names = await resolveIds(interaction.guild, top.map(([id]) => id));
-  await interaction.editReply({ embeds: [seasonHelperEmbed(data, season, names)], components: statsPanelComponents(data, value) });
+  await interaction.editReply({ embeds: [embed], components: statsPanelComponents(data, value) });
 }
 
 async function handleStatsMember(interaction) {
@@ -2730,4 +2736,6 @@ module.exports = {
   dmSorted,
   needHelpRow,
   howItWorksEmbed,
+  statsEmbedFor,
+  memberName,
 };

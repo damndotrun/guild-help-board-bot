@@ -8,7 +8,7 @@ const help = require("./help");
 const actions = require("./actions");
 const { atLeast, LEVEL_LABEL } = require("../../core/perms");
 const { MENU_TEXT, HOME_ID } = require("../../core/menu");
-const { button, row, select, textFromEmbed, ok, err } = require("../../core/panel");
+const { text, button, row, select, userSelect, textFromEmbed, ok, err } = require("../../core/panel");
 
 const MAIN_ID = "menu:help:main";
 const crumbs = (step) => (step ? ["Menu", "Help board", step] : ["Menu", "Help board"]);
@@ -136,11 +136,125 @@ function notesave({ interaction, viewer, ctx, arg }) {
   return committed(ctx, () => mainScreen(viewer, { notice }), notice, r.effects);
 }
 
+function closedNotice(r) {
+  const n = r.closed.length;
+  return ok(`Marked ${n} request${n === 1 ? "" : "s"} sorted.`);
+}
+
+function sortedPicker(mine, notice) {
+  const options = help.imsortedSelectOptions(help.loadData(), mine, Date.now());
+  return {
+    crumbs: crumbs("I'm sorted"),
+    status: `You have ${mine.length} open requests. Pick the ones you got help with.`,
+    notice,
+    body: [
+      row(select("menu:help:sorted", "Choose which to mark sorted…", options, { max: options.length })),
+      row(button("menu:help:closeall", "Close all")),
+    ],
+    back: MAIN_ID,
+  };
+}
+
+// After a stale pick: the picker again if there is still a choice, else the Help board.
+function sortedOrMain(viewer, notice) {
+  const mine = help.openEntriesFor(help.loadData(), viewer.userId);
+  return mine.length > 1 ? sortedPicker(mine, notice) : mainScreen(viewer, { notice });
+}
+
+// One open request closes right away; several → a multi-select + Close all.
+function sorted({ interaction, viewer, ctx }) {
+  const actor = actorOf(interaction, viewer);
+  if (interaction.isStringSelectMenu()) {
+    const r = actions.sorted(ctx, actor, { entryIds: interaction.values });
+    if (!r.ok) return sortedOrMain(viewer, err("Those requests were already closed. Showing your current list."));
+    return committed(ctx, () => mainScreen(viewer, { notice: closedNotice(r) }), closedNotice(r), r.effects);
+  }
+  const mine = help.openEntriesFor(help.loadData(), viewer.userId);
+  if (mine.length === 0) return mainScreen(viewer, { notice: err("You have no open requests.") });
+  if (mine.length > 1) return sortedPicker(mine);
+  const r = actions.sorted(ctx, actor, { entryIds: [mine[0].id] });
+  if (!r.ok) return mainScreen(viewer, { notice: err(r.error) });
+  return committed(ctx, () => mainScreen(viewer, { notice: closedNotice(r) }), closedNotice(r), r.effects);
+}
+
+// Confirmations carry their render time (like reset:confirm); older than the
+// TTL → re-issued instead of executed.
+const EXPIRED = "That confirmation expired — check and confirm again.";
+function isStale(issuedTs) {
+  return !Number.isFinite(issuedTs) || help.resetConfirmStale(issuedTs, Date.now(), help.RESET_CONFIRM_TTL_MS);
+}
+
+function closeAllConfirm(viewer, notice) {
+  const mine = help.openEntriesFor(help.loadData(), viewer.userId);
+  if (mine.length === 0) return mainScreen(viewer, { notice: err("You have no open requests.") });
+  return {
+    crumbs: crumbs("I'm sorted"),
+    status: mine.length === 1 ? "Close your open request?" : `Close all ${mine.length} of your open requests?`,
+    notice,
+    // Cancel is the way back and goes to the Help board — never to a screen
+    // that closes anything (the I'm sorted screen closes a lone request on open).
+    body: [row(button(`menu:help:closeallok:${Date.now()}`, "Close all", ButtonStyle.Danger), button(MAIN_ID, "Cancel"))],
+  };
+}
+
+function closeallok({ interaction, viewer, ctx, arg }) {
+  if (isStale(Number(arg))) return closeAllConfirm(viewer, err(EXPIRED));
+  const r = actions.closeAll(ctx, actorOf(interaction, viewer));
+  if (!r.ok) {
+    const notice = r.code === "not_found" ? "Those requests were already closed." : r.error;
+    return mainScreen(viewer, { notice: err(notice) });
+  }
+  return committed(ctx, () => mainScreen(viewer, { notice: closedNotice(r) }), closedNotice(r), r.effects);
+}
+
+function statsScreen(data, view, embed, notice) {
+  const options = help.statsViewOptions(data).map((o) => ({ ...o, default: o.value === view }));
+  return {
+    crumbs: crumbs("Stats"),
+    notice,
+    body: [
+      text(textFromEmbed(embed)),
+      row(select("menu:help:stats", "Choose a view…", options)),
+      row(userSelect(`menu:help:statsmember:${view}`, "Look up a member's help…")),
+    ],
+    back: MAIN_ID,
+  };
+}
+
+// Name lookups are REST → defer first (the 3-second window).
+async function stats({ interaction }) {
+  let view = interaction.isStringSelectMenu() ? interaction.values[0] : "current";
+  await interaction.deferUpdate();
+  const data = help.loadData();
+  let embed = await help.statsEmbedFor(interaction.guild, data, view);
+  let notice;
+  if (!embed) {
+    notice = err("That season is gone. Showing the current season.");
+    view = "current";
+    embed = await help.statsEmbedFor(interaction.guild, data, view);
+  }
+  return statsScreen(data, view, embed, notice);
+}
+
+// The view the member lookup was made from rides in the customId — no session state.
+async function statsmember({ interaction, arg }) {
+  await interaction.deferUpdate();
+  const data = help.loadData();
+  const helperId = interaction.values[0];
+  const name = (await help.memberName(interaction.guild, helperId)) || "(left the server)";
+  return statsScreen(data, arg || "current", help.memberEmbed(data, helperId, name));
+}
+
 const SCREENS = {
   main: ({ viewer }) => mainScreen(viewer),
   needhelp,
   note,
   notesave,
+  sorted,
+  closeall: ({ viewer }) => closeAllConfirm(viewer),
+  closeallok,
+  stats,
+  statsmember,
 };
 
 // Screens only officers (and owners) may open — re-checked on every tap.
