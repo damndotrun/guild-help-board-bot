@@ -253,3 +253,113 @@ test("registry: a duplicate command name fails before any PUT", async () => {
   await assert.rejects(registerCommands(mods, { rest, env: {}, log: quietLog }), /dup/);
   assert.equal(called, false);
 });
+
+test("loader: inherited Object.prototype names are unknown modules, not loaded", () => {
+  for (const n of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+    assert.throws(() => loadModules([n], { help: () => ({ name: "help", handle: async () => {} }) }), /Unknown module/, n);
+  }
+});
+
+test("loader: a module whose exported name differs from its MODULES key is a hard error", () => {
+  assert.throws(
+    () => loadModules(["help"], { help: () => ({ name: "other", handle: async () => {} }) }),
+    /"help".*"other"|"other".*"help"/
+  );
+});
+
+test("loader: dataFile null means the module has no store", () => {
+  const m = normalizeModule({ name: "raw", dataFile: null, handle: async () => {} });
+  assert.equal(m.dataFile, null);
+  assert.equal(normalizeModule({ name: "raw", handle: async () => {} }).dataFile, "raw.json");
+});
+
+test("loader: jobs are validated (positive finite intervalMs, function run)", () => {
+  const mk = (jobs) => () => normalizeModule({ name: "j", handle: async () => {}, jobs });
+  const ok = { name: "tick", intervalMs: 1000, run: async () => {} };
+  assert.equal(mk([ok])().jobs.length, 1);
+  for (const bad of [
+    { ...ok, intervalMs: 0 },
+    { ...ok, intervalMs: -5 },
+    { ...ok, intervalMs: NaN },
+    { ...ok, intervalMs: Infinity },
+    { ...ok, intervalMs: "1000" },
+    { ...ok, intervalMs: undefined },
+    { ...ok, intervalMs: 2 ** 31 },
+    { ...ok, run: undefined },
+    { ...ok, run: "nope" },
+    null,
+  ]) {
+    assert.throws(mk([bad]), /job/i, JSON.stringify(bad));
+  }
+  assert.throws(mk("nope"), /jobs/);
+});
+
+const { createCtxFor, startJobs, runReady } = require("../core/runtime");
+
+test("runtime: ctxFor gives a store for a module with a dataFile and none for dataFile null", () => {
+  const dir = tmpDir();
+  const ctxFor = createCtxFor({ client: {}, dataDir: dir, log: quietLog });
+  const withStore = normalizeModule({ name: "a", handle: async () => {} });
+  const noStore = normalizeModule({ name: "b", dataFile: null, handle: async () => {} });
+  const ca = ctxFor(withStore);
+  assert.equal(ca.store.file, path.join(dir, "a.json"));
+  assert.equal(ctxFor(withStore), ca); // cached
+  const cb = ctxFor(noStore);
+  assert.equal("store" in cb, false);
+  assert.equal(cb.config.DATA_DIR, dir);
+});
+
+test("runtime: a throwing onReady is logged and the module's jobs still start", async () => {
+  const errors = [];
+  let ran;
+  const done = new Promise((r) => (ran = r));
+  const mod = normalizeModule({
+    name: "r",
+    handle: async () => {},
+    onReady: async () => {
+      throw new Error("ready-boom");
+    },
+    jobs: [{ name: "tick", intervalMs: 5, run: async () => ran("ran") }],
+  });
+  const keep = setInterval(() => {}, 50); // job timers are unref'd; keep the loop alive while we wait
+  const timers = await runReady([mod], () => ({}), { log: { error: (...a) => errors.push(a) } });
+  try {
+    assert.equal(await done, "ran");
+    assert.equal(errors.length, 1);
+    assert.match(String(errors[0][0]), /\[r\] onReady failed/);
+  } finally {
+    timers.forEach(clearInterval);
+    clearInterval(keep);
+  }
+});
+
+test("runtime: a failing job run is logged and does not stop the interval", async () => {
+  const errors = [];
+  let n = 0;
+  let third;
+  const done = new Promise((r) => (third = r));
+  const mod = normalizeModule({
+    name: "r",
+    handle: async () => {},
+    jobs: [
+      {
+        name: "flaky",
+        intervalMs: 5,
+        run: async () => {
+          if (++n === 3) third();
+          throw new Error("job-boom");
+        },
+      },
+    ],
+  });
+  const keep = setInterval(() => {}, 50); // job timers are unref'd; keep the loop alive while we wait
+  const timers = startJobs(mod, {}, { error: (...a) => errors.push(a) });
+  try {
+    await done;
+    assert.ok(errors.length >= 2);
+    assert.match(String(errors[0][0]), /\[r\] job flaky failed/);
+  } finally {
+    timers.forEach(clearInterval);
+    clearInterval(keep);
+  }
+});

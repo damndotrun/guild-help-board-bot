@@ -6,6 +6,9 @@ const path = require("path");
 const { DATA_DIR } = require("./config");
 
 const LOCK_FILE = path.join(DATA_DIR, "bot.lock");
+// Named in the fresh-heartbeat warning exactly as before the platform split, so
+// existing ops-log greps keep matching.
+const DATA_FILE = path.join(DATA_DIR, "data.json");
 const LOCK_STALE_MS = 90_000; // treat a lock older than this as abandoned
 const LOCK_REFRESH_MS = 30_000; // heartbeat cadence (well under the stale window)
 
@@ -32,7 +35,7 @@ function acquireLock() {
   if (isLockFresh(existing, now)) {
     console.warn(
       `WARNING: bot.lock heartbeat is fresh (pid ${existing.pid}); another ` +
-        `instance may be running against ${DATA_DIR}. Starting anyway.`
+        `instance may be running against ${DATA_FILE}. Starting anyway.`
     );
   }
   const write = (ts) =>

@@ -5,38 +5,18 @@
 
 require("dotenv").config(); // before anything reads process.env
 
-const path = require("path");
 const { Client, GatewayIntentBits } = require("discord.js");
 const config = require("./core/config");
 const lock = require("./core/lock");
 const { loadModules } = require("./core/loader");
 const { createRouter } = require("./core/router");
-const { registerCommands } = require("./core/registry");
-const { createStore } = require("./core/store");
+const { registerCommands, collectCommands } = require("./core/registry");
+const { createCtxFor, runReady } = require("./core/runtime");
 const help = require("./modules/help/help");
 
 // test/logic.test.js requires this file: keep re-exporting the help logic and
 // the lock predicate so the existing tests run unchanged.
 module.exports = { ...help, isLockFresh: lock.isLockFresh };
-
-function prefixedLog(name) {
-  return {
-    log: (...a) => console.log(`[${name}]`, ...a),
-    warn: (...a) => console.warn(`[${name}]`, ...a),
-    error: (...a) => console.error(`[${name}]`, ...a),
-  };
-}
-
-function startJobs(mod, ctx) {
-  for (const job of mod.jobs) {
-    const timer = setInterval(() => {
-      Promise.resolve()
-        .then(() => job.run(ctx))
-        .catch((err) => console.error(`[${mod.name}] job ${job.name} failed:`, err));
-    }, job.intervalMs);
-    timer.unref();
-  }
-}
 
 async function start() {
   const missingEnv = config.REQUIRED_ENV.filter((k) => !process.env[k]);
@@ -51,6 +31,18 @@ async function start() {
   const modules = loadModules(config.parseModules(process.env.MODULES));
   console.log(`Modules: ${modules.map((m) => m.name).join(", ")}`);
 
+  // Build everything that can fail on config/wiring alone BEFORE the first side
+  // effect (bot.lock), so a bad MODULES / colliding module exits cleanly.
+  // parse: [] by default means no message ever pings anyone unless a specific
+  // call opts in. This neutralises mention injection via nicknames in replies.
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds],
+    allowedMentions: { parse: [] },
+  });
+  const ctxFor = createCtxFor({ client, dataDir: config.DATA_DIR });
+  const route = createRouter({ modules, ctxFor }); // throws on customId-prefix collisions
+  collectCommands(modules); // throws on duplicate command names
+
   lock.acquireLock();
   for (const sig of ["SIGTERM", "SIGINT"]) {
     process.on(sig, () => {
@@ -59,38 +51,11 @@ async function start() {
     });
   }
 
-  // parse: [] by default means no message ever pings anyone unless a specific
-  // call opts in. This neutralises mention injection via nicknames in replies.
-  const client = new Client({
-    intents: [GatewayIntentBits.Guilds],
-    allowedMentions: { parse: [] },
-  });
-
-  const contexts = new Map();
-  const ctxFor = (mod) => {
-    if (!contexts.has(mod.name)) {
-      contexts.set(mod.name, {
-        client,
-        log: prefixedLog(mod.name),
-        config: { DATA_DIR: config.DATA_DIR },
-        store: createStore(path.join(config.DATA_DIR, mod.dataFile)),
-      });
-    }
-    return contexts.get(mod.name);
-  };
-
   for (const mod of modules) if (mod.bind) mod.bind(client);
-  client.on("interactionCreate", createRouter({ modules, ctxFor }));
+  client.on("interactionCreate", route);
   client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
-    for (const mod of modules) {
-      try {
-        if (mod.onReady) await mod.onReady(ctxFor(mod));
-        startJobs(mod, ctxFor(mod));
-      } catch (err) {
-        console.error(`[${mod.name}] onReady failed:`, err);
-      }
-    }
+    await runReady(modules, ctxFor);
   });
 
   await registerCommands(modules);

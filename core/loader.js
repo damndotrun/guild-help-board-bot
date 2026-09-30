@@ -1,5 +1,5 @@
 // Module loading and normalisation. Every module exports a plain object:
-//   { name, aliases?, dataFile?, commands?, handle? | onCommand?/components?/
+//   { name, aliases?, dataFile? (null = no ctx.store), commands?, handle? | onCommand?/components?/
 //     modals?/autocomplete?, bind?, onReady?, jobs? }
 // The router only ever calls `handle(interaction, ctx)`; modules that prefer
 // per-action tables get a `handle` built from them here.
@@ -35,6 +35,22 @@ function buildHandle(mod) {
   };
 }
 
+const MAX_TIMER_MS = 2 ** 31 - 1; // setInterval overflows (fires every 1 ms) above this
+
+function normalizeJobs(mod) {
+  const jobs = mod.jobs === undefined ? [] : mod.jobs;
+  if (!Array.isArray(jobs)) throw new Error(`[${mod.name}] jobs must be an array`);
+  return jobs.map((job, i) => {
+    const label = `[${mod.name}] job ${job && job.name ? job.name : `#${i}`}`;
+    if (!job || typeof job !== "object") throw new Error(`${label} must be an object`);
+    if (!Number.isFinite(job.intervalMs) || job.intervalMs <= 0 || job.intervalMs > MAX_TIMER_MS) {
+      throw new Error(`${label}: intervalMs must be a positive finite number (got ${String(job.intervalMs)})`);
+    }
+    if (typeof job.run !== "function") throw new Error(`${label}: run must be a function`);
+    return { name: job.name || `#${i}`, intervalMs: job.intervalMs, run: job.run };
+  });
+}
+
 function normalizeModule(mod) {
   if (!mod || typeof mod.name !== "string" || !NAME_RE.test(mod.name)) {
     throw new Error(`Invalid module name: ${mod && mod.name}`);
@@ -42,22 +58,27 @@ function normalizeModule(mod) {
   return {
     name: mod.name,
     aliases: mod.aliases || [],
-    dataFile: mod.dataFile || `${mod.name}.json`,
+    // dataFile: null = the module keeps its own persistence and gets no ctx.store.
+    dataFile: mod.dataFile === null ? null : mod.dataFile || `${mod.name}.json`,
     commands: (mod.commands || []).map((c) => (typeof c.toJSON === "function" ? c.toJSON() : c)),
     handle: mod.handle || buildHandle(mod),
     bind: mod.bind || null,
     onReady: mod.onReady || null,
-    jobs: mod.jobs || [],
+    jobs: normalizeJobs(mod),
   };
 }
 
 function loadModules(names, available = AVAILABLE) {
   return names.map((n) => {
-    const load = available[n];
-    if (!load) {
+    // hasOwn: MODULES=constructor / toString must not resolve to an inherited member.
+    if (!Object.hasOwn(available, n)) {
       throw new Error(`Unknown module "${n}" in MODULES (known: ${Object.keys(available).join(", ")})`);
     }
-    return normalizeModule(load());
+    const mod = normalizeModule(available[n]());
+    if (mod.name !== n) {
+      throw new Error(`Module "${n}" exports the name "${mod.name}" — MODULES key and module name must match`);
+    }
+    return mod;
   });
 }
 
