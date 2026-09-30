@@ -1,11 +1,14 @@
 # Secrets — never commit these
 .env
 
-# Local runtime data (contains member user IDs)
-data.json
-data.json.bak
-data.json.bak.tmp
-data.json.tmp
+# Local runtime data (contains member user IDs). Every module keeps its own
+# <name>.json in DATA_DIR (default: repo root) — never commit any of them.
+/*.json
+!/package.json
+!/package-lock.json
+*.json.bak
+*.json.tmp
+*.json.bak.tmp
 bot.lock
 
 # Dependencies
