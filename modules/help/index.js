@@ -14,4 +14,6 @@ module.exports = {
   handle: (interaction) => help.dispatch(interaction),
   bind: help.bind,
   onReady: () => help.onReady(),
+  // The single source of the manager-role list, read-only for core/perms.
+  managerRoles: () => help.loadData().managerRoleIds,
 };

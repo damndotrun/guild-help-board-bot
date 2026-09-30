@@ -27,6 +27,7 @@ require("dotenv").config();
 // data.json lives in the platform DATA_DIR (default: the repo root, as before
 // the move into modules/help/) — see core/config.js.
 const { DATA_DIR } = require("../../core/config");
+const { computeLevel } = require("../../core/perms");
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const TMP_FILE = path.join(DATA_DIR, "data.json.tmp");
 const BAK_FILE = path.join(DATA_DIR, "data.json.bak");
@@ -290,13 +291,26 @@ let lastNudgePostTs = 0;
 // a role that an admin added via /config. With no manager roles set, it falls
 // back to Manage Server only — so you can never lock yourself out.
 function isManager(interaction, data) {
-  const perms = interaction.memberPermissions;
-  if (perms && perms.has(PermissionFlagsBits.ManageGuild)) return true;
-  const roleIds = data.managerRoleIds || [];
-  if (roleIds.length === 0) return false;
-  const cache = interaction.member?.roles?.cache;
-  if (cache) return roleIds.some((id) => cache.has(id));
-  return false;
+  return levelOfInteraction(interaction, data) !== "member";
+}
+
+// The one place help feeds an interaction into the shared core/perms rule.
+function levelOfInteraction(interaction, data) {
+  return computeLevel({
+    permissions: interaction.memberPermissions,
+    roleCache: interaction.member?.roles?.cache,
+    managerRoleIds: data.managerRoleIds,
+  });
+}
+
+// The actor the shared actions (./actions) receive: who is acting, the name
+// cards show, and the level from the same rule as isManager.
+function actorOf(interaction, data) {
+  return {
+    userId: interaction.user.id,
+    displayName: interaction.member?.displayName || interaction.user.username,
+    level: levelOfInteraction(interaction, data),
+  };
 }
 
 // Resolve a category id to its current {label, emoji}. Returns a FRESH object
@@ -2820,6 +2834,7 @@ module.exports = {
   renderField,
   catOf,
   isManager,
+  actorOf,
   buildBoardEmbed,
   loadData,
   saveData,

@@ -1,6 +1,6 @@
 // Module loading and normalisation. Every module exports a plain object:
 //   { name, aliases?, dataFile? (null = no ctx.store), commands?, handle? | onCommand?/components?/
-//     modals?/autocomplete?, bind?, onReady?, jobs? }
+//     modals?/autocomplete?, bind?, onReady?, jobs?, managerRoles? }
 // The router only ever calls `handle(interaction, ctx)`; modules that prefer
 // per-action tables get a `handle` built from them here.
 
@@ -65,6 +65,9 @@ function normalizeModule(mod) {
     bind: mod.bind || null,
     onReady: mod.onReady || null,
     jobs: normalizeJobs(mod),
+    // Optional: the one module that owns the manager-role list (help) exposes
+    // it read-only for core/perms.
+    managerRoles: typeof mod.managerRoles === "function" ? mod.managerRoles : null,
   };
 }
 

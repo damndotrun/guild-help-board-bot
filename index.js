@@ -12,6 +12,7 @@ const { loadModules } = require("./core/loader");
 const { createRouter } = require("./core/router");
 const { registerCommands, collectCommands } = require("./core/registry");
 const { createCtxFor, runReady } = require("./core/runtime");
+const { createPerms, managerRolesFrom } = require("./core/perms");
 const help = require("./modules/help/help");
 
 // test/logic.test.js requires this file: keep re-exporting the help logic and
@@ -39,7 +40,9 @@ async function start() {
     intents: [GatewayIntentBits.Guilds],
     allowedMentions: { parse: [] },
   });
-  const ctxFor = createCtxFor({ client, dataDir: config.DATA_DIR });
+  // One shared permission object; throws if two modules claim the manager roles.
+  const perms = createPerms({ getManagerRoleIds: managerRolesFrom(modules) });
+  const ctxFor = createCtxFor({ client, dataDir: config.DATA_DIR, perms });
   const route = createRouter({ modules, ctxFor }); // throws on customId-prefix collisions
   collectCommands(modules); // throws on duplicate command names
 

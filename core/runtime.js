@@ -12,14 +12,15 @@ function prefixedLog(name) {
   };
 }
 
-// ctx = { client, log, config, store? }. A module that declares dataFile: null
-// (help: it owns data.json through its own loadData/saveData) gets no store at
-// all, so it cannot reach the file through the platform's .bak rules by accident.
-function createCtxFor({ client, dataDir }) {
+// ctx = { client, log, config, perms, store? }. A module that declares
+// dataFile: null (help: it owns data.json through its own loadData/saveData)
+// gets no store at all, so it cannot reach the file through the platform's
+// .bak rules by accident. `perms` is the one shared core/perms object.
+function createCtxFor({ client, dataDir, perms = null }) {
   const contexts = new Map();
   return (mod) => {
     if (!contexts.has(mod.name)) {
-      const ctx = { client, log: prefixedLog(mod.name), config: { DATA_DIR: dataDir } };
+      const ctx = { client, log: prefixedLog(mod.name), config: { DATA_DIR: dataDir }, perms };
       if (mod.dataFile) ctx.store = createStore(path.join(dataDir, mod.dataFile));
       contexts.set(mod.name, ctx);
     }
