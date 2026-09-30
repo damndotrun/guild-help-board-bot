@@ -45,7 +45,7 @@ function normalizeWeb(mod) {
     routes,
     nav: nav.map((item, i) => {
       if (!item || typeof item.label !== "string" || item.label.trim() === "") throw new Error(`${where}.nav[${i}].label must be a non-empty string`);
-      if (typeof item.path !== "string" || !NAV_PATH.test(item.path)) throw new Error(`${where}.nav[${i}].path must look like "/" or "/seasons"`);
+      if (typeof item.path !== "string" || !NAV_PATH.test(item.path) || item.path.includes("//")) throw new Error(`${where}.nav[${i}].path must look like "/" or "/seasons"`);
       const minLevel = item.minLevel === undefined ? "officer" : item.minLevel;
       if (minLevel !== "officer" && minLevel !== "owner") throw new Error(`${where}.nav[${i}].minLevel must be "officer" or "owner"`);
       return { label: item.label, path: item.path, minLevel };

@@ -14,6 +14,7 @@ const CONFIRM_VIEW = path.join(__dirname, "views", "confirm.ejs");
 // window as the Discord /reset confirmation (help RESET_CONFIRM_TTL_MS).
 const CONFIRM_TTL_MS = 5 * 60 * 1000;
 
+// The 403 texts, one per level; web/server.js's nav gate uses these too.
 const NEED = Object.freeze({
   officer: "This page is for officers and owners.",
   owner: "Only members with Manage Server can change bot settings.",
@@ -71,9 +72,9 @@ function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
     // time or when it was too old; a notice + redirect when the state moved
     // on) and nothing may change: return.
     // spec = { title, lines: [string], action, fields: { name: value },
-    //          confirmLabel, cancelHref, guard? }
-    // `guard` is a string (or number) describing the state the confirmation
-    // is about — e.g. the season id + startedTs, or a category's state. The
+    //          confirmLabel, cancelHref, guard }
+    // `guard` (REQUIRED, non-empty; confirmed() throws without it) is a string
+    // or number describing the state the confirmation is about — e.g. the season id + startedTs, or a category's state. The
     // handler computes it from FRESH data on every call; it rides along in
     // the form, and on the confirming POST it must equal the value computed
     // again just now. So a replay (back button, second tab, double click)
@@ -83,7 +84,12 @@ function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
     async confirmed(req, res, spec) {
       const extra = Object.keys(spec.fields || {}).find((name) => CONTROL_FIELDS.includes(name));
       if (extra) throw new Error(`web.confirmed: "${extra}" is a reserved confirmation field name`);
-      const guard = spec.guard == null ? "" : String(spec.guard);
+      // Fail loud: an omitted/empty guard would compare "" === "" on replay and
+      // silently switch the replay protection off.
+      if (spec.guard == null || String(spec.guard) === "") {
+        throw new Error("web.confirmed: spec.guard is required (a non-empty string describing the state the confirmation is about)");
+      }
+      const guard = String(spec.guard);
       const asked = field(req, "confirm") === "yes";
       if (asked && fresh(field(req, "issued"))) {
         if (field(req, "guard") === guard) return true;
@@ -107,4 +113,4 @@ function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
   };
 }
 
-module.exports = { CONFIRM_TTL_MS, CHANGED, createWebCtx };
+module.exports = { CONFIRM_TTL_MS, CHANGED, NEED, createWebCtx };

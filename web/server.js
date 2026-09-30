@@ -14,7 +14,7 @@ const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter } = require(
 const session = require("./session");
 const { renderView } = require("./render");
 const { HTMX, HTMX_CONFIG } = require("./vendor");
-const { createWebCtx } = require("./context");
+const { createWebCtx, NEED } = require("./context");
 
 const VIEWS = path.join(__dirname, "views");
 const PUBLIC = path.join(__dirname, "public");
@@ -50,15 +50,14 @@ const TEXT = Object.freeze({
   broken: "Something went wrong on our side.",
 });
 
-const OWNER_ONLY = "Only members with Manage Server can change bot settings.";
-
 // Enforces a module's nav `minLevel` on the paths behind it, server-side: an
 // owner-level nav item guards its page AND everything below it (a nav item
 // "/config" also guards POST /config/roles/add), whatever the module's routes
 // do. The nav hiding the link is convenience; this is the protection. The
 // comparison is on a normalised path (lower-case, slashes collapsed, both the
 // raw and the percent-decoded form) so spelling variants cannot slip past a
-// router that matches case-insensitively. A "/" item guards only the root page.
+// router that matches case-insensitively. A "/" item guards the WHOLE module
+// (plain prefix, fail closed).
 function navGate(mod) {
   const guarded = mod.web.nav.filter((item) => item.minLevel !== "officer");
   if (guarded.length === 0) return null;
@@ -71,9 +70,10 @@ function navGate(mod) {
       // a malformed escape: the raw form alone is checked (the router will 400/404 it)
     }
     for (const item of guarded) {
-      const base = item.path.replace(/\/+$/, "");
-      const hit = [...forms].some((p) => (item.path === "/" ? p === "/" : p === base || p.startsWith(`${base}/`)));
-      if (hit && !atLeast(req.viewer.level, item.minLevel)) return next(httpError(403, OWNER_ONLY));
+      // "/" → base "" → every path below the module is under it (fail closed).
+      const base = normalise(item.path).replace(/\/+$/, "");
+      const hit = [...forms].some((p) => p === base || p.startsWith(`${base}/`));
+      if (hit && !atLeast(req.viewer.level, item.minLevel)) return next(httpError(403, NEED[item.minLevel]));
     }
     return next();
   };

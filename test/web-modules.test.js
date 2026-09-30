@@ -93,9 +93,17 @@ function demoModule(name = "demo", title = "Demo board") {
           web.forgetLevels();
           web.done(req, res, `/${name}`, { ok: true, text: "Roles changed." });
         });
+        router.post("/noguard", async (req, res) => {
+          // A forgotten `guard`: confirmed() must refuse loudly.
+          const ok = await web.confirmed(req, res, { title: "T", lines: [], action: "/x", fields: {}, confirmLabel: "Go", cancelHref: "/" });
+          if (ok) web.done(req, res, "/", { ok: true, text: "x" });
+        });
         router.get("/boom", () => {
           throw new Error("kaboom");
         });
+        // Last, and unguarded: a one-segment param route, so percent-encoded
+        // spellings ("/%76ault") reach a handler and only the nav gate decides.
+        router.get("/:page", (req, res) => web.render(req, res, { title: "Param", file: FRAG, page: { text: `param:${req.params.page}` } }));
       },
     },
   });
@@ -140,6 +148,9 @@ test("loader: web is validated — routes, title, nav path, minLevel, reserved n
     [{ ...base, nav: [{ label: "A", path: "/../x?" }] }, /path/],
     [{ ...base, nav: [{ label: "A", path: "/", minLevel: "member" }] }, /minLevel/],
     [{ ...base, nav: [{ label: "", path: "/" }] }, /label/],
+    // "//" would never match the gate's collapsed request path (fails open)
+    [{ ...base, nav: [{ label: "A", path: "/a//b", minLevel: "owner" }] }, /path/],
+    [{ ...base, nav: [{ label: "A", path: "//", minLevel: "owner" }] }, /path/],
   ];
   for (const [web, re] of bad) assert.throws(() => normalizeModule({ name: "x", web }), re);
   for (const name of ["auth", "static", "login", "teammates"]) {
@@ -195,10 +206,20 @@ test("a module's nav minLevel is enforced server-side even when the route has no
     for (const p of ["/demo/vault", "/demo/VAULT", "/demo/vault/"]) {
       assert.equal((await w.page(p)).res.status, 403, p);
     }
-    for (const p of ["//demo//vault", "/demo//vault", "/demo/%76ault", "/demo/vault%2F"]) {
+    for (const p of ["//demo//vault", "/demo//vault"]) {
       const { res, text } = await w.page(p);
       assert.notEqual(res.status, 200, p);
-      assert.doesNotMatch(text, /vault-page/, p);
+      assert.doesNotMatch(text, /vault-page|param:/, p);
+    }
+    // Percent-encoded spellings reach the unguarded `/:page` route — proved by
+    // an innocent page — so it is the gate's decoded comparison that refuses them.
+    const innocent = await w.page("/demo/%6Fther");
+    assert.equal(innocent.res.status, 200);
+    assert.match(innocent.text, /param:other/);
+    for (const p of ["/demo/%76ault", "/demo/%56AULT", "/demo/vault%2F", "/demo/%73ecret"]) {
+      const { res, text } = await w.page(p);
+      assert.equal(res.status, 403, p);
+      assert.doesNotMatch(text, /param:|vault-page/, p);
     }
     const post = await w.post("/demo/vault/edit");
     assert.equal(post.status, 403);
@@ -211,6 +232,39 @@ test("a module's nav minLevel is enforced server-side even when the route has no
     assert.match((await w.page("/demo/vault")).text, /vault-page/);
     assert.equal((await w.post("/demo/vault/edit")).status, 303);
     assert.deepEqual(state.calls, ["vault-edit"]);
+  });
+});
+
+test("an owner-level nav item with path '/' guards the whole module (fail closed), not just its root page", async () => {
+  const locked = normalizeModule({
+    name: "locked",
+    web: {
+      title: "Locked",
+      nav: [{ label: "Root", path: "/", minLevel: "owner" }],
+      routes(router, web) {
+        router.get("/", (req, res) => web.render(req, res, { title: "L", file: FRAG, page: { text: "locked-root" } }));
+        router.get("/sub", (req, res) => web.render(req, res, { title: "L", file: FRAG, page: { text: "locked-sub" } }));
+        router.post("/sub/edit", (req, res) => {
+          state.calls.push("locked-edit");
+          web.done(req, res, "/locked", { ok: true, text: "ok" });
+        });
+      },
+    },
+  });
+  await withWeb({ modules: [demoModule(), locked] }, async (w) => {
+    await w.signIn(OFFICER);
+    for (const p of ["/locked", "/locked/sub", "/locked/SUB/"]) {
+      const { res, text } = await w.page(p);
+      assert.equal(res.status, 403, p);
+      assert.doesNotMatch(text, /locked-(root|sub)/, p);
+    }
+    assert.equal((await w.post("/locked/sub/edit")).status, 403);
+    assert.deepEqual(state.calls, []);
+  });
+  await withWeb({ modules: [demoModule(), locked] }, async (w) => {
+    await w.signIn(OWNER);
+    assert.match((await w.page("/locked/sub")).text, /locked-sub/);
+    assert.equal((await w.post("/locked/sub/edit")).status, 303);
   });
 });
 
@@ -366,6 +420,19 @@ test("confirmation: a spec whose fields clash with the control fields is a progr
     const { res } = await w.submit("/demo/clash");
     assert.equal(res.status, 500);
     assert.ok(w.log.errors.some((l) => /reserved confirmation field/.test(l)));
+  });
+});
+
+test("confirmation: a spec without a guard (missing, null or empty) is a programming error (500, nothing runs) — no silent replay hole", async () => {
+  await withWeb({}, async (w) => {
+    await w.signIn(OWNER);
+    const { res } = await w.submit("/demo/noguard");
+    assert.equal(res.status, 500);
+    assert.ok(w.log.errors.some((l) => /spec\.guard is required/.test(l)));
+    // A replayed confirm with the empty field a guard-less form would carry.
+    const replay = await w.post("/demo/noguard", { confirm: "yes", issued: String(Date.now()), guard: "" });
+    assert.equal(replay.status, 500);
+    assert.deepEqual(state.calls, []);
   });
 });
 
