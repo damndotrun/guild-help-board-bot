@@ -109,4 +109,102 @@ function setNote(ctx, actor, { entryId, note } = {}) {
   };
 }
 
-module.exports = { MAX_NOTE, needHelp, sorted, closeAll, setNote };
+// Officer resolve target: by entry id (panels, menu) or by member + category
+// (the /helped and /remove fast path). Only OPEN entries count, so a double
+// tap on an already-closed entry finds nothing and writes no second record.
+function findOpen(data, { entryId, userId, categoryId }) {
+  if (entryId !== undefined) return { entry: data.entries.find((e) => e.id === entryId && !e.done) };
+  if (!help.categoryMap(data)[categoryId]) {
+    return { error: fail("invalid", "That isn't a known category. Pick one from the list.") };
+  }
+  return { entry: data.entries.find((e) => e.userId === userId && e.category === categoryId && !e.done) };
+}
+
+// Shared shape of helped/remove: gate → find the open entry → `resolve` (logs
+// the record, then saveData — no await in between) → the REST `effects`.
+function officerResolve(ctx, actor, args, resolve, effects) {
+  const denied = gate(actor, "officer");
+  if (denied) return denied;
+  const data = help.loadData();
+  const { entry, error } = findOpen(data, args);
+  if (error) return error;
+  if (!entry) return fail("not_found", "That request was already closed.");
+  resolve(data, entry);
+  help.saveData(data);
+  return { ok: true, entry, category: help.catOf(data, entry.category), effects: () => effects(data, entry) };
+}
+
+function helped(ctx, actor, args = {}) {
+  return officerResolve(
+    ctx,
+    actor,
+    args,
+    (data, entry) => help.resolveEntryAsSorted(data, entry, actor.userId, Date.now()),
+    async (data, entry) => {
+      await help.resolveCard(ctx.client, entry, `✅ Sorted by ${actor.displayName}`);
+      await help.dmSorted(ctx.client, data, entry.userId, entry.category);
+      await help.refreshBoard(ctx.client, data);
+    }
+  );
+}
+
+function remove(ctx, actor, args = {}) {
+  return officerResolve(
+    ctx,
+    actor,
+    args,
+    (data, entry) => help.resolveEntryAsRemoved(data, entry, Date.now()),
+    async (data, entry) => {
+      await help.resolveCard(ctx.client, entry, `🗑️ Removed by ${actor.displayName}`);
+      await help.refreshBoard(ctx.client, data);
+    }
+  );
+}
+
+// Post the live board in `channel`, pin it and retire the previous one. REST
+// by nature, so it is async and the caller defers first; the rendering
+// snapshot is read-only and the board ids are saved on a FRESH load
+// (invariant #1).
+async function repostBoard(ctx, actor, { channel } = {}) {
+  const denied = gate(actor, "officer");
+  if (denied) return denied;
+  if (!channel || typeof channel.send !== "function") return fail("invalid", "I can't post the board in this channel.");
+  const data = help.loadData();
+  const names = await help.resolveNames(channel.guild, data);
+  let message;
+  try {
+    message = await channel.send({ embeds: [help.buildBoardEmbed(data, names)], components: [help.needHelpRow()] });
+  } catch (err) {
+    console.error("Could not post the board:", err?.message ?? err);
+    return fail("rest", "I couldn't post the board here — check my permissions in this channel.");
+  }
+  // Pinning needs the separate "Pin Messages" permission. Non-fatal, but never
+  // claim a pin we didn't get.
+  let pinned = true;
+  try {
+    await message.pin();
+  } catch (e) {
+    pinned = false;
+    console.error("Could not pin the board (bot needs Pin Messages):", e?.message ?? e);
+  }
+  // Retire the previous board, if any, so we don't leave a stale pinned copy.
+  if (data.boardChannelId && data.boardMessageId && data.boardMessageId !== message.id) {
+    try {
+      const oldChannel = await ctx.client.channels.fetch(data.boardChannelId);
+      const oldMessage = await oldChannel.messages.fetch(data.boardMessageId);
+      await oldMessage.unpin().catch(() => {});
+      await oldMessage
+        .edit({ content: "_This board has been retired; a newer one was posted._", embeds: [], components: [] })
+        .catch(() => {});
+    } catch {
+      // old message already gone — nothing to retire
+    }
+  }
+  const fresh = help.loadData();
+  fresh.boardChannelId = channel.id;
+  fresh.boardMessageId = message.id;
+  help.saveData(fresh);
+  return { ok: true, pinned, message };
+}
+
+module.exports = { MAX_NOTE, needHelp, sorted, closeAll, setNote, helped, remove, repostBoard };

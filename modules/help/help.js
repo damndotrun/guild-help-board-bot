@@ -2148,41 +2148,6 @@ async function handleResolveMemberSelect(interaction) {
   await interaction.editReply(entryStepPanelPayload(data, action, memberId, name));
 }
 
-// Terminal step shared by both resolve:helped:entry and resolve:remove:entry —
-// applies the exact /helped or /remove close/record logic (invariant #6: the
-// record is logged before saveData), acks the panel, then does the slow REST
-// (card + optional DM + board refresh) after the ack (invariant #1).
-async function finishResolveEntry(interaction, action, entry, data) {
-  const now = Date.now();
-  if (action === "helped") {
-    resolveEntryAsSorted(data, entry, interaction.user.id, now);
-  } else {
-    resolveEntryAsRemoved(data, entry, now);
-  }
-  saveData(data);
-  const byName = interaction.member?.displayName || interaction.user.username;
-  const confirmText =
-    action === "helped"
-      ? `✅ Marked **${entry.username}** as sorted for ${catOf(data, entry.category).label}.`
-      : `Removed ${entry.username}'s entry.`;
-  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
-  // Message 10008) — wrap it so a throw here can't skip the post-ack REST
-  // below (resolveCard/dmSorted/refreshBoard), which must always run since
-  // saveData already committed the close.
-  try {
-    await interaction.update({ content: confirmText, embeds: [], components: [] });
-  } catch {
-    await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
-  }
-  if (action === "helped") {
-    await resolveCard(client, entry, `✅ Sorted by ${byName}`);
-    await dmSorted(client, data, entry.userId, entry.category);
-  } else {
-    await resolveCard(client, entry, `🗑️ Removed by ${byName}`);
-  }
-  await refreshBoard(client, data);
-}
-
 // resolve:<action>:entry — the manager picked which of the member's open
 // requests to resolve. Fresh loadData() + re-find by id here (invariant #1):
 // this is a separate interaction from the member-pick step, so nothing
@@ -2194,13 +2159,29 @@ async function handleResolveEntrySelect(interaction) {
     await interaction.update({ content: "Managers only.", embeds: [], components: [] });
     return;
   }
-  const entryId = interaction.values[0];
-  const entry = data.entries.find((e) => e.id === entryId && !e.done);
-  if (!entry) {
-    await interaction.update({ content: "That request is already gone.", embeds: [], components: [] });
+  const act = action === "helped" ? actions().helped : actions().remove;
+  const r = act(helpCtx(), actorOf(interaction, data), { entryId: interaction.values[0] });
+  if (!r.ok) {
+    await interaction.update({
+      content: r.code === "not_found" ? "That request is already gone." : r.error,
+      embeds: [],
+      components: [],
+    });
     return;
   }
-  await finishResolveEntry(interaction, action, entry, data);
+  const confirmText =
+    action === "helped"
+      ? `✅ Marked **${r.entry.username}** as sorted for ${r.category.label}.`
+      : `Removed ${r.entry.username}'s entry.`;
+  // F2: the ack can fail on its own (panel dismissed, transient 5xx, Unknown
+  // Message 10008) — the save already happened, so the effects (card, DM,
+  // board) must still run.
+  try {
+    await interaction.update({ content: confirmText, embeds: [], components: [] });
+  } catch {
+    await respond(interaction, { content: confirmText, flags: MessageFlags.Ephemeral });
+  }
+  await r.effects();
 }
 
 // The whole legacy dispatch; the core router calls it for every interaction
@@ -2421,34 +2402,20 @@ async function dispatch(interaction) {
         });
         return;
       }
-      // Fast path (both given) — unchanged direct-resolve behavior.
-      if (!categoryMap(data)[category]) {
+      // Fast path (both given) — the shared action; legacy texts kept.
+      const r = actions().helped(helpCtx(), actorOf(interaction, data), { userId: member.id, categoryId: category });
+      if (!r.ok) {
         await respond(interaction, {
-          content: "That isn't a known category. Pick one from the list.",
+          content:
+            r.code === "not_found"
+              ? `No pending entry found for ${member.username} in ${catOf(data, category).label}.`
+              : r.error,
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      const entry = data.entries.find(
-        (e) => e.userId === member.id && e.category === category && !e.done
-      );
-      if (!entry) {
-        await respond(interaction, {
-          content: `No pending entry found for ${member.username} in ${catOf(data, category).label}.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      resolveEntryAsSorted(data, entry, interaction.user.id, Date.now());
-      saveData(data);
-      await respond(
-        interaction,
-        `✅ Marked **${entry.username}** as sorted for ${catOf(data, category).label}.`
-      );
-      const byName = interaction.member?.displayName || interaction.user.username;
-      await resolveCard(client, entry, `✅ Sorted by ${byName}`);
-      await dmSorted(client, data, entry.userId, entry.category);
-      await refreshBoard(client, data);
+      await respond(interaction, `✅ Marked **${r.entry.username}** as sorted for ${r.category.label}.`);
+      await r.effects();
     }
 
     if (interaction.commandName === "remove") {
@@ -2480,33 +2447,20 @@ async function dispatch(interaction) {
         });
         return;
       }
-      // Fast path (both given) — unchanged direct-resolve behavior.
-      if (!categoryMap(data)[category]) {
+      // Fast path (both given) — the shared action; legacy texts kept.
+      const r = actions().remove(helpCtx(), actorOf(interaction, data), { userId: member.id, categoryId: category });
+      if (!r.ok) {
         await respond(interaction, {
-          content: "That isn't a known category. Pick one from the list.",
+          content:
+            r.code === "not_found"
+              ? `No pending entry found for ${member.username} in ${catOf(data, category).label}.`
+              : r.error,
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      const target = data.entries.find(
-        (e) => e.userId === member.id && e.category === category && !e.done
-      );
-      if (!target) {
-        await respond(interaction, {
-          content: `No pending entry found for ${member.username} in ${catOf(data, category).label}.`,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      resolveEntryAsRemoved(data, target, Date.now());
-      saveData(data);
-      await respond(interaction, {
-        content: `Removed ${member.username}'s entry.`,
-        flags: MessageFlags.Ephemeral,
-      });
-      const byName = interaction.member?.displayName || interaction.user.username;
-      await resolveCard(client, target, `🗑️ Removed by ${byName}`);
-      await refreshBoard(client, data);
+      await respond(interaction, { content: `Removed ${member.username}'s entry.`, flags: MessageFlags.Ephemeral });
+      await r.effects();
     }
 
     if (interaction.commandName === "board") {
@@ -2517,52 +2471,13 @@ async function dispatch(interaction) {
       // Multiple REST calls follow — defer so we never miss the 3-second window.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const names = await resolveNames(interaction.guild, data);
-      const embed = buildBoardEmbed(data, names);
-      const message = await interaction.channel.send({ embeds: [embed], components: [needHelpRow()] });
-      // Pinning needs the separate "Pin Messages" permission (split from
-      // Manage Messages by Discord). Non-fatal, but never claim a pin we didn't get.
-      let pinned = true;
-      try {
-        await message.pin();
-      } catch (e) {
-        pinned = false;
-        console.error("Could not pin the board (bot needs Pin Messages):", e?.message ?? e);
-      }
-
-      // Retire the previous board, if any, so we don't leave a stale pinned copy.
-      if (
-        data.boardChannelId &&
-        data.boardMessageId &&
-        data.boardMessageId !== message.id
-      ) {
-        try {
-          const oldChannel = await client.channels.fetch(data.boardChannelId);
-          const oldMessage = await oldChannel.messages.fetch(data.boardMessageId);
-          await oldMessage.unpin().catch(() => {});
-          await oldMessage
-            .edit({
-              content: "_This board has been retired; a newer one was posted._",
-              embeds: [],
-              components: [],
-            })
-            .catch(() => {});
-        } catch (e) {
-          // old message already gone — nothing to retire
-        }
-      }
-
-      // Re-load fresh before saving: entries may have been added during the
-      // awaits above, and we must not clobber them with our stale snapshot.
-      const fresh = loadData();
-      fresh.boardChannelId = interaction.channel.id;
-      fresh.boardMessageId = message.id;
-      saveData(fresh);
-
+      const r = await actions().repostBoard(helpCtx(), actorOf(interaction, data), { channel: interaction.channel });
       await respond(interaction, {
-        content: pinned
-          ? "Board posted and pinned. It'll update live from now on."
-          : "Board posted — it'll update live from now on. I couldn't pin it: give me the **Pin Messages** permission in this channel, then run `/board` again.",
+        content: !r.ok
+          ? r.error
+          : r.pinned
+            ? "Board posted and pinned. It'll update live from now on."
+            : "Board posted — it'll update live from now on. I couldn't pin it: give me the **Pin Messages** permission in this channel, then run `/board` again.",
       });
     }
 
@@ -2865,4 +2780,6 @@ module.exports = {
   resolveCard,
   refreshBoard,
   rerenderCard,
+  dmSorted,
+  needHelpRow,
 };

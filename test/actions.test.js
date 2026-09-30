@@ -35,6 +35,11 @@ function fakeClient() {
   let nextId = 1;
   const client = {
     log,
+    users: {
+      fetch: async (userId) => ({
+        send: async (payload) => { log.push({ op: "dm", userId, payload }); },
+      }),
+    },
     channels: {
       fetch: async (channelId) => ({
         id: channelId,
@@ -320,4 +325,183 @@ test("/imsorted <category> via dispatch keeps the legacy texts", async () => {
   await help.dispatch(ok);
   assert.equal(contentOf(ok), "Took you off the board. Glad you got sorted! 🎉");
   assert.deepEqual(help.loadData().entries, []);
+});
+
+// ---- officer actions (Task 3) ----
+
+function fakeChannel({ sendFails = false, pinFails = false } = {}) {
+  const sent = [];
+  return {
+    id: "c9",
+    guild: null,
+    sent,
+    send: async (p) => {
+      if (sendFails) throw new Error("Missing Access");
+      sent.push(p);
+      return { id: "m9", pin: async () => { if (pinFails) throw new Error("Missing Permissions"); } };
+    },
+  };
+}
+
+test("helped: an officer marks an open entry sorted — by id or by member + category", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k"), entry("e2", "u2", "seasonrun5k")); });
+  const byId = actions.helped(CTX, OFFICER, { entryId: "e1" });
+  assert.deepEqual([byId.ok, byId.entry.id, byId.category.label], [true, "e1", "MVP 5K"]);
+  assert.equal(actions.helped(CTX, OWNER, { userId: "u2", categoryId: "seasonrun5k" }).entry.id, "e2");
+  const d = help.loadData();
+  assert.deepEqual(d.entries.map((e) => [e.id, e.done, e.helpedBy]), [["e1", true, "o1"], ["e2", true, "w1"]]);
+  assert.deepEqual(d.records.map((x) => [x.reqId, x.resolution, x.helperId]), [["e1", "sorted", "o1"], ["e2", "sorted", "w1"]]);
+});
+
+test("helped/remove: unknown category → invalid; no open entry → not_found", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k", { done: true })); });
+  for (const act of [actions.helped, actions.remove]) {
+    assert.equal(act(CTX, OFFICER, { userId: "u1", categoryId: "nope" }).code, "invalid");
+    assert.equal(act(CTX, OFFICER, { userId: "u1", categoryId: "mvp5k" }).code, "not_found");
+    assert.equal(act(CTX, OFFICER, { entryId: "e1" }).code, "not_found");
+  }
+});
+
+test("helped/remove: a member — e.g. a demoted officer — is refused and nothing changes", () => {
+  seed((d) => { d.entries.push(entry("e1", "u2", "mvp5k")); });
+  assert.equal(actions.helped(CTX, MEMBER, { entryId: "e1" }).code, "forbidden");
+  assert.equal(actions.remove(CTX, MEMBER, { entryId: "e1" }).code, "forbidden");
+  const d = help.loadData();
+  assert.deepEqual([d.entries[0].done, d.records.length], [false, 0]);
+});
+
+test("remove: one removed record; removing the same entry again → not_found, still one record", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  assert.equal(actions.remove(CTX, OFFICER, { entryId: "e1" }).ok, true);
+  assert.equal(actions.remove(CTX, OFFICER, { entryId: "e1" }).code, "not_found");
+  const d = help.loadData();
+  assert.deepEqual(d.entries, []);
+  assert.deepEqual(d.records.map((x) => x.resolution), ["removed"]);
+});
+
+test("helped: a double tap on an already-sorted entry → not_found and no second record", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  assert.equal(actions.helped(CTX, OFFICER, { entryId: "e1" }).ok, true);
+  const again = actions.helped(CTX, OWNER, { entryId: "e1" });
+  assert.deepEqual([again.ok, again.code], [false, "not_found"]);
+  assert.equal(actions.helped(CTX, OWNER, { userId: "u1", categoryId: "mvp5k" }).code, "not_found");
+  const d = help.loadData();
+  assert.deepEqual(d.records.map((x) => [x.reqId, x.resolution, x.helperId]), [["e1", "sorted", "o1"]]);
+  assert.equal(d.entries[0].helpedBy, "o1");
+});
+
+test("officer effects run to completion without a Discord client", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k"), entry("e2", "u2", "mvp5k")); });
+  await actions.helped(CTX, OFFICER, { entryId: "e1" }).effects();
+  await actions.remove(CTX, OFFICER, { entryId: "e2" }).effects();
+  assert.deepEqual(help.loadData().entries.map((e) => e.id), ["e1"]);
+});
+
+test("helped effects finalise the card, DM the requester and refresh the board", async () => {
+  seed((d) => {
+    d.boardChannelId = "b1";
+    d.boardMessageId = "bm1";
+    d.entries.push(entry("e1", "u1", "mvp5k", { requestChannelId: "c9", requestMessageId: "card1" }));
+  });
+  const client = fakeClient();
+  const r = actions.helped({ client }, OFFICER, { entryId: "e1" });
+  assert.deepEqual(client.log, []);
+  await r.effects();
+  assert.deepEqual(
+    client.log.map((x) => [x.op, x.channelId ?? x.userId, x.messageId ?? null]),
+    [["edit", "c9", "card1"], ["dm", "u1", null], ["edit", "b1", "bm1"]]
+  );
+  assert.equal(client.log[0].payload.content, "✅ Sorted by Offi");
+  assert.deepEqual(client.log[0].payload.components, []);
+  assert.match(client.log[1].payload, /^✅ You've been sorted for \*\*MVP 5K\*\*/);
+});
+
+test("remove effects finalise the card and refresh the board — no DM", async () => {
+  seed((d) => {
+    d.boardChannelId = "b1";
+    d.boardMessageId = "bm1";
+    d.entries.push(entry("e1", "u1", "mvp5k", { requestChannelId: "c9", requestMessageId: "card1" }));
+  });
+  const client = fakeClient();
+  await actions.remove({ client }, OFFICER, { entryId: "e1" }).effects();
+  assert.deepEqual(
+    client.log.map((x) => [x.op, x.channelId, x.messageId]),
+    [["edit", "c9", "card1"], ["edit", "b1", "bm1"]]
+  );
+  assert.equal(client.log[0].payload.content, "🗑️ Removed by Offi");
+  assert.deepEqual(client.log[0].payload.components, []);
+});
+
+test("repostBoard: posts + pins in the channel and saves the ids on a fresh load", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const ch = fakeChannel();
+  const r = await actions.repostBoard(CTX, OFFICER, { channel: ch });
+  assert.deepEqual([r.ok, r.pinned], [true, true]);
+  assert.equal(ch.sent.length, 1);
+  assert.equal(ch.sent[0].components[0].toJSON().components[0].custom_id, "board:needhelp");
+  const d = help.loadData();
+  assert.deepEqual([d.boardChannelId, d.boardMessageId], ["c9", "m9"]);
+});
+
+test("repostBoard: the previous board is unpinned and retired", async () => {
+  seed((d) => { d.boardChannelId = "old1"; d.boardMessageId = "oldm"; });
+  const ops = [];
+  const client = {
+    channels: {
+      fetch: async (channelId) => ({
+        messages: {
+          fetch: async (messageId) => ({
+            unpin: async () => { ops.push(["unpin", channelId, messageId]); },
+            edit: async (p) => { ops.push(["edit", channelId, messageId, p.content]); },
+          }),
+        },
+      }),
+    },
+  };
+  await actions.repostBoard({ client }, OFFICER, { channel: fakeChannel() });
+  assert.deepEqual(ops, [
+    ["unpin", "old1", "oldm"],
+    ["edit", "old1", "oldm", "_This board has been retired; a newer one was posted._"],
+  ]);
+  const d = help.loadData();
+  assert.deepEqual([d.boardChannelId, d.boardMessageId], ["c9", "m9"]);
+});
+
+test("repostBoard: failed pin reported; failed send → rest error, nothing saved; members refused before any REST", async () => {
+  seed();
+  const noPin = await actions.repostBoard(CTX, OFFICER, { channel: fakeChannel({ pinFails: true }) });
+  assert.deepEqual([noPin.ok, noPin.pinned], [true, false]);
+  seed();
+  const noSend = await actions.repostBoard(CTX, OFFICER, { channel: fakeChannel({ sendFails: true }) });
+  assert.deepEqual([noSend.ok, noSend.code], [false, "rest"]);
+  assert.equal(help.loadData().boardMessageId, null);
+  const ch = fakeChannel();
+  assert.equal((await actions.repostBoard(CTX, MEMBER, { channel: ch })).code, "forbidden");
+  assert.equal(ch.sent.length, 0);
+  assert.equal((await actions.repostBoard(CTX, OFFICER, { channel: null })).code, "invalid");
+});
+
+test("/helped, resolve:remove:entry and /board via dispatch keep their legacy texts", async () => {
+  const officer = [OFFICER, { roles: ["mgr"] }];
+  seed((d) => { d.managerRoleIds = ["mgr"]; d.entries.push(entry("e1", "u1", "mvp5k"), entry("e2", "u1", "seasonrun5k")); });
+  const kovi = { id: "u1", username: "kovi" };
+  const denied = slash("helped", { member: kovi, category: "mvp5k" }, MEMBER);
+  await help.dispatch(denied);
+  assert.equal(contentOf(denied), "You need the **Manage Server** permission or a manager role to do that.");
+  const done = slash("helped", { member: kovi, category: "mvp5k" }, ...officer);
+  await help.dispatch(done);
+  assert.equal(contentOf(done), "✅ Marked **Kovi** as sorted for MVP 5K.");
+  const again = slash("helped", { member: kovi, category: "mvp5k" }, ...officer);
+  await help.dispatch(again);
+  assert.equal(contentOf(again), "No pending entry found for kovi in MVP 5K.");
+  const pick = component("string", "resolve:remove:entry", OFFICER, { values: ["e2"], rights: { roles: ["mgr"] } });
+  await help.dispatch(pick);
+  assert.equal(contentOf(pick), "Removed Kovi's entry.");
+  const gone = component("string", "resolve:remove:entry", OFFICER, { values: ["e2"], rights: { roles: ["mgr"] } });
+  await help.dispatch(gone);
+  assert.equal(contentOf(gone), "That request is already gone.");
+  const board = slash("board", {}, ...officer);
+  board.channel = fakeChannel({ pinFails: true });
+  await help.dispatch(board);
+  assert.match(contentOf(board), /^Board posted — it'll update live from now on\. I couldn't pin it/);
 });
