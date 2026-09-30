@@ -1,11 +1,32 @@
 # Developer notes — what changed & where
 
 Hey Bogdan — this is your Guild Help Board bot, reviewed, hardened, extended,
-and deployed. Everything is still one file (`index.js`, discord.js v14). This
+and deployed. The help board is one file (`modules/help/help.js` — formerly
+`index.js`, see the M1 note below; discord.js v14). This
 doc is a map of what changed and where to look, plus a few invariants so the
 tricky bits don't get re-broken.
 
 ---
+
+## 2026-09-30 — M1 platform skeleton
+
+- **Layout:** `index.js` is now a thin core entry; the help board's code moved
+  (`git mv`) to `modules/help/help.js`, changed only at its seams. `core/` holds
+  `config`, `store`, `loader`, `router`, `registry` and `lock`;
+  `modules/help/index.js` is the help module's contract.
+- **`MODULES` env** (comma-separated, default `help`) picks the modules to run.
+  Blank/whitespace/trailing commas fall back to `help`; unknown or duplicate
+  names fail loudly at startup.
+- **Routing:** slash commands go to the module by command name, components and
+  modals by customId prefix. The 9 legacy prefixes (`help board season stats
+  imsorted reset resolve roles catadd`) belong to help, so buttons on already
+  posted messages keep working. A prefix nobody owns now gets an ephemeral
+  "no longer active" notice instead of a silent failure.
+- **Registration:** one guild-scoped PUT with the union of all module commands;
+  a name clash between modules is a hard error.
+- **CI:** Node 20 + 24 matrix on `main` and `dev`; `engines` is `node >=24`.
+- **Data:** the `data.json` schema and location (`DATA_DIR` root) are unchanged.
+  `test/logic.test.js` runs unchanged through `index.js` re-exports.
 
 ## How it runs now
 
