@@ -10,6 +10,9 @@ const DATA_DIR = process.env.DATA_DIR || REPO_ROOT;
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "CLIENT_ID", "GUILD_ID"];
 
+// The web admin's public address (M3). Unset → the menu shows no Web admin link.
+const PUBLIC_URL = process.env.PUBLIC_URL || null;
+
 // MODULES="help,lfg" → ["help", "lfg"]. Unset/blank → ["help"], so an existing
 // deployment without the variable keeps running exactly the help board.
 function parseModules(raw) {
@@ -23,4 +26,4 @@ function parseModules(raw) {
   return names;
 }
 
-module.exports = { REPO_ROOT, DATA_DIR, REQUIRED_ENV, parseModules };
+module.exports = { REPO_ROOT, DATA_DIR, REQUIRED_ENV, PUBLIC_URL, parseModules };
