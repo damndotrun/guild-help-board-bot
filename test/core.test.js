@@ -222,3 +222,34 @@ test("router: prefix or command collisions are hard errors", () => {
   assert.throws(() => buildPrefixMap([a, b]), /prefix "x"/);
   assert.throws(() => buildCommandMap([a, c]), /command "\/same"/);
 });
+
+const { collectCommands, registerCommands } = require("../core/registry");
+const { Routes } = require("discord.js");
+
+test("registry: one guild-scoped PUT with the union of all module commands", async () => {
+  const mods = [
+    normalizeModule({ name: "a", commands: [{ name: "one" }, { name: "two" }], handle: async () => {} }),
+    normalizeModule({ name: "b", commands: [{ name: "three" }], handle: async () => {} }),
+  ];
+  const puts = [];
+  const lines = [];
+  const rest = { put: async (route, opts) => puts.push([route, opts]) };
+  const env = { CLIENT_ID: "app", GUILD_ID: "guild", DISCORD_TOKEN: "t" };
+  await registerCommands(mods, { rest, env, log: { log: (l) => lines.push(l) } });
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0][0], Routes.applicationGuildCommands("app", "guild"));
+  assert.deepEqual(puts[0][1].body.map((c) => c.name), ["one", "two", "three"]);
+  assert.deepEqual(lines, ["Slash commands registered."]);
+});
+
+test("registry: a duplicate command name fails before any PUT", async () => {
+  const mods = [
+    normalizeModule({ name: "a", commands: [{ name: "dup" }], handle: async () => {} }),
+    normalizeModule({ name: "b", commands: [{ name: "dup" }], handle: async () => {} }),
+  ];
+  let called = false;
+  const rest = { put: async () => (called = true) };
+  assert.throws(() => collectCommands(mods), /dup/);
+  await assert.rejects(registerCommands(mods, { rest, env: {}, log: quietLog }), /dup/);
+  assert.equal(called, false);
+});
