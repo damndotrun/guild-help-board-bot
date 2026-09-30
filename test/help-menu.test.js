@@ -17,7 +17,7 @@ const helpMenu = require("../modules/help/menu");
 const { loadModules } = require("../core/loader");
 const { createCtxFor } = require("../core/runtime");
 const { createPerms, managerRolesFrom } = require("../core/perms");
-const { createMenuModule } = require("../core/menu");
+const { createMenuModule, MENU_TEXT } = require("../core/menu");
 const { screenErrors, walk } = require("../core/panel");
 
 const quiet = { log() {}, warn() {}, error() {} };
@@ -29,6 +29,7 @@ const menu = createMenuModule({ modules, ctxFor, perms, log: quiet });
 
 const MEMBER = { id: "u1", name: "Kovi" };
 const OFFICER = { id: "o1", name: "Offi", roles: ["mgr"] };
+const OWNER = { id: "w1", name: "Owna", manageGuild: true };
 
 function seed(mutate) {
   const d = help.emptyData();
@@ -41,7 +42,7 @@ function entry(id, userId, category, extra = {}) {
 }
 
 // A tap on the ephemeral menu message (onMenu: false = a tap on a public message).
-function tap(customId, who = MEMBER, { kind = "button", values = [], fields = {}, onMenu = true, channel = null } = {}) {
+function tap(customId, who = MEMBER, { kind = "button", values = [], fields = {}, onMenu = true, channel = null, picked = {} } = {}) {
   const calls = [];
   const i = {
     customId,
@@ -56,6 +57,8 @@ function tap(customId, who = MEMBER, { kind = "button", values = [], fields = {}
     guild: null,
     channelId: "c1",
     channel,
+    members: new Map(Object.entries(picked).map(([id, displayName]) => [id, { displayName }])),
+    users: new Map(Object.entries(picked).map(([id, username]) => [id, { username }])),
     fields: { getTextInputValue: (n) => fields[n] ?? "" },
     isChatInputCommand: () => false,
     isAutocomplete: () => false,
@@ -461,4 +464,203 @@ test("parity: /imsorted <category> and Menu › I'm sorted close the same reques
   await run(tap("menu:help:sorted", MEMBER));
   assert.deepEqual(snapshot(), viaSlash);
   assert.equal(viaSlash.records.length, 1);
+});
+
+test("main: the Officer row only for officers and owners (Owner = Officer in Discord)", async () => {
+  seed();
+  const [, member] = await run(tap("menu:help:main", MEMBER));
+  assert.equal(idsOf(member).some((id) => /helped|remove|repost/.test(id)), false);
+  assert.doesNotMatch(textOf(member), /\*\*Officer\*\*/);
+  for (const who of [OFFICER, OWNER]) {
+    const [, p] = await run(tap("menu:help:main", who));
+    assert.deepEqual(idsOf(p), ["menu:help:needhelp", "menu:help:sorted", "menu:help:stats", "menu:help:helped", "menu:help:remove", "menu:help:repost", "menu:home"]);
+    assert.match(textOf(p), /\*\*Officer\*\*/);
+    assertValid(await direct("main", who), `main/${who.name}`);
+  }
+});
+
+test("officer + a fresh request: four button rows (tag, Add note, Officer, Back) still pass", async () => {
+  seed();
+  const [, p] = await run(tap("menu:help:needhelp", OFFICER, { kind: "string", values: ["mvp5k"] }));
+  assert.equal(idsOf(p).filter((id) => id.startsWith("menu:help:note:")).length, 1);
+  assert.ok(!textOf(p).includes(MENU_TEXT.broken));
+});
+
+test("Mark helped: one open request → done at once, success line on the Help board", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const [, p] = await run(tap("menu:help:helped", OFFICER, { kind: "user", values: ["u1"], picked: { u1: "Kovi" } }));
+  assert.ok(textOf(p).includes("✅ Kovi marked as helped."));
+  const [e] = help.loadData().entries;
+  assert.deepEqual([e.done, e.helpedBy], [true, "o1"]);
+});
+
+test("Mark helped: several → category picker; none → one line", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k"), entry("e3", "u1", "seasonrun5k")); });
+  const [, pick] = await run(tap("menu:help:helped", OFFICER, { kind: "user", values: ["u1"], picked: { u1: "Kovi" } }));
+  assert.deepEqual(idsOf(pick), ["menu:help:helpedpick:u1", "menu:help:helped"]);
+  assert.match(textOf(pick), /Kovi has 2 open requests/);
+  const [, done] = await run(tap("menu:help:helpedpick:u1", OFFICER, { kind: "string", values: ["e3"] }));
+  assert.ok(textOf(done).includes("✅ Kovi marked as helped."));
+  assert.equal(help.loadData().entries.find((e) => e.id === "e3").done, true);
+  const [, none] = await run(tap("menu:help:helped", OFFICER, { kind: "user", values: ["u2"], picked: { u2: "Zed" } }));
+  assert.ok(textOf(none).includes("⚠️ Zed has no open requests."));
+});
+
+test("Review focus: two officers pick the same entry in the category picker → one record, the second sees 'already closed'", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k"), entry("e3", "u1", "seasonrun5k")); });
+  const [, first] = await run(tap("menu:help:helpedpick:u1", OFFICER, { kind: "string", values: ["e3"] }));
+  const [, second] = await run(tap("menu:help:helpedpick:u1", OWNER, { kind: "string", values: ["e3"] }));
+  assert.ok(textOf(first).includes("✅ Kovi marked as helped."));
+  assert.ok(textOf(second).includes("⚠️ That request was already closed. Pick a member again."));
+  assert.equal(help.loadData().records.length, 1);
+});
+
+test("Remove: pick → confirm (Danger + Cancel) → removed; an expired confirmation is re-issued", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const [, confirm] = await run(tap("menu:help:remove", OFFICER, { kind: "user", values: ["u1"], picked: { u1: "Kovi" } }));
+  const [okId, cancelId] = idsOf(confirm);
+  assert.match(okId, /^menu:help:removeok:e1:\d+$/);
+  assert.equal(cancelId, "menu:help:remove");
+  let style;
+  walk(confirm, (x) => { if (x.custom_id === okId) style = x.style; });
+  assert.equal(style, ButtonStyle.Danger);
+  assert.match(textOf(confirm), /Remove Kovi's ⭐ MVP 5K request\?/);
+  const old = Date.now() - help.RESET_CONFIRM_TTL_MS - 1000;
+  const [, stale] = await run(tap(`menu:help:removeok:e1:${old}`, OFFICER));
+  assert.ok(textOf(stale).includes("⚠️ That confirmation expired — check and confirm again."));
+  assert.equal(help.loadData().entries.length, 1);
+  const [, done] = await run(tap(okId, OFFICER));
+  assert.ok(textOf(done).includes("✅ Removed Kovi's request."));
+  const d = help.loadData();
+  assert.deepEqual(d.entries, []);
+  assert.equal(d.records[0].resolution, "removed");
+});
+
+test("Remove: a confirmation without a timestamp is treated as expired", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const [, p] = await run(tap("menu:help:removeok:e1", OFFICER));
+  assert.ok(textOf(p).includes("⚠️ That confirmation expired — check and confirm again."));
+  assert.equal(help.loadData().entries.length, 1);
+});
+
+test("Remove: Cancel never mutates — one open request, open the confirmation, press Cancel → still open, nothing written", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const [, confirm] = await run(tap("menu:help:remove", OFFICER, { kind: "user", values: ["u1"], picked: { u1: "Kovi" } }));
+  const cancelId = idsOf(confirm)[1];
+  const before = JSON.stringify(help.loadData());
+  const [, p] = await run(tap(cancelId, OFFICER));
+  assert.equal(JSON.stringify(help.loadData()), before);
+  assert.deepEqual(idsOf(p).slice(0, 1), ["menu:help:remove"]);
+  assert.equal(help.loadData().entries[0].done, false);
+  assert.deepEqual(help.loadData().records, []);
+});
+
+test("Review focus: a double tap on Remove confirm → one removed record; the second tap says it's gone", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const id = `menu:help:removeok:e1:${Date.now()}`;
+  const [, first] = await run(tap(id, OFFICER));
+  const [, second] = await run(tap(id, OWNER));
+  assert.ok(textOf(first).includes("✅ Removed Kovi's request."));
+  assert.ok(textOf(second).includes("⚠️ That request was already closed. Pick a member again."));
+  assert.equal(help.loadData().records.length, 1);
+});
+
+test("Remove: a request closed before the confirmation screen → 'already closed', no confirmation", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k", { done: true })); });
+  const [, p] = await run(tap("menu:help:removepick:u1", OFFICER, { kind: "string", values: ["e1"] }));
+  assert.ok(textOf(p).includes("⚠️ That request was already closed. Pick a member again."));
+  assert.equal(idsOf(p).some((id) => id.startsWith("menu:help:removeok")), false);
+});
+
+test("demoted officer: an old officer button or confirm does nothing and shows the member home", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u2", "mvp5k")); });
+  const exOfficer = { id: "o1", name: "Offi" }; // the manager role was taken away
+  for (const id of ["menu:help:helped", `menu:help:removeok:e1:${Date.now()}`, "menu:help:repost", "menu:help:helpedpick:u2"]) {
+    const [kind, p] = await run(tap(id, exOfficer, { channel: { id: "c9", send: async () => { throw new Error("must not post"); } } }));
+    assert.equal(kind, "update", id);
+    assert.ok(textOf(p).includes(`⚠️ ${MENU_TEXT.noAccess}`), id);
+    assert.deepEqual(idsOf(p), ["menu:help:main", "menu:home:how"], id);
+  }
+  const d = help.loadData();
+  assert.deepEqual([d.entries.length, d.records.length, d.boardMessageId], [1, 0, null]);
+});
+
+test("a plain member pressing officer buttons changes nothing", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u2", "mvp5k")); });
+  for (const [id, opts] of [
+    ["menu:help:helped", { kind: "user", values: ["u2"], picked: { u2: "Zed" } }],
+    ["menu:help:remove", { kind: "user", values: ["u2"], picked: { u2: "Zed" } }],
+    [`menu:help:removeok:e1:${Date.now()}`, {}],
+    ["menu:help:removepick:u2", { kind: "string", values: ["e1"] }],
+  ]) {
+    const [, p] = await run(tap(id, MEMBER, opts));
+    assert.ok(textOf(p).includes(`⚠️ ${MENU_TEXT.noAccess}`), id);
+  }
+  const d = help.loadData();
+  assert.deepEqual([d.entries.length, d.entries[0].done, d.records.length], [1, false, 0]);
+});
+
+test("Repost board: defers, posts in THIS channel, reports a failed pin honestly", async () => {
+  seed();
+  const sent = [];
+  const channel = { id: "c9", guild: null, send: async (p) => { sent.push(p); return { id: "m9", pin: async () => { throw new Error("Missing Permissions"); } }; } };
+  const i = tap("menu:help:repost", OFFICER, { channel });
+  const [kind, p] = await run(i);
+  assert.equal(i.calls[0][0], "deferUpdate");
+  assert.equal(kind, "editReply");
+  assert.ok(textOf(p).includes("⚠️ Board posted, but I couldn't pin it — I need Pin Messages here."));
+  assert.equal(sent.length, 1);
+  const d = help.loadData();
+  assert.deepEqual([d.boardChannelId, d.boardMessageId], ["c9", "m9"]);
+});
+
+test("Repost board: a pinned post says so; a failed post is an explicit error line, nothing saved", async () => {
+  seed();
+  const okChannel = { id: "c9", guild: null, send: async () => ({ id: "m9", pin: async () => {} }) };
+  const [, good] = await run(tap("menu:help:repost", OFFICER, { channel: okChannel }));
+  assert.ok(textOf(good).includes("✅ Board posted and pinned in this channel."));
+  seed();
+  const badChannel = { id: "c9", guild: null, send: async () => { throw new Error("Missing Access"); } };
+  const [, bad] = await run(tap("menu:help:repost", OFFICER, { channel: badChannel }));
+  assert.ok(textOf(bad).includes("⚠️ I couldn't post the board here — check my permissions in this channel."));
+  assert.equal(help.loadData().boardMessageId, null);
+  seed();
+  const [, none] = await run(tap("menu:help:repost", OFFICER));
+  assert.ok(textOf(none).includes("⚠️ I can't post the board in this channel."));
+});
+
+test("every officer screen passes the mobile validator", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k"), entry("e3", "u1", "seasonrun5k")); });
+  const picked = { u1: "Kovi" };
+  const screens = [
+    await direct("helped", OFFICER),
+    await direct("helped", OFFICER, { kind: "user", values: ["u1"], picked }),
+    await direct("remove", OFFICER),
+    await direct("remove", OFFICER, { kind: "user", values: ["u1"], picked }),
+    await direct("removepick", OFFICER, { kind: "string", values: ["e1"] }, "u1"),
+  ];
+  screens.forEach((s, n) => assertValid(s, `officer screen #${n}`));
+});
+
+test("parity: /helped and Menu › Mark helped close the same request the same way", async () => {
+  const s = (d) => { d.entries.push(entry("e1", "u1", "mvp5k")); };
+  seed(s);
+  await help.dispatch(slash("helped", { member: { id: "u1", username: "kovi" }, category: "mvp5k" }, OFFICER));
+  const viaSlash = snapshot();
+  seed(s);
+  await run(tap("menu:help:helped", OFFICER, { kind: "user", values: ["u1"], picked: { u1: "Kovi" } }));
+  assert.deepEqual(snapshot(), viaSlash);
+  assert.equal(viaSlash.records[0].resolution, "sorted");
+});
+
+test("parity: /remove and Menu › Remove (after the confirm) write the same", async () => {
+  const s = (d) => { d.entries.push(entry("e1", "u1", "mvp5k")); };
+  seed(s);
+  await help.dispatch(slash("remove", { member: { id: "u1", username: "kovi" }, category: "mvp5k" }, OFFICER));
+  const viaSlash = snapshot();
+  seed(s);
+  const [, confirm] = await run(tap("menu:help:remove", OFFICER, { kind: "user", values: ["u1"], picked: { u1: "Kovi" } }));
+  await run(tap(idsOf(confirm)[0], OFFICER));
+  assert.deepEqual(snapshot(), viaSlash);
+  assert.equal(viaSlash.records[0].resolution, "removed");
 });

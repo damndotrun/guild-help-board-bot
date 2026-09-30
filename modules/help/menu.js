@@ -34,8 +34,10 @@ function guide() {
   return textFromEmbed(help.howItWorksEmbed());
 }
 
-// The Help board screen. `noteFor` adds the one-tap "Add note" button for the
-// request the viewer just posted.
+// The Help board screen: the member row, then (officers and owners only) the
+// "Officer" row. `noteFor` adds the one-tap "Add note" button for the request
+// the viewer just posted. In Discord an owner is an officer; owner-only
+// settings live on the web (M2 spec U3).
 function mainScreen(viewer, { notice, noteFor } = {}) {
   const data = help.loadData();
   const body = [
@@ -46,6 +48,16 @@ function mainScreen(viewer, { notice, noteFor } = {}) {
     ),
   ];
   if (noteFor) body.push(row(button(`menu:help:note:${noteFor}`, "Add note")));
+  if (atLeast(viewer.level, "officer")) {
+    body.push(text("**Officer**"));
+    body.push(
+      row(
+        button("menu:help:helped", "Mark helped"),
+        button("menu:help:remove", "Remove"),
+        button("menu:help:repost", "Repost board")
+      )
+    );
+  }
   return {
     crumbs: crumbs(),
     status: `Season: ${help.seasonLabel(data.currentSeason)} · ${openCount(data)} open · ${LEVEL_LABEL[viewer.level]}`,
@@ -245,6 +257,116 @@ async function statsmember({ interaction, arg }) {
   return statsScreen(data, arg || "current", help.memberEmbed(data, helperId, name));
 }
 
+const GONE = "That request was already closed. Pick a member again.";
+const STEP = {
+  helped: { label: "Mark helped", pick: "Pick the member you helped…" },
+  remove: { label: "Remove", pick: "Pick the member to remove…" },
+};
+
+// The name of a member picked in a UserSelect — from the resolved payload, no REST.
+function pickedName(interaction, userId) {
+  const m = interaction.members?.get(userId);
+  const u = interaction.users?.get(userId);
+  return m?.displayName || m?.nick || u?.globalName || u?.username || "That member";
+}
+
+function memberPicker(action, notice) {
+  return {
+    crumbs: crumbs(STEP[action].label),
+    status: "Pick a member — you'll see their open requests.",
+    notice,
+    body: [row(userSelect(`menu:help:${action}`, STEP[action].pick))],
+    back: MAIN_ID,
+  };
+}
+
+function entryPicker(action, memberId, name, entries) {
+  const options = help.imsortedSelectOptions(help.loadData(), entries, Date.now());
+  return {
+    crumbs: crumbs(STEP[action].label),
+    status: `${name} has ${entries.length} open requests. Pick which one.`,
+    body: [row(select(`menu:help:${action}pick:${memberId}`, "Pick which request…", options))],
+    back: `menu:help:${action}`,
+  };
+}
+
+// First step shared by Mark helped and Remove: what the picked member has open.
+function pickMember(action, interaction) {
+  const memberId = interaction.values[0];
+  const mine = help.openEntriesFor(help.loadData(), memberId);
+  const name = pickedName(interaction, memberId);
+  if (mine.length === 0) return { screen: memberPicker(action, err(`${name} has no open requests.`)) };
+  if (mine.length > 1) return { screen: entryPicker(action, memberId, name, mine) };
+  return { entryId: mine[0].id };
+}
+
+function finishHelped(ctx, viewer, r) {
+  if (!r.ok) return memberPicker("helped", err(r.code === "not_found" ? GONE : r.error));
+  const notice = ok(`${r.entry.username} marked as helped.`);
+  return committed(ctx, () => mainScreen(viewer, { notice }), notice, r.effects);
+}
+
+function helped({ interaction, viewer, ctx }) {
+  if (!interaction.isUserSelectMenu()) return memberPicker("helped");
+  const picked = pickMember("helped", interaction);
+  if (picked.screen) return picked.screen;
+  return finishHelped(ctx, viewer, actions.helped(ctx, actorOf(interaction, viewer), { entryId: picked.entryId }));
+}
+
+function helpedpick({ interaction, viewer, ctx }) {
+  return finishHelped(ctx, viewer, actions.helped(ctx, actorOf(interaction, viewer), { entryId: interaction.values[0] }));
+}
+
+// Remove closes a request without counting it as helped → it asks first.
+// Cancel goes back to the member picker, which never writes.
+function removeConfirm(entryId, notice) {
+  const data = help.loadData();
+  const entry = data.entries.find((e) => e.id === entryId && !e.done);
+  if (!entry) return memberPicker("remove", err(GONE));
+  const cat = help.catOf(data, entry.category);
+  return {
+    crumbs: crumbs("Remove"),
+    status: `Remove ${entry.username}'s ${cat.emoji} ${cat.label} request? It closes without counting as helped.`,
+    notice,
+    body: [
+      row(
+        button(`menu:help:removeok:${entry.id}:${Date.now()}`, "Remove", ButtonStyle.Danger),
+        button("menu:help:remove", "Cancel")
+      ),
+    ],
+  };
+}
+
+function remove({ interaction }) {
+  if (!interaction.isUserSelectMenu()) return memberPicker("remove");
+  const picked = pickMember("remove", interaction);
+  return picked.screen || removeConfirm(picked.entryId);
+}
+
+function removeok({ interaction, viewer, ctx, arg }) {
+  const [entryId, ts] = arg.split(":");
+  if (isStale(Number(ts))) return removeConfirm(entryId, err(EXPIRED));
+  const r = actions.remove(ctx, actorOf(interaction, viewer), { entryId });
+  if (!r.ok) return memberPicker("remove", err(r.code === "not_found" ? GONE : r.error));
+  const notice = ok(`Removed ${r.entry.username}'s request.`);
+  return committed(ctx, () => mainScreen(viewer, { notice }), notice, r.effects);
+}
+
+// Posts the board in THIS channel (where the menu was opened). REST → defer first.
+async function repost({ interaction, viewer, ctx }) {
+  if (!interaction.channel || typeof interaction.channel.send !== "function") {
+    return mainScreen(viewer, { notice: err("I can't post the board in this channel.") });
+  }
+  await interaction.deferUpdate();
+  const r = await actions.repostBoard(ctx, actorOf(interaction, viewer), { channel: interaction.channel });
+  if (!r.ok) return mainScreen(viewer, { notice: err(r.error) });
+  return mainScreen(viewer, {
+    notice: r.pinned
+      ? ok("Board posted and pinned in this channel.")
+      : err("Board posted, but I couldn't pin it — I need Pin Messages here."),
+  });
+}
+
 const SCREENS = {
   main: ({ viewer }) => mainScreen(viewer),
   needhelp,
@@ -255,10 +377,17 @@ const SCREENS = {
   closeallok,
   stats,
   statsmember,
+  helped,
+  helpedpick,
+  remove,
+  removepick: ({ interaction }) => removeConfirm(interaction.values[0]),
+  removeok,
+  repost,
 };
 
-// Screens only officers (and owners) may open — re-checked on every tap.
-const OFFICER_ONLY = new Set([]);
+// Screens only officers (and owners) may open — re-checked on every tap; the
+// actions check again (menu filtering is a convenience, not the guard).
+const OFFICER_ONLY = new Set(["helped", "helpedpick", "remove", "removepick", "removeok", "repost"]);
 
 async function render(interaction, ctx, viewer, screen, arg) {
   if (!Object.hasOwn(SCREENS, screen)) return null;
