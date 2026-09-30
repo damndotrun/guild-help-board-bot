@@ -68,7 +68,7 @@ function sorted(ctx, actor, { entryIds, categoryId } = {}) {
   if (denied) return denied;
   const data = help.loadData();
   let mine;
-  if (categoryId !== undefined) {
+  if (categoryId != null) {
     if (!help.categoryMap(data)[categoryId]) return fail("invalid", "That isn't a known category. Pick one from the list.");
     mine = data.entries.filter((e) => e.userId === actor.userId && !e.done && e.category === categoryId);
   } else {
@@ -292,8 +292,9 @@ function archiveCategory(ctx, actor, { categoryId, moveto } = {}) {
 
 // A RoleSelect offers @everyone (id = guild id) and bot-managed roles; neither
 // may be a manager or notify role (@everyone would make every member an officer).
+// Fails CLOSED: without the guild id @everyone cannot be recognised, so refuse.
 function unassignable(role, guildId) {
-  return !role || role.id === guildId || role.managed === true;
+  return !role || !guildId || role.id === guildId || role.managed === true;
 }
 
 function addManagerRole(ctx, actor, { role, guildId } = {}) {

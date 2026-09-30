@@ -250,6 +250,22 @@ test("need help with every category archived → one line on the Help board", as
   assert.ok(textOf(p).includes("⚠️ No categories are set up yet — ask an admin."));
 });
 
+test("final F-M2: a category picked after ALL categories were archived → the no-categories line, not 'Pick one from the list'", async () => {
+  seed((d) => { for (const c of d.categories) c.archived = true; });
+  const [, p] = await run(tap("menu:help:needhelp", MEMBER, { kind: "string", values: ["mvp5k"] }));
+  assert.ok(textOf(p).includes("⚠️ No categories are set up yet — ask an admin."));
+  assert.ok(!textOf(p).includes("Pick one from the list"));
+  assert.equal(help.loadData().entries.length, 0);
+});
+
+test("final F-M1: the note modal is saved even when its message lacks the Ephemeral/V2 bits", async () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const [kind, p] = await run(tap("menu:help:notesave:e1", MEMBER, { kind: "modal", fields: { note: "3 hammers" }, onMenu: false }));
+  assert.equal(kind, "reply", "answered with a fresh ephemeral reply, never an update of a foreign message");
+  assert.ok(textOf(p).includes("✅ Note added."));
+  assert.equal(help.loadData().entries[0].note, "3 hammers");
+});
+
 test("a saved request always gets its effects, even when the screen cannot be built", async () => {
   seed();
   const real = help.seasonLabel;

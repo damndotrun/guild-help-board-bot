@@ -203,6 +203,64 @@ test("setNote: own open entry only; trimmed; at most 200 characters", () => {
   assert.equal(d.entries.find((e) => e.id === "e2").note, "");
 });
 
+test("final F-M6: a note added while the request card is still being posted reaches the card", async () => {
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; });
+  const log = [];
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const client = {
+    channels: {
+      fetch: async (cid) => ({
+        id: cid,
+        guild: null,
+        send: async (payload) => { log.push(["send", cid, payload]); await held; return { id: "card1" }; },
+        messages: { fetch: async (mid) => ({ edit: async (payload) => { log.push(["edit", cid, mid, payload]); } }) },
+      }),
+    },
+  };
+  const a = actions.needHelp({ client }, MEMBER, { categoryId: "mvp5k" });
+  const posting = a.effects(); // the card POST is now in flight
+  await new Promise((r) => setImmediate(r));
+  const n = actions.setNote({ client }, MEMBER, { entryId: a.entry.id, note: "3 hammers" });
+  await n.effects(); // rerenderCard finds no message id yet and does nothing
+  release();
+  await posting;
+  const cardEdits = log.filter((x) => x[0] === "edit" && x[1] === "b1" && x[2] === "card1");
+  assert.ok(
+    cardEdits.some((x) => /3 hammers/.test(x[3].embeds[0].data.description)),
+    "the posted card is re-rendered with the note saved meanwhile"
+  );
+  assert.equal(help.loadData().entries[0].requestMessageId, "card1");
+});
+
+test("final F-M6: with no concurrent note the card is posted once and not edited", async () => {
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; });
+  const client = fakeClient();
+  const a = actions.needHelp({ client }, MEMBER, { categoryId: "mvp5k", note: "hi" });
+  await a.effects();
+  assert.equal(client.log.filter((x) => x.op === "send").length, 1);
+  assert.deepEqual(client.log.filter((x) => x.op === "edit").map((x) => x.messageId), ["bm1"], "only the board refresh edits");
+});
+
+test("final T2-b: sorted with categoryId null (a web caller) falls back to entryIds instead of 'unknown category'", () => {
+  seed((d) => { d.entries.push(entry("e1", "u1", "mvp5k")); });
+  const r = actions.sorted(CTX, MEMBER, { categoryId: null, entryIds: ["e1"] });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.closed.map((e) => e.id), ["e1"]);
+});
+
+test("final T4-b: manager / notify role assignment fails CLOSED when the guild id is missing", () => {
+  seed();
+  const role = { id: "g1", managed: false }; // would be @everyone if the guild were known
+  assert.equal(actions.addManagerRole(CTX, OWNER, { role }).code, "invalid");
+  assert.equal(actions.addManagerRole(CTX, OWNER, { role, guildId: undefined }).code, "invalid");
+  assert.equal(actions.setNotifyRole(CTX, OWNER, { role }).code, "invalid");
+  assert.deepEqual(help.loadData().managerRoleIds, []);
+  assert.equal(help.loadData().notifyRoleId, null);
+  // turning the notify role off needs no guild id
+  assert.equal(actions.setNotifyRole(CTX, OWNER, { role: null }).ok, true);
+});
+
 test("member effects run to completion without a Discord client", async () => {
   seed();
   const a = actions.needHelp(CTX, MEMBER, { categoryId: "mvp5k" });

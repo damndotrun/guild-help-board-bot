@@ -1166,13 +1166,19 @@ function cardDescription(cat, entry, claimerName) {
 // writes, and refresh the board. Slow REST — call AFTER acking the user.
 async function announceEntry(client, entry, fallbackChannelId) {
   const data = loadData();
-  await postRequestCard(client, data, entry, fallbackChannelId);
+  // Render from the stored entry, not the caller's copy: a note saved since then is in it.
+  const current = data.entries.find((e) => e.id === entry.id) || entry;
+  const postedNote = current.note;
+  await postRequestCard(client, data, current, fallbackChannelId);
   const fresh = loadData();
   const target = fresh.entries.find((e) => e.id === entry.id);
   if (target) {
-    target.requestChannelId = entry.requestChannelId;
-    target.requestMessageId = entry.requestMessageId;
+    target.requestChannelId = current.requestChannelId;
+    target.requestMessageId = current.requestMessageId;
     saveData(fresh);
+    // A note added while the card POST was in flight found no message to edit —
+    // bring the just-posted card up to date.
+    if (!target.done && target.note !== postedNote) await rerenderCard(client, fresh, target);
   }
   await refreshBoard(client, fresh);
 }

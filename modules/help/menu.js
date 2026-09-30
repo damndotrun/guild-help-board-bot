@@ -81,6 +81,8 @@ function committed(ctx, build, notice, after) {
   return { ...screen, after };
 }
 
+const NO_CATEGORIES = "No categories are set up yet — ask an admin.";
+
 function categoryPicker(notice) {
   const options = help.categorySelectOptions(help.loadData());
   if (options.length === 0) return null;
@@ -107,11 +109,11 @@ function needhelp({ interaction, viewer, ctx }) {
     if (r.code === "invalid") {
       // The category was archived since the list was drawn — show the current list.
       const picker = categoryPicker(err("That category isn't available anymore. Here's the current list."));
-      if (picker) return picker;
+      return picker || mainScreen(viewer, { notice: err(NO_CATEGORIES) }); // every category archived meanwhile
     }
     return mainScreen(viewer, { notice: err(r.error) });
   }
-  return categoryPicker() || mainScreen(viewer, { notice: err("No categories are set up yet — ask an admin.") });
+  return categoryPicker() || mainScreen(viewer, { notice: err(NO_CATEGORIES) });
 }
 
 function ownOpenEntry(viewer, entryId) {
