@@ -2754,4 +2754,5 @@ module.exports = {
   resolveIds,
   MAX_LABEL,
   MAX_ACTIVE_CATEGORIES,
+  NUDGE_MAX_HOURS,
 };

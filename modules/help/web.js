@@ -5,6 +5,7 @@
 // response. Each page is a view model (a pure-ish function, tested on its
 // own) plus an EJS fragment in ./views that sees only `page`.
 const path = require("node:path");
+const { ChannelType } = require("discord.js");
 const help = require("./help");
 const actions = require("./actions");
 
@@ -16,6 +17,7 @@ const nav = [
   { label: "Seasons", path: "/seasons", minLevel: "officer" },
   { label: "Stats", path: "/stats", minLevel: "officer" },
   { label: "Categories", path: "/categories", minLevel: "owner" },
+  { label: "Settings", path: "/settings", minLevel: "owner" },
 ];
 
 // "2026-09-30", or "—" for anything that is not a usable timestamp (missing,
@@ -342,6 +344,124 @@ function categoryRoutes(router, web) {
   });
 }
 
+// ---------- Settings (owner) ----------
+
+// The same channel kinds /config nudge set accepts.
+const NUDGE_CHANNEL_TYPES = new Set([ChannelType.GuildText, ChannelType.GuildAnnouncement]);
+
+function roleName(guild, id) {
+  const role = guild.roles.cache.get(id);
+  return role ? role.name : "(deleted role)";
+}
+
+function channelName(guild, id) {
+  const channel = guild.channels.cache.get(id);
+  return channel ? channel.name : "(deleted channel)";
+}
+
+// Roles an owner can pick: never @everyone (id = guild id) or a bot-managed
+// role — the actions refuse both anyway (fail closed); this just keeps them
+// out of the list. Highest role first, like Discord.
+function pickableRoles(guild) {
+  return [...guild.roles.cache.values()]
+    .filter((r) => r.id !== guild.id && r.managed !== true)
+    .sort((a, b) => (b.position || 0) - (a.position || 0))
+    .map((r) => ({ id: r.id, name: r.name }));
+}
+
+function nudgeChannels(guild) {
+  return [...guild.channels.cache.values()]
+    .filter((c) => NUDGE_CHANNEL_TYPES.has(c.type))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((c) => ({ id: c.id, name: c.name }));
+}
+
+function settingsModel(guild, data) {
+  const roles = pickableRoles(guild);
+  return {
+    base: BASE,
+    managers: data.managerRoleIds.map((id) => ({ id, name: roleName(guild, id) })),
+    addable: roles.filter((r) => !data.managerRoleIds.includes(r.id)),
+    notify: data.notifyRoleId ? { id: data.notifyRoleId, name: roleName(guild, data.notifyRoleId) } : null,
+    notifyOptions: roles.map((r) => ({ ...r, selected: r.id === data.notifyRoleId })),
+    nudge: {
+      on: !!data.nudgeChannelId,
+      channelName: data.nudgeChannelId ? channelName(guild, data.nudgeChannelId) : null,
+      hours: data.nudgeThresholdHours,
+      maxHours: help.NUDGE_MAX_HOURS,
+      channels: nudgeChannels(guild).map((c) => ({ ...c, selected: c.id === data.nudgeChannelId })),
+    },
+  };
+}
+
+// A role id from the form → the { id, managed } shape the actions take, or
+// null when the guild has no such role (deleted since the page was shown).
+function pickedRole(guild, id) {
+  const role = id ? guild.roles.cache.get(id) : null;
+  return role ? { id: role.id, managed: role.managed === true } : null;
+}
+
+function settingsRoutes(router, web) {
+  const back = `${BASE}/settings`;
+  const fail = failTo(web, back);
+  const gone = "That role doesn't exist anymore. Pick one from the list.";
+  router.use("/settings", web.requireLevel("owner"));
+
+  router.get("/settings", (req, res) =>
+    web.render(req, res, { title: "Settings", file: V("settings"), page: settingsModel(req.guild, help.loadData()) })
+  );
+
+  router.post("/settings/managers/add", (req, res) => {
+    const role = pickedRole(req.guild, web.field(req, "roleId"));
+    if (!role) return fail(req, res, gone);
+    const r = actions.addManagerRole(web, web.actor(req), { role, guildId: req.guild.id });
+    if (!r.ok) return fail(req, res, r.error);
+    web.forgetLevels(); // after the action saved: who is an officer just changed
+    const name = roleName(req.guild, role.id);
+    return web.done(req, res, back, { ok: true, text: r.added ? `${name} is now a manager role.` : `${name} was already a manager role.` });
+  });
+
+  router.post("/settings/managers/remove", (req, res) => {
+    const roleId = web.field(req, "roleId");
+    const r = actions.removeManagerRole(web, web.actor(req), { roleId });
+    if (!r.ok) return fail(req, res, r.error);
+    web.forgetLevels(); // after the action saved
+    const name = roleName(req.guild, roleId);
+    return web.done(req, res, back, { ok: true, text: r.removed ? `${name} is no longer a manager role.` : `${name} wasn't a manager role.` });
+  });
+
+  // roleId "" = request pings off.
+  router.post("/settings/notify", (req, res) => {
+    const roleId = web.field(req, "roleId");
+    const role = roleId === "" ? null : pickedRole(req.guild, roleId);
+    if (roleId !== "" && !role) return fail(req, res, gone);
+    const r = actions.setNotifyRole(web, web.actor(req), { role, guildId: req.guild.id });
+    if (!r.ok) return fail(req, res, r.error);
+    return web.done(req, res, back, { ok: true, text: role ? `New requests now ping ${roleName(req.guild, role.id)}.` : "Request pings are off." });
+  });
+
+  router.post("/settings/nudge", (req, res) => {
+    const channelId = web.field(req, "channelId");
+    const channel = nudgeChannels(req.guild).find((c) => c.id === channelId);
+    if (!channel) return fail(req, res, "Pick a text channel from the list.");
+    const raw = web.field(req, "hours").trim();
+    // Not a whole number → NaN, which the action refuses with its own message.
+    const hours = /^\d{1,6}$/.test(raw) ? Number(raw) : Number.NaN;
+    const r = actions.setNudge(web, web.actor(req), { channelId, hours });
+    if (!r.ok) return fail(req, res, r.error);
+    return web.done(req, res, back, {
+      ok: true,
+      text: `Stale nudges on — a daily digest in #${channel.name} for requests waiting over ${r.data.nudgeThresholdHours}h.`,
+    });
+  });
+
+  router.post("/settings/nudge/off", (req, res) => {
+    const r = actions.nudgeOff(web, web.actor(req));
+    if (!r.ok) return fail(req, res, r.error);
+    return web.done(req, res, back, { ok: true, text: "Stale nudges off." });
+  });
+}
+
 // ---------- routes ----------
 
 function routes(router, web) {
@@ -359,6 +479,7 @@ function routes(router, web) {
   });
 
   categoryRoutes(router, web);
+  settingsRoutes(router, web);
 }
 
-module.exports = { BASE, title: "Help board", nav, routes, dateOf, pastSeasons, overviewModel, seasonsModel, statsViews, statsModel, categoriesModel };
+module.exports = { BASE, title: "Help board", nav, routes, dateOf, pastSeasons, overviewModel, seasonsModel, statsViews, statsModel, categoriesModel, settingsModel };

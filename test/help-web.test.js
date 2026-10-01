@@ -704,3 +704,222 @@ test("Categories: a duplicate that appears in the target after the preview inval
     assert.match((await w.page("/help/categories")).text, changedRe);
   });
 });
+
+// ---------- Settings (owner) ----------
+
+const PINGS = "200000000000000002";
+const BOTROLE = "200000000000000003";
+const GENERAL = "300000000000000001";
+const VOICE = "300000000000000002";
+const NEWS = "300000000000000003";
+const { GUILD_ID } = require("./fixtures/web-harness");
+
+const settingsGuild = () =>
+  fakeGuild({
+    users: {
+      [OFFICER]: { name: "Offi", roles: [MGR] },
+      [OWNER]: { name: "Boss", owner: true },
+      [KOVI]: { name: "Kovi" },
+    },
+    roles: [
+      { id: MGR, name: "Officers", position: 5 },
+      { id: PINGS, name: "Helpers <b>", position: 3 },
+      { id: BOTROLE, name: "BB Bot", managed: true, position: 9 },
+    ],
+    channels: [
+      { id: GENERAL, name: "general", type: 0 },
+      { id: VOICE, name: "Lounge", type: 2 },
+      { id: NEWS, name: "news", type: 5 },
+    ],
+  });
+
+test("settingsModel: managers by name; @everyone and bot roles never offered; text/announcement channels only", () => {
+  const data = seed((d) => {
+    d.managerRoleIds = [MGR, "299999999999999999"];
+    d.notifyRoleId = PINGS;
+    d.nudgeChannelId = NEWS;
+    d.nudgeThresholdHours = 24;
+  });
+  const m = helpWeb.settingsModel(settingsGuild(), data);
+  assert.deepEqual(m.managers, [{ id: MGR, name: "Officers" }, { id: "299999999999999999", name: "(deleted role)" }]);
+  assert.deepEqual(m.addable, [{ id: PINGS, name: "Helpers <b>" }]);
+  assert.deepEqual(m.notifyOptions.map((r) => [r.id, r.selected]), [[MGR, false], [PINGS, true]]);
+  assert.deepEqual(m.notify, { id: PINGS, name: "Helpers <b>" });
+  assert.deepEqual(m.nudge.channels.map((c) => c.id), [GENERAL, NEWS]);
+  assert.equal(m.nudge.channelName, "news");
+  assert.equal(m.nudge.maxHours, 8760);
+});
+
+test("Settings is owner-only: officer → 403 page and 403 on every POST, nothing written", async () => {
+  seed();
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OFFICER);
+    assert.equal((await w.page("/help/settings")).res.status, 403);
+    for (const [p, form] of [
+      ["/help/settings/managers/add", { roleId: PINGS }],
+      ["/help/settings/managers/remove", { roleId: MGR }],
+      ["/help/settings/notify", { roleId: PINGS }],
+      ["/help/settings/nudge", { channelId: GENERAL, hours: "5" }],
+      ["/help/settings/nudge/off", {}],
+    ]) {
+      assert.equal((await w.post(p, form)).status, 403, p);
+    }
+  }, { guild: settingsGuild() });
+  assert.equal(readData(), before);
+});
+
+test("Settings: add and remove a manager role — the officer's level changes on their very next request (cache dropped)", async () => {
+  seed((d) => {
+    d.managerRoleIds = [];
+  });
+  await withWeb(async (w) => {
+    // Two signed-in people share the harness's one cookie jar: swap sessions.
+    const sessions = {};
+    for (const who of [OWNER, OFFICER]) {
+      await w.signIn(who);
+      sessions[who] = new Map(w.jar);
+    }
+    const as = async (who, fn) => {
+      w.jar.clear();
+      for (const [k, v] of sessions[who]) w.jar.set(k, v);
+      try {
+        return await fn();
+      } finally {
+        sessions[who] = new Map(w.jar);
+      }
+    };
+    const officerStatus = () => as(OFFICER, async () => (await w.page("/help")).res.status);
+    const owner = (fn) => as(OWNER, fn);
+
+    // Holding the Officers role means nothing until it is a manager role (and
+    // this lookup is now in the 60 s level cache as "member").
+    assert.equal(await officerStatus(), 403);
+
+    const page = await owner(() => w.page("/help/settings"));
+    assert.equal(primaries(page.text), 1);
+    assert.match(page.text, /Helpers &lt;b&gt;/);
+    assert.doesNotMatch(page.text, /@everyone|BB Bot/);
+
+    const add = await owner(() => w.submit("/help/settings/managers/add", { roleId: MGR }));
+    assert.match(add.next.text, /✓ Officers is now a manager role\./);
+    assert.deepEqual(help.loadData().managerRoleIds, [MGR]);
+    assert.equal(await officerStatus(), 200, "no clock advance: the cached 'member' level was dropped");
+
+    const again = await owner(() => w.submit("/help/settings/managers/add", { roleId: MGR }));
+    assert.match(again.next.text, /Officers was already a manager role\./);
+    assert.deepEqual(help.loadData().managerRoleIds, [MGR]);
+
+    const rm = await owner(() => w.submit("/help/settings/managers/remove", { roleId: MGR }));
+    assert.match(rm.next.text, /✓ Officers is no longer a manager role\./);
+    assert.deepEqual(help.loadData().managerRoleIds, []);
+    assert.equal(await officerStatus(), 403, "the officer was demoted on the very next request");
+
+    const none = await owner(() => w.submit("/help/settings/managers/remove", { roleId: MGR }));
+    assert.match(none.next.text, /Officers wasn&#39;t a manager role\./);
+    assert.deepEqual(help.loadData().managerRoleIds, []);
+  }, { guild: settingsGuild() });
+});
+
+// M2b hardening (`unassignable` fails closed), checked for web callers: the
+// guild id always comes from the bot's guild, never from the form.
+test("Settings: @everyone, a bot-managed role or an unknown role id are refused as manager / notify role — nothing written", async () => {
+  seed();
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const cases = [
+      ["/help/settings/managers/add", { roleId: GUILD_ID }, /You can&#39;t add @everyone or a bot-managed role as a manager role\./],
+      ["/help/settings/managers/add", { roleId: BOTROLE }, /You can&#39;t add @everyone or a bot-managed role as a manager role\./],
+      ["/help/settings/managers/add", { roleId: "299999999999999999" }, /That role doesn&#39;t exist anymore/],
+      ["/help/settings/managers/add", [["roleId", MGR], ["roleId", PINGS]], /That role doesn&#39;t exist anymore/],
+      ["/help/settings/notify", { roleId: GUILD_ID }, /You can&#39;t set @everyone or a bot-managed role as the notify role\./],
+      ["/help/settings/notify", { roleId: BOTROLE }, /You can&#39;t set @everyone or a bot-managed role as the notify role\./],
+      ["/help/settings/notify", { roleId: "299999999999999999" }, /That role doesn&#39;t exist anymore/],
+    ];
+    for (const [p, form, re] of cases) {
+      const r = await w.submit(p, form);
+      assert.match(r.next.text, re, `${p} ${JSON.stringify(form)}`);
+    }
+  }, { guild: settingsGuild() });
+  assert.equal(readData(), before);
+});
+
+test("Settings: notify role on and off", async () => {
+  seed();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const on = await w.submit("/help/settings/notify", { roleId: PINGS });
+    assert.match(on.next.text, /✓ New requests now ping Helpers &lt;b&gt;\./);
+    assert.equal(help.loadData().notifyRoleId, PINGS);
+    const off = await w.submit("/help/settings/notify", { roleId: "" });
+    assert.match(off.next.text, /✓ Request pings are off\./);
+    assert.equal(help.loadData().notifyRoleId, null);
+  }, { guild: settingsGuild() });
+});
+
+test("Settings: nudge on (text or announcement channel, whole hours 1–8760) and off; the threshold is kept", async () => {
+  seed();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const on = await w.submit("/help/settings/nudge", { channelId: NEWS, hours: "24" });
+    assert.match(on.next.text, /✓ Stale nudges on — a daily digest in #news for requests waiting over 24h\./);
+    let d = help.loadData();
+    assert.equal(d.nudgeChannelId, NEWS);
+    assert.equal(d.nudgeThresholdHours, 24);
+    const off = await w.submit("/help/settings/nudge/off", {});
+    assert.match(off.next.text, /✓ Stale nudges off\./);
+    d = help.loadData();
+    assert.equal(d.nudgeChannelId, null);
+    assert.equal(d.nudgeThresholdHours, 24);
+  }, { guild: settingsGuild() });
+});
+
+test("Settings: nudge refusals — a voice / unknown channel, 0, 8761, 1.5, text hours — nothing written", async () => {
+  seed();
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const cases = [
+      [{ channelId: VOICE, hours: "5" }, /Pick a text channel from the list\./],
+      [{ channelId: "399999999999999999", hours: "5" }, /Pick a text channel from the list\./],
+      [{ channelId: GENERAL, hours: "0" }, /whole number of hours between 1 and 8760/],
+      [{ channelId: GENERAL, hours: "8761" }, /whole number of hours between 1 and 8760/],
+      [{ channelId: GENERAL, hours: "1.5" }, /whole number of hours between 1 and 8760/],
+      [{ channelId: GENERAL, hours: "soon" }, /whole number of hours between 1 and 8760/],
+      [{ channelId: GENERAL, hours: "" }, /whole number of hours between 1 and 8760/],
+    ];
+    for (const [form, re] of cases) {
+      const r = await w.submit("/help/settings/nudge", form);
+      assert.match(r.next.text, re, JSON.stringify(form));
+    }
+  }, { guild: settingsGuild() });
+  assert.equal(readData(), before);
+});
+
+test("an owner's sidebar: Overview, Seasons, Stats, Categories, Settings (M2 spec §6 order), then Teammates", async () => {
+  seed();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const { text } = await w.page("/help");
+    const sidebar = text.slice(text.indexOf('class="sidebar"'));
+    assert.match(sidebar, /Help board[\s\S]*>Overview<[\s\S]*>Seasons<[\s\S]*>Stats<[\s\S]*>Categories<[\s\S]*>Settings<[\s\S]*Teammates[\s\S]*Coming soon/);
+  }, { guild: settingsGuild() });
+});
+
+test("every help page: GET writes nothing and shows at most one Primary button", async () => {
+  seed((d) => {
+    d.entries = [entry("a", KOVI, "mvp5k")];
+    d.seasons = [{ name: "S4", startedTs: 500, endedTs: 9000, sortedTotal: 1, byCategory: {} }];
+  });
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    for (const p of ["/help", "/help/seasons", "/help/stats", "/help/stats?view=9000", "/help/categories", "/help/settings"]) {
+      const { res, text } = await w.page(p);
+      assert.equal(res.status, 200, p);
+      assert.ok(primaries(text) <= 1, p);
+    }
+  }, { guild: settingsGuild() });
+  assert.equal(readData(), before);
+});
