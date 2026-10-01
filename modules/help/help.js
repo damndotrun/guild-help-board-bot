@@ -77,11 +77,24 @@ function slugify(label) {
 const MAX_LABEL = 60;
 const MAX_ACTIVE_CATEGORIES = 25;
 
+// Names shown in Discord-rendered text (board / embed titles, card lines):
+// control characters (\p{Cc}: NUL, newline, tab, DEL, C1) and the bidi
+// embedding/override/isolate controls (U+202A–U+202E, U+2066–U+2069) could
+// garble the board or spoof the text around them, so they are refused —
+// category labels here, season names in actions.seasonNameError. One text
+// for every surface (slash, /menu, web).
+const UNPRINTABLE = /[\p{Cc}‪-‮⁦-⁩]/u;
+const PLAIN_TEXT_ERROR = "Use letters, numbers and punctuation only.";
+function hasUnprintable(text) {
+  return UNPRINTABLE.test(String(text ?? ""));
+}
+
 // Upsert by NORMALIZED LABEL (seeded ids like "seasonrun5k" are not slugify of
 // their labels, so matching on computed id alone would append a duplicate).
 function addCategory(data, label, emoji) {
   const id = slugify(label);
   if (!id) return { ok: false, error: "Give the category a name with letters or numbers." };
+  if (hasUnprintable(label)) return { ok: false, error: PLAIN_TEXT_ERROR };
   if (label.length > MAX_LABEL)
     return { ok: false, error: `Category name must be ${MAX_LABEL} characters or fewer.` };
   if (emoji && emoji.length > 32)
@@ -118,14 +131,16 @@ function removeCategory(data, id, moveto) {
     return { ok: false, error: "That's the only active category — add a replacement first." };
 
   if (moveto === id) return { ok: false, error: "`moveto` must be a different category." };
+  // A given moveto must be a real active category even when nothing moves —
+  // otherwise a bogus id would be accepted and echoed back as its "label".
+  if (moveto && !cats.some((c) => c.id === moveto && !c.archived))
+    return { ok: false, error: "`moveto` must be an active category." };
 
   const open = (data.entries || []).filter((e) => e.category === id && !e.done);
   const moved = [];
   const dropped = [];
   if (open.length > 0) {
-    const dest = cats.find((c) => c.id === moveto && !c.archived);
     if (!moveto) return { ok: false, error: "That category has open requests — pass `moveto` to move them." };
-    if (!dest) return { ok: false, error: "`moveto` must be an active category." };
     for (const e of open) {
       const dup = (data.entries || []).some(
         (o) => o !== e && o.userId === e.userId && o.category === moveto && !o.done
@@ -2755,4 +2770,6 @@ module.exports = {
   MAX_LABEL,
   MAX_ACTIVE_CATEGORIES,
   NUDGE_MAX_HOURS,
+  PLAIN_TEXT_ERROR,
+  hasUnprintable,
 };

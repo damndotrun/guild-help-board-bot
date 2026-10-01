@@ -328,6 +328,8 @@ test("Seasons: rename refusals — unknown/garbage target, blank or 81-char name
       [{ target: "12345", name: "X" }, /Couldn&#39;t rename that season/],
       [{ target: "current", name: "   " }, /Couldn&#39;t rename that season/],
       [{ target: "current", name: "x".repeat(81) }, /80 characters or fewer/],
+      [{ target: "current", name: "Win\u0000ter" }, /Use letters, numbers and punctuation only\./],
+      [{ target: "current", name: "Win⁦ter" }, /Use letters, numbers and punctuation only\./],
     ];
     for (const [form, re] of cases) {
       const r = await w.submit("/help/seasons/rename", form);
@@ -557,6 +559,10 @@ test("Categories: add (escaped on the page), refusals as one error line, an arch
     assert.match(blank.next.text, /Give the category a name with letters or numbers\./);
     const long = await w.submit("/help/categories/add", { label: "x".repeat(61) });
     assert.match(long.next.text, /60 characters or fewer/);
+    const before = help.loadData().categories.length;
+    const bidi = await w.submit("/help/categories/add", { label: "Tower‮evil" });
+    assert.match(bidi.next.text, /Use letters, numbers and punctuation only\./);
+    assert.equal(help.loadData().categories.length, before, "nothing written");
     const back = await w.submit("/help/categories/add", { label: "raid", emoji: "" });
     assert.match(back.next.text, /✓ ⚔️ raid is ready\./);
     assert.equal(help.loadData().categories.find((c) => c.id === "raid").archived, false);
@@ -579,6 +585,25 @@ test("Categories: archive without open requests — confirm, then archived", asy
     assert.match(go.next.text, /✓ Archived Raid\./);
     assert.equal(help.loadData().categories.find((c) => c.id === "raid").archived, true);
   });
+});
+
+// F-M5: with 0 open requests a bogus moveto used to be accepted (and printed raw).
+test("Categories: archive with no open requests refuses a moveto that is unknown, archived or the category itself — one red line, nothing written", async () => {
+  seed((d) => {
+    d.categories.push({ id: "raid", label: "Raid", emoji: "⚔️", archived: false }, { id: "old", label: "Old", emoji: "🗃️", archived: true });
+  });
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    for (const moveto of ["bogus<id>", "old", "raid"]) {
+      const r = await w.submit("/help/categories/archive", { categoryId: "raid", moveto });
+      assert.equal(r.res.status, 303, moveto);
+      assert.match(r.next.text, /notice-error/, moveto);
+      assert.match(r.next.text, /must be (an active|a different) category/, moveto);
+      assert.doesNotMatch(r.next.text, /Archive Raid\?/, `${moveto}: no confirmation page`);
+    }
+  });
+  assert.equal(readData(), before);
 });
 
 test("Categories: archive with open requests — moveto required; moved and duplicate counts shown, then applied", async () => {

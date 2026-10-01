@@ -67,7 +67,13 @@ tricky bits don't get re-broken.
 - **Behaviour changes:** `PUBLIC_URL` must be a bare `http(s)://host[:port]`
   origin — a path, `http:foo` or credentials stop the bot at startup (Discord
   rejected such values in the menu's link button); season names over 80
-  characters are refused by the action (the Discord modals already capped them).
+  characters are refused by the action (the Discord modals already capped them);
+  season names and category labels with control characters (`\p{Cc}`) or bidi
+  controls (U+202A–U+202E, U+2066–U+2069) are refused on every surface with
+  `help.PLAIN_TEXT_ERROR` (`help.hasUnprintable`, used by
+  `actions.seasonNameError` and `help.addCategory`); archiving a category with
+  a `moveto` that is not an active category is refused even when nothing moves
+  (`help.removeCategory`).
 - **Sessions & revocation:** the cookie is signed, not encrypted, and carries
   only `{ userId, exp }` (plus transient OAuth state / notice); `exp` is a
   rolling 30 days checked server-side. There is no server-side session store,

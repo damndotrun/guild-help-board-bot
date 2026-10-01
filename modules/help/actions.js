@@ -21,9 +21,13 @@ const MAX_NOTE = 200;
 // has no such cap of its own, so the action enforces it for every surface.
 const MAX_SEASON_NAME = 80;
 
-// null, or the error text for a season name that is too long.
+// null, or the error text for a season name that is too long or carries
+// control / bidi-control characters (help.hasUnprintable). Checked on the
+// trimmed name — the one that is stored (help.beginSeason / renameSeason trim).
 function seasonNameError(name) {
-  return String(name ?? "").trim().length > MAX_SEASON_NAME
+  const trimmed = String(name ?? "").trim();
+  if (help.hasUnprintable(trimmed)) return help.PLAIN_TEXT_ERROR;
+  return trimmed.length > MAX_SEASON_NAME
     ? `Keep the season name to ${MAX_SEASON_NAME} characters or fewer.`
     : null;
 }
