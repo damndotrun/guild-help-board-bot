@@ -2752,4 +2752,6 @@ module.exports = {
   statsEmbedFor,
   memberName,
   resolveIds,
+  MAX_LABEL,
+  MAX_ACTIVE_CATEGORIES,
 };

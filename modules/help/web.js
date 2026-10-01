@@ -15,6 +15,7 @@ const nav = [
   { label: "Overview", path: "/", minLevel: "officer" },
   { label: "Seasons", path: "/seasons", minLevel: "officer" },
   { label: "Stats", path: "/stats", minLevel: "officer" },
+  { label: "Categories", path: "/categories", minLevel: "owner" },
 ];
 
 // "2026-09-30", or "—" for anything that is not a usable timestamp (missing,
@@ -94,13 +95,17 @@ function seasonsModel(data) {
 const waitingLine = (n) => (n === 1 ? "1 request is" : `${n} requests are`);
 
 // The state a Start-new-season / Reset confirmation is about. Every close or
-// begin moves it (closeSeason always stamps a new startedTs, and archives
-// bump the count), so a replayed confirmation no longer matches.
+// begin re-stamps currentSeason.startedTs, so a replayed confirmation no
+// longer matches. That stamp is what protects: the archive count alone would
+// stop moving once closeSeason's 12-season cap is reached.
 const seasonGuard = (data) => `${(data.seasons || []).length}:${data.currentSeason?.startedTs ?? "-"}`;
+
+// A POST handler's refusal: one error line on `to`, nothing written.
+const failTo = (web, to) => (req, res, text) => web.done(req, res, to, { ok: false, text });
 
 function seasonRoutes(router, web) {
   const back = `${BASE}/seasons`;
-  const fail = (req, res, text) => web.done(req, res, back, { ok: false, text });
+  const fail = failTo(web, back);
 
   router.get("/seasons", (req, res) =>
     web.render(req, res, { title: "Seasons", file: V("seasons"), page: seasonsModel(help.loadData()) })
@@ -242,6 +247,101 @@ async function statsModel(guild, data, requested) {
   };
 }
 
+// ---------- Categories (owner) ----------
+
+function categoriesModel(data) {
+  const active = help.activeCategories(data);
+  const openBy = help.countByCategory(data.entries.filter((e) => !e.done));
+  return {
+    base: BASE,
+    maxLabel: help.MAX_LABEL,
+    maxActive: help.MAX_ACTIVE_CATEGORIES,
+    canAdd: active.length < help.MAX_ACTIVE_CATEGORIES,
+    lastOne: active.length <= 1,
+    active: active.map((c) => ({
+      id: c.id,
+      label: c.label,
+      emoji: c.emoji,
+      open: openBy[c.id] || 0,
+      moveOptions: active.filter((o) => o.id !== c.id).map((o) => ({ id: o.id, label: `${o.emoji} ${o.label}` })),
+    })),
+    archived: (data.categories || []).filter((c) => c.archived).map((c) => ({ id: c.id, label: c.label, emoji: c.emoji })),
+  };
+}
+
+const plural = (n, one, many) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+
+// The state an Archive confirmation is about: whether the category is still
+// active, which requests are open in it (by id), which of those the archive
+// would drop as duplicates in the move-to category (the preview's moved and
+// dropped counts), and whether the chosen move-to is still an active category.
+// Any change makes a replayed or stale confirmation fail the guard.
+function categoryGuard(data, categoryId, moveto) {
+  const cat = help.categoryMap(data)[categoryId];
+  const state = !cat ? "gone" : cat.archived ? "archived" : "active";
+  const ids = (list) => list.map((e) => e.id).sort().join(",");
+  const open = data.entries.filter((e) => !e.done && e.category === categoryId);
+  const preview = help.removeCategory(structuredClone(data), categoryId, moveto);
+  const target = moveto && help.activeCategories(data).some((c) => c.id === moveto) ? moveto : "-";
+  return [state, ids(open), preview.ok ? ids(preview.dropped) : "-", target].join("|");
+}
+
+function categoryRoutes(router, web) {
+  const back = `${BASE}/categories`;
+  const fail = failTo(web, back);
+  router.use("/categories", web.requireLevel("owner"));
+
+  router.get("/categories", (req, res) =>
+    web.render(req, res, { title: "Categories", file: V("categories"), page: categoriesModel(help.loadData()) })
+  );
+
+  router.post("/categories/add", (req, res) => {
+    const label = web.field(req, "label").trim();
+    const emoji = web.field(req, "emoji").trim();
+    const r = actions.addCategory(web, web.actor(req), { label, emoji: emoji || undefined });
+    if (!r.ok) return fail(req, res, r.error);
+    return web.done(req, res, back, { ok: true, text: `${r.category.emoji} ${r.category.label} is ready.` }, r.effects);
+  });
+
+  // Archive with "move open requests to …". The confirmation shows what the
+  // archive will do — computed on a throwaway copy, nothing is saved — and
+  // the action re-checks everything when it really runs.
+  router.post("/categories/archive", async (req, res) => {
+    const categoryId = web.field(req, "categoryId");
+    const moveto = web.field(req, "moveto") || undefined;
+    const data = help.loadData();
+    const open = data.entries.filter((e) => !e.done && e.category === categoryId).length;
+    // A refusal on a confirming POST means the state moved since the page was
+    // shown (already archived, target gone, a request arrived): say so.
+    const refuse = (text) => (web.field(req, "confirm") === "yes" ? web.changed(req, res, back) : fail(req, res, text));
+    if (open > 0 && !moveto) return refuse("It still has open requests — pick a category to move them to.");
+    const preview = help.removeCategory(structuredClone(data), categoryId, moveto);
+    if (!preview.ok) return refuse(preview.error);
+    const label = help.catOf(data, categoryId).label;
+    const movetoLabel = moveto ? help.catOf(data, moveto).label : null;
+    const lines = [`Members can't pick ${label} anymore. Its history and stats stay.`];
+    if (preview.moved.length > 0) lines.push(`${plural(preview.moved.length, "open request moves", "open requests move")} to ${movetoLabel}.`);
+    if (preview.dropped.length > 0) {
+      lines.push(`${plural(preview.dropped.length, "request is", "requests are")} already open in ${movetoLabel} for the same member — closed as removed.`);
+    }
+    const ok = await web.confirmed(req, res, {
+      title: `Archive ${label}?`,
+      lines,
+      action: `${BASE}/categories/archive`,
+      fields: { categoryId, moveto: moveto || "" },
+      confirmLabel: "Archive",
+      cancelHref: back,
+      guard: categoryGuard(data, categoryId, moveto),
+    });
+    if (!ok) return undefined;
+    const r = actions.archiveCategory(web, web.actor(req), { categoryId, moveto });
+    if (!r.ok) return fail(req, res, r.error);
+    const moved = r.moved.length > 0 ? ` ${plural(r.moved.length, "open request", "open requests")} moved to ${r.movetoLabel}.` : "";
+    const dropped = r.dropped.length > 0 ? ` ${plural(r.dropped.length, "duplicate", "duplicates")} closed.` : "";
+    return web.done(req, res, back, { ok: true, text: `Archived ${r.label}.${moved}${dropped}` }, r.effects);
+  });
+}
+
 // ---------- routes ----------
 
 function routes(router, web) {
@@ -257,6 +357,8 @@ function routes(router, web) {
     const page = await statsModel(req.guild, help.loadData(), requested);
     return web.render(req, res, { title: "Stats", file: V("stats"), page });
   });
+
+  categoryRoutes(router, web);
 }
 
-module.exports = { BASE, title: "Help board", nav, routes, dateOf, pastSeasons, overviewModel, seasonsModel, statsViews, statsModel };
+module.exports = { BASE, title: "Help board", nav, routes, dateOf, pastSeasons, overviewModel, seasonsModel, statsViews, statsModel, categoriesModel };

@@ -499,3 +499,208 @@ test("a cross-site POST (CSRF) to a dangerous action is refused before the handl
   });
   assert.equal(readData(), before);
 });
+
+// ---------- Categories (owner) ----------
+
+test("categoriesModel: active with open counts and move targets; archived; the add/last-one limits", () => {
+  const data = seed((d) => {
+    d.categories.push({ id: "old", label: "Old", emoji: "🗄️", archived: true });
+    d.entries = [entry("a", KOVI, "mvp5k"), entry("b", ZED, "mvp5k"), entry("c", KOVI, "mvp5k", { done: true })];
+  });
+  const m = helpWeb.categoriesModel(data);
+  assert.deepEqual(
+    m.active.map((c) => [c.id, c.open, c.moveOptions.map((o) => o.id)]),
+    [
+      ["seasonrun5k", 0, ["mvp5k"]],
+      ["mvp5k", 2, ["seasonrun5k"]],
+    ]
+  );
+  assert.deepEqual(m.archived, [{ id: "old", label: "Old", emoji: "🗄️" }]);
+  assert.equal(m.canAdd, true);
+  assert.equal(m.lastOne, false);
+  assert.equal(m.maxLabel, 60);
+  const full = helpWeb.categoriesModel(seed((d) => {
+    d.categories = Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, label: `C${i}`, emoji: "📌", archived: false }));
+  }));
+  assert.equal(full.canAdd, false);
+});
+
+test("Categories is owner-only: an officer gets no sidebar link, a 403 page by URL, and a 403 on POST (nothing written)", async () => {
+  seed();
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OFFICER);
+    const home = await w.page("/help");
+    assert.doesNotMatch(home.text, />Categories</);
+    const { res, text } = await w.page("/help/categories");
+    assert.equal(res.status, 403);
+    assert.match(text, /Only members with Manage Server can change bot settings\./);
+    assert.equal((await w.post("/help/categories/add", { label: "Raid" })).status, 403);
+    assert.equal((await w.post("/help/categories/archive", { categoryId: "mvp5k", moveto: "seasonrun5k", confirm: "yes", issued: String(Date.now()), guard: "x" })).status, 403);
+  });
+  assert.equal(readData(), before);
+});
+
+test("Categories: add (escaped on the page), refusals as one error line, an archived name comes back", async () => {
+  seed((d) => {
+    d.categories.push({ id: "raid", label: "Raid", emoji: "⚔️", archived: true });
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const page = await w.page("/help/categories");
+    assert.match(page.text, />Categories</);
+    assert.equal(primaries(page.text), 1);
+    const ok = await w.submit("/help/categories/add", { label: "Tower <3>", emoji: "<img>" });
+    assert.match(ok.next.text, /✓ &lt;img&gt; Tower &lt;3&gt; is ready\./);
+    assert.ok(help.loadData().categories.some((c) => c.id === "tower-3" && !c.archived));
+    const blank = await w.submit("/help/categories/add", { label: "   ", emoji: "" });
+    assert.match(blank.next.text, /Give the category a name with letters or numbers\./);
+    const long = await w.submit("/help/categories/add", { label: "x".repeat(61) });
+    assert.match(long.next.text, /60 characters or fewer/);
+    const back = await w.submit("/help/categories/add", { label: "raid", emoji: "" });
+    assert.match(back.next.text, /✓ ⚔️ raid is ready\./);
+    assert.equal(help.loadData().categories.find((c) => c.id === "raid").archived, false);
+  });
+});
+
+test("Categories: archive without open requests — confirm, then archived", async () => {
+  seed((d) => {
+    d.categories.push({ id: "raid", label: "Raid", emoji: "⚔️", archived: false });
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const ask = await w.post("/help/categories/archive", { categoryId: "raid" });
+    assert.equal(ask.status, 200);
+    const html = await ask.text();
+    assert.match(html, /Archive Raid\?/);
+    assert.match(html, /Members can&#39;t pick Raid anymore/);
+    assert.equal(help.loadData().categories.find((c) => c.id === "raid").archived, false);
+    const go = await w.submit("/help/categories/archive", confirmForm(html, { categoryId: "raid", moveto: "" }));
+    assert.match(go.next.text, /✓ Archived Raid\./);
+    assert.equal(help.loadData().categories.find((c) => c.id === "raid").archived, true);
+  });
+});
+
+test("Categories: archive with open requests — moveto required; moved and duplicate counts shown, then applied", async () => {
+  seed((d) => {
+    d.entries = [entry("a", KOVI, "mvp5k"), entry("b", ZED, "mvp5k"), entry("c", KOVI, "seasonrun5k")];
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const none = await w.submit("/help/categories/archive", { categoryId: "mvp5k" });
+    assert.match(none.next.text, /It still has open requests — pick a category to move them to\./);
+    const ask = await w.post("/help/categories/archive", { categoryId: "mvp5k", moveto: "seasonrun5k" });
+    const html = await ask.text();
+    assert.match(html, /1 open request moves to Season Run 5K\./);
+    assert.match(html, /1 request is already open in Season Run 5K for the same member — closed as removed\./);
+    assert.match(html, /name="moveto" value="seasonrun5k"/);
+    const go = await w.submit("/help/categories/archive", confirmForm(html, { categoryId: "mvp5k", moveto: "seasonrun5k" }));
+    assert.match(go.next.text, /✓ Archived MVP 5K\. 1 open request moved to Season Run 5K\. 1 duplicate closed\./);
+    const d = help.loadData();
+    assert.deepEqual(d.entries.map((e) => [e.id, e.category]).sort(), [["b", "seasonrun5k"], ["c", "seasonrun5k"]]);
+    assert.equal(d.records.filter((r) => r.resolution === "removed").length, 1);
+    await w.settle();
+  });
+});
+
+// M2b hardening, checked for web callers: a missing / repeated / empty
+// categoryId never reaches an action as null or an array.
+test("Categories: archive refusals — unknown, empty or repeated id, the last active one — nothing written", async () => {
+  seed((d) => {
+    d.categories = [{ id: "solo", label: "Solo", emoji: "📌", archived: false }, { id: "gone", label: "Gone", emoji: "📌", archived: true }];
+  });
+  const before = readData();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const cases = [
+      [{ categoryId: "nope" }, /No such category\./],
+      [{ categoryId: "" }, /No such category\./],
+      [[["categoryId", "solo"], ["categoryId", "gone"]], /No such category\./],
+      [{ categoryId: "gone" }, /That category is already archived\./],
+      [{ categoryId: "solo" }, /That&#39;s the only active category — add a replacement first\./],
+    ];
+    for (const [form, re] of cases) {
+      const r = await w.submit("/help/categories/archive", form);
+      assert.equal(r.res.status, 303, JSON.stringify(form));
+      assert.match(r.next.text, re, JSON.stringify(form));
+    }
+  });
+  assert.equal(readData(), before);
+});
+
+const changedRe = new RegExp(`notice-error[^>]*>✕ ${CHANGED.replace(".", "\\.")}`);
+
+test("Categories: replaying the Archive confirm form is a no-op with the 'changed' notice (C1)", async () => {
+  seed((d) => {
+    d.entries = [entry("a", KOVI, "mvp5k"), entry("b", ZED, "mvp5k"), entry("c", KOVI, "seasonrun5k")];
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const html = await (await w.post("/help/categories/archive", { categoryId: "mvp5k", moveto: "seasonrun5k" })).text();
+    const form = confirmForm(html, { categoryId: "mvp5k", moveto: "seasonrun5k" });
+    const first = await w.post("/help/categories/archive", form);
+    assert.equal(first.status, 303);
+    assert.equal(help.loadData().categories.find((c) => c.id === "mvp5k").archived, true);
+    await w.settle();
+    const after = readData();
+    // Back button / second tab: the very same form, well inside the 5 minutes.
+    const replay = await w.post("/help/categories/archive", form);
+    assert.equal(replay.status, 303);
+    assert.equal(replay.headers.get("location"), "/help/categories");
+    assert.equal(readData(), after, "nothing was written the second time");
+    const { text } = await w.page("/help/categories");
+    assert.match(text, changedRe);
+  });
+});
+
+test("Categories: the confirmed state moved on — a new open request, or the move-to target archived — writes nothing", async () => {
+  seed((d) => {
+    d.categories.push({ id: "raid", label: "Raid", emoji: "⚔️", archived: false });
+    d.entries = [entry("a", KOVI, "mvp5k")];
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const fields = { categoryId: "mvp5k", moveto: "seasonrun5k" };
+    const form = confirmForm(await (await w.post("/help/categories/archive", fields)).text(), fields);
+    // A second member asks for MVP 5K after the preview was shown.
+    const d = help.loadData();
+    d.entries.push(entry("b", ZED, "mvp5k"));
+    help.saveData(d);
+    let before = readData();
+    let r = await w.post("/help/categories/archive", form);
+    assert.equal(r.status, 303);
+    assert.equal(readData(), before, "the preview counts were stale: nothing archived");
+    assert.match((await w.page("/help/categories")).text, changedRe);
+
+    // The target is archived between the preview and the click.
+    const form2 = confirmForm(await (await w.post("/help/categories/archive", fields)).text(), fields);
+    const d2 = help.loadData();
+    d2.categories.find((c) => c.id === "seasonrun5k").archived = true;
+    help.saveData(d2);
+    before = readData();
+    r = await w.post("/help/categories/archive", form2);
+    assert.equal(r.status, 303);
+    assert.equal(readData(), before);
+    assert.match((await w.page("/help/categories")).text, changedRe);
+  });
+});
+
+test("Categories: a duplicate that appears in the target after the preview invalidates the confirmation", async () => {
+  seed((d) => {
+    d.entries = [entry("a", KOVI, "mvp5k")];
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const fields = { categoryId: "mvp5k", moveto: "seasonrun5k" };
+    const html = await (await w.post("/help/categories/archive", fields)).text();
+    assert.match(html, /1 open request moves to Season Run 5K\./);
+    const d = help.loadData();
+    d.entries.push(entry("c", KOVI, "seasonrun5k")); // same member now also waits in the target
+    help.saveData(d);
+    const before = readData();
+    const r = await w.post("/help/categories/archive", confirmForm(html, fields));
+    assert.equal(r.status, 303);
+    assert.equal(readData(), before, "request 'a' would have been dropped, not moved, as the preview said");
+    assert.match((await w.page("/help/categories")).text, changedRe);
+  });
+});

@@ -36,10 +36,19 @@ function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
     return issued <= t && t - issued <= CONFIRM_TTL_MS;
   }
 
+  // The "state moved on" outcome of a confirmation: one notice line, back to
+  // the page the confirmation came from. Nothing has changed.
+  function changed(req, res, to) {
+    session.setNotice(req, { ok: false, text: CHANGED });
+    res.redirect(303, to);
+    return false;
+  }
+
   return {
     ...ctx,
     now,
     field,
+    changed,
 
     // Router middleware: 403 page below `min` (the nav hides the link too, and
     // the server mounts each nav item's minLevel as a gate on its path — this
@@ -92,10 +101,7 @@ function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
       const guard = String(spec.guard);
       const asked = field(req, "confirm") === "yes";
       if (asked && fresh(field(req, "issued"))) {
-        if (field(req, "guard") === guard) return true;
-        session.setNotice(req, { ok: false, text: CHANGED });
-        res.redirect(303, spec.cancelHref);
-        return false;
+        return field(req, "guard") === guard ? true : changed(req, res, spec.cancelHref);
       }
       await sendPage(req, res, {
         title: spec.title,

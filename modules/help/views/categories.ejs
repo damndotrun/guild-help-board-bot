@@ -1,0 +1,59 @@
+<h1>Categories</h1>
+<section class="card">
+  <h2>Active</h2>
+  <table class="cards">
+    <thead><tr><th>Category</th><th>Id</th><th>Open</th><th>Archive</th></tr></thead>
+    <tbody>
+      <% for (const c of page.active) { %>
+      <tr>
+        <td data-label="Category"><%= c.emoji %> <%= c.label %></td>
+        <td data-label="Id"><code><%= c.id %></code></td>
+        <td data-label="Open"><%= c.open %></td>
+        <td data-label="Archive">
+          <% if (page.lastOne) { %>
+          <span class="muted">The only active category — add another first.</span>
+          <% } else { %>
+          <form method="post" action="<%= page.base %>/categories/archive" class="inline">
+            <input type="hidden" name="categoryId" value="<%= c.id %>">
+            <% if (c.open > 0) { %>
+            <label for="moveto-<%= c.id %>">Move open requests to</label>
+            <select id="moveto-<%= c.id %>" name="moveto" required>
+              <% for (const o of c.moveOptions) { %>
+              <option value="<%= o.id %>"><%= o.label %></option>
+              <% } %>
+            </select>
+            <% } %>
+            <button type="submit" class="btn btn-danger">Archive</button>
+          </form>
+          <% } %>
+        </td>
+      </tr>
+      <% } %>
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>Add a category</h2>
+  <% if (!page.canAdd) { %>
+  <p class="muted">You have <%= page.maxActive %> active categories — archive one to add another.</p>
+  <% } else { %>
+  <p class="muted">Adding a category with an archived one's name brings it back.</p>
+  <form method="post" action="<%= page.base %>/categories/add" class="inline">
+    <label for="cat-label">Name</label>
+    <input id="cat-label" type="text" name="label" required maxlength="<%= page.maxLabel %>">
+    <label for="cat-emoji">Emoji</label>
+    <input id="cat-emoji" type="text" name="emoji" maxlength="32" placeholder="📌">
+    <button type="submit" class="btn btn-primary">Add category</button>
+  </form>
+  <% } %>
+</section>
+<% if (page.archived.length > 0) { %>
+<section class="card">
+  <h2>Archived</h2>
+  <ul>
+    <% for (const c of page.archived) { %>
+    <li><%= c.emoji %> <%= c.label %> <code><%= c.id %></code></li>
+    <% } %>
+  </ul>
+</section>
+<% } %>
