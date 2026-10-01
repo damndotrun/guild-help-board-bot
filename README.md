@@ -228,10 +228,13 @@ For a local run, `PUBLIC_URL=http://localhost:3000` + `WEB_PORT=3000` work too
   60 seconds), so a demoted or removed officer loses access within about a
   minute — and a manager role changed on the Settings page applies on the
   user's next request.
-- Behind Cloudflare: the bot limits Discord sign-in token exchanges to 30 per
-  minute for the whole process (not per visitor). Add a per-IP rate-limit rule at
-  the proxy (e.g. a Cloudflare WAF rule) covering both `/auth/login` and
-  `/auth/callback`.
+- Sign-in limits: the bot allows 10 Discord token exchanges per minute per
+  client address and 30 per minute for the whole process. The per-client limit
+  stops one visitor from locking everyone out, but many addresses together can
+  still use up the shared 30 — so for a **public** deployment a per-IP
+  rate-limit rule at the proxy (e.g. a Cloudflare WAF rate-limiting rule)
+  covering both `/auth/login` and `/auth/callback` is **required**, not
+  optional.
 
 ### Option B — Railway / Render / VPS
 

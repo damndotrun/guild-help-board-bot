@@ -10,7 +10,7 @@ const helmet = require("helmet");
 const { atLeast, LEVEL_LABEL } = require("../core/perms");
 const oauth = require("./oauth");
 const { createAccess } = require("./access");
-const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter } = require("./security");
+const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter, perClientLimiter } = require("./security");
 const session = require("./session");
 const { renderView } = require("./render");
 const { HTMX, HTMX_CONFIG } = require("./vendor");
@@ -23,6 +23,11 @@ const view = (name) => path.join(VIEWS, `${name}.ejs`);
 // Sign-in callbacks (each = one Discord token exchange) allowed per minute,
 // process-wide — see fixedWindowLimiter.
 const CALLBACKS_PER_MINUTE = 30;
+// ...and per client (req.ip), checked first so one client cannot drain the
+// process-wide budget — see perClientLimiter. At most CLIENTS_TRACKED clients
+// are remembered at once (oldest evicted).
+const CLIENT_CALLBACKS_PER_MINUTE = 10;
+const CLIENTS_TRACKED = 10_000;
 
 // Overall deadline of the per-request member lookup. discord.js REST can retry
 // and sleep for a minute or more on a rate limit; the page must not hang with it.
@@ -131,6 +136,12 @@ function createWebApp({
   const after = runAfter || defaultRunAfter(log);
   const access = createAccess({ perms, now });
   const callbackAllowed = fixedWindowLimiter({ max: CALLBACKS_PER_MINUTE, windowMs: 60_000, now });
+  const clientCallbackAllowed = perClientLimiter({
+    max: CLIENT_CALLBACKS_PER_MINUTE,
+    windowMs: 60_000,
+    maxClients: CLIENTS_TRACKED,
+    now,
+  });
   const webModules = modules.filter((m) => m.web);
 
   // access.lookup under an overall deadline. The deadline only ends the wait:
@@ -230,6 +241,11 @@ function createWebApp({
     const prompt = session.takeState(req, req.query.state, now());
     if (!prompt) return next(httpError(400, TEXT.stateBad));
     if (req.query.error !== undefined) {
+      // Discord's OAuth error code (access_denied, consent_required, …) — only
+      // a plain code is logged; anything else (repeated, odd characters) is "other".
+      const raw = req.query.error;
+      const errorCode = typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "other";
+      log.warn(`[web] Discord sign-in returned an error (prompt=${prompt}), error code: ${errorCode}`);
       // prompt=none only works for someone who already authorized the app —
       // ask once more, this time with Discord's consent screen.
       if (prompt === "none") return res.redirect(302, "/auth/login?prompt=consent");
@@ -237,6 +253,12 @@ function createWebApp({
     }
     const code = typeof req.query.code === "string" ? req.query.code : "";
     if (!code) return next(httpError(400, TEXT.noCode));
+    // Per client first: a refused client does not use up the shared budget.
+    // req.ip honours TRUST_PROXY; it is a limiter key only, never logged here.
+    if (!clientCallbackAllowed(req.ip || "unknown")) {
+      log.warn(`[web] sign-in refused: one client made more than ${CLIENT_CALLBACKS_PER_MINUTE} token exchanges in a minute (per-client rate limit)`);
+      return next(httpError(429, TEXT.busy));
+    }
     if (!callbackAllowed()) {
       log.warn(`[web] sign-in refused: more than ${CALLBACKS_PER_MINUTE} token exchanges in a minute (rate limit)`);
       return next(httpError(429, TEXT.busy));
@@ -348,4 +370,4 @@ function startWeb(options) {
   });
 }
 
-module.exports = { COMING_SOON, CALLBACKS_PER_MINUTE, LOOKUP_TIMEOUT_MS, TEXT, defaultRunAfter, createWebApp, startWeb };
+module.exports = { COMING_SOON, CALLBACKS_PER_MINUTE, CLIENT_CALLBACKS_PER_MINUTE, LOOKUP_TIMEOUT_MS, TEXT, defaultRunAfter, createWebApp, startWeb };

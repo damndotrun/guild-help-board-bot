@@ -26,7 +26,9 @@ tricky bits don't get re-broken.
   guard, sign-in routes, officer gate, layout, error pages, module mounting;
   `startWeb`), `oauth.js`, `access.js` (live level + cache), `session.js`
   (cookie-session, server-side rolling expiry, OAuth state, notice),
-  `security.js` (`TRUST_PROXY`, `sameOriginGuard`, token-exchange limiter,
+  `security.js` (`TRUST_PROXY`, `sameOriginGuard`, token-exchange limiters:
+  `perClientLimiter` keyed on `req.ip`, 10/min, bounded map, checked before
+  the process-wide `fixedWindowLimiter`, 30/min;
   `field`), `context.js` (what a module's `web.routes(router, web)` gets:
   `render`, `done`, `confirmed`, `changed`, `requireLevel`, `actor`, `field`,
   `forgetLevels` + its ctx), `render.js` (the only EJS entry point),

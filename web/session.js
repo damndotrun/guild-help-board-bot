@@ -64,23 +64,32 @@ function issueState(req, state, prompt, now) {
   return state;
 }
 
+function clearState(req) {
+  delete req.session.oauthState;
+  delete req.session.oauthStateExp;
+  delete req.session.oauthPrompt;
+}
+
 // One-shot: the prompt mode of the matching, unexpired attempt — or null.
-// The stored state is cleared whatever the outcome.
+// The stored state is cleared when it matched or has expired — NOT on a
+// mismatch: a stale callback (an older tab) or a crafted /auth/callback?state=x
+// link must not kill the sign-in in progress. Guessing gains nothing: the
+// state is 32 random bytes and a mismatch never reaches Discord.
 function takeState(req, state, now) {
-  const s = req.session || {};
+  if (!req.session) return null;
+  const s = req.session;
   const expected = typeof s.oauthState === "string" ? s.oauthState : "";
   const exp = s.oauthStateExp;
   const prompt = s.oauthPrompt;
-  if (req.session) {
-    delete req.session.oauthState;
-    delete req.session.oauthStateExp;
-    delete req.session.oauthPrompt;
+  if (!Number.isFinite(exp) || now > exp) {
+    clearState(req);
+    return null;
   }
   if (!expected || typeof state !== "string") return null;
   const a = Buffer.from(state);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-  if (!Number.isFinite(exp) || now > exp) return null;
+  clearState(req);
   return prompt === "consent" ? "consent" : "none";
 }
 

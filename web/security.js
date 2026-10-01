@@ -41,9 +41,9 @@ function sameOriginGuard(origin) {
 // A process-wide fixed-window counter: take() → true while under `max` per
 // `windowMs`. Guards the Discord token exchange: the bot and the web share
 // one IP, and a flood of bogus sign-in callbacks must not get that IP
-// rate-limited or banned by Discord. Per-client limits would have to trust a
-// forwarded IP header; this one trusts nothing (Cloudflare's WAF is the
-// per-client layer, in front of the tunnel).
+// rate-limited or banned by Discord. It trusts nothing; perClientLimiter in
+// front of it keeps one client from draining it, and Cloudflare's per-IP WAF
+// rule keeps many clients from doing so (README: required when public).
 function fixedWindowLimiter({ max, windowMs, now = Date.now }) {
   let start = -Infinity;
   let count = 0;
@@ -58,6 +58,35 @@ function fixedWindowLimiter({ max, windowMs, now = Date.now }) {
   };
 }
 
+// A fixed window PER KEY: take(key) → true while that key is under `max` per
+// `windowMs`. Keyed on req.ip (Express's view under TRUST_PROXY — never a raw
+// CF-Connecting-IP / X-Forwarded-For read), so one client cannot use up the
+// process-wide budget above. Bounded: an entry is (re)inserted when its window
+// starts, so the Map's order is window-start order — the expired windows are
+// always a prefix, dropped on every call; when still full, the OLDEST entry is
+// evicted (a new client is admitted, never "everyone is limited").
+// take.size() → the current entry count (tests).
+function perClientLimiter({ max, windowMs, maxClients, now = Date.now }) {
+  const windows = new Map(); // key → { start, count }
+  function take(key) {
+    const t = now();
+    for (const [k, w] of windows) {
+      if (t - w.start < windowMs) break;
+      windows.delete(k);
+    }
+    let w = windows.get(key);
+    if (!w) {
+      if (windows.size >= maxClients) windows.delete(windows.keys().next().value);
+      w = { start: t, count: 0 };
+      windows.set(key, w);
+    }
+    w.count += 1;
+    return w.count <= max;
+  }
+  take.size = () => windows.size;
+  return take;
+}
+
 // A form field as a string. Repeated fields (a=1&a=2 → an array under
 // extended:false) and missing ones both come back as "" — never an array or
 // an object reaching an action.
@@ -66,4 +95,4 @@ function field(req, name) {
   return typeof v === "string" ? v : "";
 }
 
-module.exports = { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter, field };
+module.exports = { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter, perClientLimiter, field };

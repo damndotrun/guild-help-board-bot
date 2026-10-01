@@ -3,7 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const express = require("express");
 const session = require("../web/session");
-const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter, field } = require("../web/security");
+const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter, perClientLimiter, field } = require("../web/security");
 
 const ORIGIN = "https://bb.example.com";
 const SECRET = "x".repeat(32);
@@ -163,6 +163,23 @@ test("takeState: matching, unexpired and one-shot; the prompt mode comes back", 
   assert.equal(session.takeState(req, "ábc", t), null, "same length in chars, different in bytes");
 });
 
+test("takeState: a mismatching state leaves the stored one in place; a match or an expiry clears it", () => {
+  const t = 1_000_000;
+  const req = { session: {} };
+  session.issueState(req, "abc", "consent", t);
+  for (const wrong of ["abd", "x", ["abc"], undefined]) {
+    assert.equal(session.takeState(req, wrong, t), null, String(wrong));
+    assert.equal(req.session.oauthState, "abc", `kept after ${String(wrong)}`);
+  }
+  assert.equal(session.takeState(req, "abc", t + 1000), "consent", "the real callback still signs in");
+  assert.equal(req.session.oauthState, undefined, "cleared on the match");
+  assert.equal(req.session.oauthStateExp, undefined);
+  assert.equal(req.session.oauthPrompt, undefined);
+  session.issueState(req, "abc", "none", t);
+  assert.equal(session.takeState(req, "zzz", t + session.STATE_TTL_MS + 1), null);
+  assert.equal(req.session.oauthState, undefined, "an expired state is cleared even on a mismatch");
+});
+
 test("notice: one-shot", () => {
   const req = { session: {} };
   session.setNotice(req, { ok: true, text: "Saved." });
@@ -263,6 +280,36 @@ test("fixedWindowLimiter: max per window, then a fresh window", () => {
   assert.equal(take(), false);
   t = 1000;
   assert.equal(take(), true);
+});
+
+test("perClientLimiter: max per window per key; another key has its own budget; a fresh window after windowMs", () => {
+  let t = 0;
+  const take = perClientLimiter({ max: 2, windowMs: 1000, maxClients: 100, now: () => t });
+  assert.deepEqual([take("a"), take("a"), take("a")], [true, true, false]);
+  assert.deepEqual([take("b"), take("b"), take("b")], [true, true, false]);
+  t = 999;
+  assert.equal(take("a"), false);
+  t = 1000;
+  assert.equal(take("a"), true);
+});
+
+test("perClientLimiter: expired windows are evicted; when full, the OLDEST entry goes (never 'everyone limited')", () => {
+  let t = 0;
+  const take = perClientLimiter({ max: 1, windowMs: 1000, maxClients: 3, now: () => t });
+  take("a");
+  t = 10;
+  take("b");
+  t = 20;
+  take("c");
+  assert.equal(take.size(), 3);
+  assert.equal(take("a"), false, "a is still in its window");
+  t = 30;
+  assert.equal(take("d"), true, "full: a new client is admitted, not refused");
+  assert.equal(take.size(), 3, "...and the map stays bounded");
+  assert.equal(take("a"), true, "the oldest entry (a) was the one evicted");
+  t = 2000;
+  take("e");
+  assert.equal(take.size(), 1, "every expired window is dropped");
 });
 
 test("httpError carries a status and a public message", () => {

@@ -13,7 +13,7 @@ const ejs = require("ejs");
 const { startWeb, fakeGuild, ORIGIN, WEB } = require("./fixtures/web-harness");
 const { HTMX } = require("../web/vendor");
 const { RENDER_OPTIONS } = require("../web/render");
-const { CALLBACKS_PER_MINUTE } = require("../web/server");
+const { CALLBACKS_PER_MINUTE, CLIENT_CALLBACKS_PER_MINUTE } = require("../web/server");
 
 const OFFICER = "100000000000000001";
 const OWNER = "100000000000000002";
@@ -81,14 +81,30 @@ test("callback: wrong, missing, reused or expired state → 400, no Discord call
     const start = await w.request("/auth/login");
     const state = new URL(start.headers.get("location")).searchParams.get("state");
     assert.equal((await w.request(`/auth/callback?code=x&state=nope`)).status, 400);
-    // the wrong guess consumed the attempt: the real state no longer works either
-    assert.equal((await w.request(`/auth/callback?code=x&state=${state}`)).status, 400);
-    const again = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
     t += 10 * 60 * 1000 + 1;
-    assert.equal((await w.request(`/auth/callback?code=x&state=${again}`)).status, 400);
+    assert.equal((await w.request(`/auth/callback?code=x&state=${state}`)).status, 400, "expired");
+    assert.equal((await w.request(`/auth/callback?code=x&state=${state}`)).status, 400, "an expired state was cleared — reuse fails too");
     assert.equal((await w.request(`/auth/callback?code=x`)).status, 400);
     assert.equal(w.discord.calls.length, 0);
     assert.equal((await w.request("/")).headers.get("location"), "/login");
+  });
+});
+
+// F-M2: a stale or crafted callback (an older tab's state, a /auth/callback?state=x
+// link) must not wipe the sign-in in progress — only a match or an expiry clears it.
+test("callback: a mismatching state (older tab, crafted link) does not kill the fresh sign-in; a used state is one-shot", async () => {
+  await withWeb({}, async (w) => {
+    w.discord.who.userId = OWNER;
+    const stateOf = async () => new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
+    const tabA = await stateOf();
+    const tabB = await stateOf(); // the same cookie: B's state replaces A's
+    assert.equal((await w.request(`/auth/callback?code=x&state=${tabA}`)).status, 400, "tab A is stale");
+    assert.equal((await w.request(`/auth/callback?code=x&state=x`)).status, 400, "crafted link");
+    assert.equal(w.discord.calls.length, 0, "no Discord call on a mismatch");
+    const ok = await w.request(`/auth/callback?code=x&state=${tabB}`);
+    assert.equal(ok.status, 303, "tab B still signs in");
+    assert.match(ok.headers.getSetCookie().join("\n"), /bb_session=/);
+    assert.equal((await w.request(`/auth/callback?code=x&state=${tabB}`)).status, 400, "one-shot");
   });
 });
 
@@ -105,6 +121,22 @@ test("callback: an error with prompt=none retries once with the consent screen; 
     const cancelled = await w.request(`/auth/callback?error=access_denied&state=${state}`);
     assert.equal(cancelled.status, 401);
     assert.match(await cancelled.text(), /Sign-in was cancelled/);
+  });
+});
+
+test("callback: Discord's error code is logged at warn level, sanitized (anything odd → 'other'); the retry is unchanged", async () => {
+  await withWeb({}, async (w) => {
+    const stateOf = async (q = "") => new URL((await w.request(`/auth/login${q}`)).headers.get("location")).searchParams.get("state");
+    let res = await w.request(`/auth/callback?error=consent_required&state=${await stateOf()}`);
+    assert.equal(res.headers.get("location"), "/auth/login?prompt=consent");
+    assert.ok(w.log.warns.some((l) => /error code: consent_required/.test(l)), w.log.warns.join("\n"));
+    res = await w.request(`/auth/callback?error=${encodeURIComponent("<b>EVIL\nINJECTED")}&state=${await stateOf("?prompt=consent")}`);
+    assert.equal(res.status, 401);
+    assert.ok(w.log.warns.some((l) => /error code: other/.test(l)));
+    assert.ok(!w.log.lines.some((l) => /EVIL|INJECTED|<b>/.test(l)), "the raw value is never logged");
+    res = await w.request(`/auth/callback?error=a&error=b&state=${await stateOf("?prompt=consent")}`);
+    assert.equal(res.status, 401);
+    assert.equal(w.log.warns.filter((l) => /error code: other/.test(l)).length, 2, "a repeated param → other");
   });
 });
 
@@ -146,22 +178,68 @@ test("callback: ANY error (bad JSON body, network failure, timeout) → generic 
   }
 });
 
-test(`callback: more than ${CALLBACKS_PER_MINUTE} token exchanges a minute → 429 (logged as a warning), Discord not called`, async () => {
+test(`callback: more than ${CALLBACKS_PER_MINUTE} token exchanges a minute (from many clients) → 429 (logged as a warning), Discord not called`, async () => {
   let t = Date.now();
   await withWeb({ now: () => t }, async (w) => {
     w.discord.who.userId = OWNER;
-    for (let i = 0; i < CALLBACKS_PER_MINUTE; i += 1) await w.signIn(OWNER);
+    // a different client each time: the per-client limit never bites here
+    for (let i = 0; i < CALLBACKS_PER_MINUTE; i += 1) await w.signIn(OWNER, { ip: `198.51.100.${i + 1}` });
     const calls = w.discord.calls.length;
     const before = w.log.lines.length;
-    const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
-    const res = await w.request(`/auth/callback?code=x&state=${state}`);
+    const ip = "198.51.100.200";
+    const state = new URL((await w.request("/auth/login", { ip })).headers.get("location")).searchParams.get("state");
+    const res = await w.request(`/auth/callback?code=x&state=${state}`, { ip });
     assert.equal(res.status, 429);
     assert.equal(w.discord.calls.length, calls);
     assert.ok(w.log.lines.length > before);
     assert.ok(w.log.warns.some((l) => /rate limit/i.test(l)), "the limiter hit is logged at warn level");
     assert.ok(!w.log.errors.some((l) => /rate limit/i.test(l)), "...and not as an error");
     t += 60_000;
-    await w.signIn(OWNER);
+    await w.signIn(OWNER, { ip });
+  });
+});
+
+test(`callback: one client over ${CLIENT_CALLBACKS_PER_MINUTE} token exchanges a minute gets its own 429; another client still signs in`, async () => {
+  let t = Date.now();
+  await withWeb({ now: () => t }, async (w) => {
+    const A = "203.0.113.1";
+    const B = "203.0.113.2";
+    for (let i = 0; i < CLIENT_CALLBACKS_PER_MINUTE; i += 1) await w.signIn(OWNER, { ip: A });
+    const calls = w.discord.calls.length;
+    const state = new URL((await w.request("/auth/login", { ip: A })).headers.get("location")).searchParams.get("state");
+    const res = await w.request(`/auth/callback?code=x&state=${state}`, { ip: A });
+    assert.equal(res.status, 429);
+    assert.match(await res.text(), /Too many sign-ins/);
+    assert.equal(w.discord.calls.length, calls, "no token exchange for the limited client");
+    assert.ok(w.log.warns.some((l) => /per-client rate limit/i.test(l)), "the per-client hit is logged at warn level");
+    assert.ok(!w.log.lines.some((l) => l.includes(A)), "the client address is not logged");
+    const ok = await w.signIn(OWNER, { ip: B });
+    assert.equal(ok.status, 303);
+    t += 60_000;
+    assert.equal((await w.signIn(OWNER, { ip: A })).status, 303, "a fresh window for A");
+  });
+});
+
+// F-I1: 30 junk callbacks from ONE anonymous client used to drain the
+// process-wide budget, locking every real sign-in out for the minute.
+test("callback: one anonymous client looping login → callback(junk code) cannot lock out a real sign-in", async () => {
+  await withWeb({}, async (w) => {
+    const EVIL = "203.0.113.66";
+    w.discord.handler = (url) => {
+      if (url.endsWith("/oauth2/token")) return { ok: false, status: 400, json: async () => ({ error: "invalid_grant" }) };
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const statuses = [];
+    for (let i = 0; i < CALLBACKS_PER_MINUTE; i += 1) {
+      w.jar.clear(); // cookie-less: a new session each round
+      const state = new URL((await w.request("/auth/login", { ip: EVIL })).headers.get("location")).searchParams.get("state");
+      statuses.push((await w.request(`/auth/callback?code=junk&state=${state}`, { ip: EVIL })).status);
+    }
+    assert.equal(statuses.filter((s) => s === 502).length, CLIENT_CALLBACKS_PER_MINUTE);
+    assert.equal(statuses.filter((s) => s === 429).length, CALLBACKS_PER_MINUTE - CLIENT_CALLBACKS_PER_MINUTE);
+    w.discord.handler = null;
+    w.jar.clear();
+    assert.equal((await w.signIn(OWNER, { ip: "198.51.100.7" })).status, 303, "a real officer still gets in");
   });
 });
 

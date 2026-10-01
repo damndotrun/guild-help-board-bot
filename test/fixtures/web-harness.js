@@ -141,10 +141,12 @@ async function startWeb({ modules = [], guild = fakeGuild(), now = Date.now, cli
     }
   }
 
-  // Raw request; never follows redirects. opts: { method, form, headers, cookies: false }
+  // Raw request; never follows redirects. opts: { method, form, headers, cookies: false, ip }
   // form: an object, or [[name, value], …] pairs for a repeated field.
-  async function request(path, { method = "GET", form = null, headers = {}, cookies = true } = {}) {
-    const h = { "x-forwarded-proto": "https", ...headers };
+  // ip: the client address as the loopback proxy reports it (X-Forwarded-For,
+  // believed under TRUST_PROXY → req.ip); without it req.ip is 127.0.0.1.
+  async function request(path, { method = "GET", form = null, headers = {}, cookies = true, ip = null } = {}) {
+    const h = { "x-forwarded-proto": "https", ...(ip ? { "x-forwarded-for": ip } : {}), ...headers };
     if (cookies && jar.size > 0) h.cookie = cookieHeader();
     let body;
     if (form) {
@@ -179,12 +181,13 @@ async function startWeb({ modules = [], guild = fakeGuild(), now = Date.now, cli
     return { res, text: "", next: await page(res.headers.get("location")) };
   }
 
-  // Full OAuth round trip as `userId`; leaves the session cookie in the jar.
-  async function signIn(userId) {
+  // Full OAuth round trip as `userId` (from client address `ip`, optional);
+  // leaves the session cookie in the jar.
+  async function signIn(userId, { ip = null } = {}) {
     discord.who.userId = userId;
-    const start = await request("/auth/login");
+    const start = await request("/auth/login", { ip });
     const state = new URL(start.headers.get("location")).searchParams.get("state");
-    const cb = await request(`/auth/callback?code=test-code&state=${encodeURIComponent(state)}`);
+    const cb = await request(`/auth/callback?code=test-code&state=${encodeURIComponent(state)}`, { ip });
     if (cb.status !== 303) throw new Error(`sign-in failed: ${cb.status} ${await cb.text()}`);
     return cb;
   }
