@@ -14,7 +14,7 @@ const { TRUST_PROXY, httpError, sameOriginGuard, fixedWindowLimiter, perClientLi
 const session = require("./session");
 const { renderView } = require("./render");
 const { HTMX, HTMX_CONFIG } = require("./vendor");
-const { createWebCtx, NEED } = require("./context");
+const { createWebCtx, NEED, withDeadline } = require("./context");
 
 const VIEWS = path.join(__dirname, "views");
 const PUBLIC = path.join(__dirname, "public");
@@ -29,8 +29,9 @@ const CALLBACKS_PER_MINUTE = 30;
 const CLIENT_CALLBACKS_PER_MINUTE = 10;
 const CLIENTS_TRACKED = 10_000;
 
-// Overall deadline of the per-request member lookup. discord.js REST can retry
-// and sleep for a minute or more on a rate limit; the page must not hang with it.
+// Overall deadline of the per-request member lookup — and of a page's name
+// lookups (web.withDeadline). discord.js REST can retry and sleep for a minute
+// or more on a rate limit; the page must not hang with it.
 const LOOKUP_TIMEOUT_MS = 10_000;
 
 // Sidebar entries for modules that do not have web pages yet (M2 spec §6:
@@ -144,19 +145,12 @@ function createWebApp({
   });
   const webModules = modules.filter((m) => m.web);
 
-  // access.lookup under an overall deadline. The deadline only ends the wait:
-  // it writes nothing to the level cache (a lookup that finishes late still
-  // caches its own real answer, and one that fails late is ignored).
-  async function lookupWithDeadline(guild, userId) {
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`member lookup timed out after ${lookupTimeoutMs} ms`)), lookupTimeoutMs);
-    });
-    try {
-      return await Promise.race([access.lookup(guild, userId), deadline]);
-    } finally {
-      clearTimeout(timer);
-    }
+  // access.lookup under an overall deadline (withDeadline). The deadline only
+  // ends the wait: it writes nothing to the level cache (a lookup that
+  // finishes late still caches its own real answer, and one that fails late
+  // is ignored).
+  function lookupWithDeadline(guild, userId) {
+    return withDeadline(access.lookup(guild, userId), lookupTimeoutMs, "member lookup");
   }
 
   function navFor(viewer, currentPath) {
@@ -322,7 +316,7 @@ function createWebApp({
     const router = express.Router();
     const gate = navGate(mod);
     if (gate) router.use(gate);
-    mod.web.routes(router, createWebCtx({ ctx: ctxFor(mod), sendPage, access, now, runAfter: after }));
+    mod.web.routes(router, createWebCtx({ ctx: ctxFor(mod), sendPage, access, now, runAfter: after, lookupTimeoutMs }));
     app.use(`/${mod.name}`, router);
   }
 

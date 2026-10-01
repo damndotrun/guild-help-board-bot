@@ -22,12 +22,30 @@ const NEED = Object.freeze({
 
 const CHANGED = "Already done or changed — nothing happened.";
 
+// `promise` under an overall deadline: rejects with "<what> timed out after
+// <ms> ms" once `ms` has passed. discord.js REST can retry and sleep for a
+// minute or more on a rate limit; a page must not hang with it (Cloudflare
+// gives up at 100 s). The deadline only ends the WAIT: the work keeps running
+// and its late result or failure is ignored. The one deadline helper of the
+// web — the server's member lookup and the modules' name lookups share it.
+async function withDeadline(promise, ms, what) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Form fields the confirmation page adds itself; a spec's own `fields` must
 // not reuse them (a duplicate name would reach the server as an array, which
 // field() reads as "" — the confirmation could then never succeed).
 const CONTROL_FIELDS = Object.freeze(["confirm", "issued", "guard"]);
 
-function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
+function createWebCtx({ ctx, sendPage, access, now, runAfter, lookupTimeoutMs }) {
   // Fresh = issued by this server within the TTL, not in the future.
   function fresh(issuedRaw) {
     if (!/^\d{1,16}$/.test(issuedRaw)) return false;
@@ -116,7 +134,13 @@ function createWebCtx({ ctx, sendPage, access, now, runAfter }) {
     forgetLevels() {
       access.clear();
     },
+
+    // A Discord lookup a page waits for (e.g. member names) under the same
+    // deadline as the server's member lookup — see withDeadline.
+    withDeadline(promise, what = "Discord lookup") {
+      return withDeadline(promise, lookupTimeoutMs, what);
+    },
   };
 }
 
-module.exports = { CONFIRM_TTL_MS, CHANGED, NEED, createWebCtx };
+module.exports = { CONFIRM_TTL_MS, CHANGED, NEED, withDeadline, createWebCtx };

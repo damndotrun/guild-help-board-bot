@@ -12,7 +12,7 @@ const help = require("../modules/help/help");
 const helpWeb = require("../modules/help/web");
 const { normalizeModule } = require("../core/loader");
 const { startWeb, fakeGuild, GUILD_ID } = require("./fixtures/web-harness");
-const { CHANGED, NEED } = require("../web/context");
+const { CHANGED, NEED, withDeadline } = require("../web/context");
 
 const OFFICER = "100000000000000001";
 const OWNER = "100000000000000002";
@@ -112,6 +112,81 @@ test("overviewModel: open requests oldest first, live names (stored name if they
   );
   assert.equal(m.open[0].waiting, "3h 0m");
   assert.deepEqual(m.topHelpers, [{ name: "Zed", count: 1 }]);
+});
+
+// F-M4 / O-M2: name lookups are Discord REST that discord.js may retry and
+// sleep through; under a deadline they fall back instead of hanging the page.
+// A guild whose name lookups (fetch(userId)) never answer — while the viewer's
+// own forced lookup (fetch({ user, force })) still does.
+function hangingNamesGuild() {
+  const g = guild();
+  const real = g.members.fetch;
+  g.nameFetches = 0;
+  g.members.fetch = (arg) => {
+    if (typeof arg === "string") {
+      g.nameFetches += 1;
+      return new Promise(() => {});
+    }
+    return real(arg);
+  };
+  return g;
+}
+const recordingLog = () => {
+  const warns = [];
+  return { warns, log: () => {}, warn: (...a) => warns.push(a.map(String).join(" ")), error: () => {} };
+};
+const fastDeadline = (p) => withDeadline(p, 20, "name lookup");
+
+test("overviewModel / statsModel: name lookups past the deadline fall back to stored names / '—', one warning each", async () => {
+  const data = seed((d) => {
+    d.entries = [
+      entry("a", KOVI, "seasonrun5k", { claimedBy: ZED }),
+      entry("d", KOVI, "mvp5k", { done: true, helpedBy: ZED, doneTs: 5000 }),
+    ];
+  });
+  const log = recordingLog();
+  const g = hangingNamesGuild();
+  const m = await helpWeb.overviewModel(g, data, 5000, { deadline: fastDeadline, log });
+  assert.deepEqual(m.open.map((e) => [e.who, e.claimedBy]), [["stored-name", null]]);
+  assert.deepEqual(m.topHelpers, [{ name: "—", count: 1 }]);
+  assert.equal(log.warns.length, 1, "one warning for the page, not one per name");
+  assert.match(log.warns[0], /name lookup timed out/);
+  const s = await helpWeb.statsModel(g, data, "current", { deadline: fastDeadline, log });
+  assert.deepEqual(s.helpers, [{ rank: 1, name: "—", count: 1 }]);
+  assert.equal(log.warns.length, 2);
+  assert.ok(g.nameFetches > 0, "the lookups were really attempted");
+  // without a deadline (the models' default) live names still resolve
+  assert.deepEqual((await helpWeb.overviewModel(guild(), data, 5000)).topHelpers, [{ name: "Zed", count: 1 }]);
+});
+
+test("Overview and Stats pages: a Discord that never answers name lookups → the page still renders (stored names), within the deadline", async () => {
+  seed((d) => {
+    d.entries = [entry("a", KOVI, "seasonrun5k"), entry("d", KOVI, "mvp5k", { done: true, helpedBy: ZED, doneTs: 5000 })];
+  });
+  const before = readData();
+  const warn = console.warn;
+  const warned = [];
+  console.warn = (...a) => warned.push(a.map(String).join(" "));
+  try {
+    await withWeb(
+      async (w) => {
+        await w.signIn(OFFICER);
+        const t0 = Date.now();
+        const o = await w.page("/help");
+        assert.equal(o.res.status, 200);
+        assert.match(o.text, /stored-name/);
+        const s = await w.page("/help/stats");
+        assert.equal(s.res.status, 200);
+        assert.match(s.text, /—/);
+        assert.ok(Date.now() - t0 < 5000, "answered at the deadline, not after Discord");
+      },
+      { guild: hangingNamesGuild(), lookupTimeoutMs: 50 }
+    );
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.filter((l) => /name lookup timed out/.test(l)).length, 2);
+  assert.equal(readData(), before, "resolveNames stays read-only — nothing saved");
 });
 
 test("Overview page: officer sees it, names and notes escaped, at most one Primary button", async () => {

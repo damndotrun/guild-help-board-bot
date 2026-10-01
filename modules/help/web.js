@@ -38,13 +38,33 @@ function catLabel(data, id) {
   return `${c.emoji} ${c.label}`;
 }
 
+// Name lookups are Discord REST, which discord.js may retry and sleep through
+// on a rate limit. A page runs them under `lookup.deadline` (the routes pass
+// web.withDeadline); past it the page shows `fallback` — the stored names /
+// "—" — and logs ONE warning, instead of hanging. No deadline (the models'
+// default, used by tests) = wait for the lookups.
+async function namesWithin(lookup, promise, fallback) {
+  if (!lookup.deadline) return promise;
+  try {
+    return await lookup.deadline(promise);
+  } catch (err) {
+    lookup.log?.warn(`[web] ${err?.message ?? err} — showing stored names`);
+    return fallback;
+  }
+}
+
 // ---------- Overview ----------
 
-async function overviewModel(guild, data, now) {
+// lookup = { deadline?, log? } — see namesWithin.
+async function overviewModel(guild, data, now, lookup = {}) {
   const open = data.entries.filter((e) => !e.done).sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
-  const names = await help.resolveNames(guild, data); // read-only
   const top = help.tallyHelpers(data.entries).slice(0, 5);
-  const helperNames = await help.resolveIds(guild, top.map(([id]) => id));
+  // Both lookups under ONE deadline (the page waits at most once). resolveNames is read-only.
+  const [names, helperNames] = await namesWithin(
+    lookup,
+    Promise.all([help.resolveNames(guild, data), help.resolveIds(guild, top.map(([id]) => id))]),
+    [{}, {}]
+  );
   const cur = data.currentSeason || {};
   return {
     base: BASE,
@@ -60,7 +80,7 @@ async function overviewModel(guild, data, now) {
       note: e.note || "",
       claimedBy: e.claimedBy ? names[e.claimedBy] || null : null,
     })),
-    topHelpers: top.map(([id, n]) => ({ name: helperNames[id], count: n })),
+    topHelpers: top.map(([id, n]) => ({ name: helperNames[id] || "—", count: n })),
   };
 }
 
@@ -198,7 +218,7 @@ function sortedByCategory(records) {
 // requested: "current" | "alltime" | a past season's endedTs (string). An
 // unknown value (a season that is gone, a hand-typed URL) falls back to the
 // current season with one explaining line.
-async function statsModel(guild, data, requested) {
+async function statsModel(guild, data, requested, lookup = {}) {
   const views = statsViews(data);
   const known = views.some((v) => v.value === requested);
   const view = known ? requested : "current";
@@ -234,7 +254,7 @@ async function statsModel(guild, data, requested) {
     }
     title = season ? `${help.seasonLabel(season)} (ended ${dateOf(season.endedTs)})` : "All-time";
   }
-  const names = await help.resolveIds(guild, helpers.map(([id]) => id));
+  const names = await namesWithin(lookup, help.resolveIds(guild, helpers.map(([id]) => id)), {});
   return {
     base: BASE,
     view,
@@ -245,7 +265,7 @@ async function statsModel(guild, data, requested) {
     empty,
     showWaiting: view === "current",
     categories,
-    helpers: helpers.map(([id, n], i) => ({ rank: i + 1, name: names[id], count: n })),
+    helpers: helpers.map(([id, n], i) => ({ rank: i + 1, name: names[id] || "—", count: n })),
   };
 }
 
@@ -467,8 +487,10 @@ function settingsRoutes(router, web) {
 // ---------- routes ----------
 
 function routes(router, web) {
+  const lookup = { deadline: (p) => web.withDeadline(p, "name lookup"), log: web.log };
+
   router.get("/", async (req, res) => {
-    const page = await overviewModel(req.guild, help.loadData(), web.now());
+    const page = await overviewModel(req.guild, help.loadData(), web.now(), lookup);
     return web.render(req, res, { title: "Overview", file: V("overview"), page });
   });
 
@@ -476,7 +498,7 @@ function routes(router, web) {
 
   router.get("/stats", async (req, res) => {
     const requested = typeof req.query.view === "string" ? req.query.view : "";
-    const page = await statsModel(req.guild, help.loadData(), requested);
+    const page = await statsModel(req.guild, help.loadData(), requested, lookup);
     return web.render(req, res, { title: "Stats", file: V("stats"), page });
   });
 

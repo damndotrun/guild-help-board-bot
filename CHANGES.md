@@ -31,7 +31,10 @@ tricky bits don't get re-broken.
   the process-wide `fixedWindowLimiter`, 30/min;
   `field`), `context.js` (what a module's `web.routes(router, web)` gets:
   `render`, `done`, `confirmed`, `changed`, `requireLevel`, `actor`, `field`,
-  `forgetLevels` + its ctx), `render.js` (the only EJS entry point),
+  `forgetLevels`, `withDeadline` + its ctx; the exported `withDeadline` is the
+  web's ONE deadline helper — the member lookup and the Overview/Stats name
+  lookups share it, `LOOKUP_TIMEOUT_MS` = 10 s; past it those pages show the
+  stored names / "—" and warn once), `render.js` (the only EJS entry point),
   `vendor.js` (htmx pin), `views/`, `public/` (`app.css`, vendored htmx).
 - **Help pages — `modules/help/web.js` + `modules/help/views/`:** view models
   (`overviewModel`, `seasonsModel`, `statsModel`, `categoriesModel`,
