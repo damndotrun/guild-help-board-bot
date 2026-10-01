@@ -168,13 +168,6 @@ default `help`) selects which modules run — e.g. `MODULES: "help"`. Leave it
 unset to run exactly the help board. Each module keeps its own `<name>.json` in
 `DATA_DIR`; the help board keeps `data.json`.
 
-**Optional: `PUBLIC_URL`.** The web admin's address, as a full `https://…` URL.
-It is unset by default and only matters once the web admin exists (M3): when
-set, officers see a **Web admin** link button on the `/menu` home screen; when
-unset the button is simply not shown. It is not needed for the bot to run, but a
-value that is not a valid `http(s)://…` URL stops the bot at startup with a
-message naming `PUBLIC_URL`.
-
 **Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
 the start command needs).
 
@@ -189,6 +182,59 @@ the start command needs).
 > `nudgeThresholdHours`, `lastNudgeTs`). Starting an older build against that
 > same file drops those fields on its first save. If you must roll back, restore
 > `data.json` from the `data.json.bak` sidecar first (or keep a copy).
+
+#### Web admin (optional)
+
+Officers and owners can manage the board in a
+browser — seasons, stats, categories, manager roles, the notify role and stale
+nudges. Everyone signs in with Discord; the bot checks their roles live on
+every page (a demoted officer loses access within about a minute). It runs
+inside the bot's process and is **off** when none of `WEB_PORT`,
+`DISCORD_CLIENT_SECRET` and `SESSION_SECRET` is set (the bot then runs exactly as
+before and never loads the web code). If you set **any one** of those three,
+**all four** variables below (with `PUBLIC_URL`) are required — a missing one
+stops the bot at startup with a message naming it. `PUBLIC_URL` alone does not
+turn the web admin on.
+
+| Variable | What |
+|---|---|
+| `PUBLIC_URL` | The web admin's address — the **origin** only: `https://host` (or `host:port`), no path, no query, no user name or password (e.g. `https://bot.example.com`). A value with a path or credentials stops the bot at startup. Also shows officers a **Web admin** button in `/menu`; set on its own (without the others) it only adds that button. |
+| `WEB_PORT` | The port it listens on inside the container, e.g. `3000`. |
+| `DISCORD_CLIENT_SECRET` | Developer Portal → your application → **OAuth2** → Client Secret. |
+| `SESSION_SECRET` | 32+ random characters, no spaces — generate your own: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Never reuse a value from an example or a public file: anyone who knows it can sign in as anyone. |
+
+1. Developer Portal → **OAuth2** → **Redirects** → add `<PUBLIC_URL>/auth/callback`
+   exactly (e.g. `https://bot.example.com/auth/callback`).
+2. Publish the port over **HTTPS** — this deployment uses a Cloudflare Tunnel
+   public hostname pointing at `http://<NAS-IP>:<host port>`. The proxy must send
+   `X-Forwarded-Proto: https` (cloudflared does); otherwise sign-in shows an error
+   that says so. Only proxies on loopback or private networks are trusted for it.
+3. In the TrueNAS YAML add the four variables under `environment:` and publish
+   the port, e.g. `ports: ["30071:3000"]`.
+4. Restart and look for `Web admin listening on port 3000 (https://…)` in the log.
+
+For a local run, `PUBLIC_URL=http://localhost:3000` + `WEB_PORT=3000` work too
+(add `http://localhost:3000/auth/callback` as a redirect as well).
+
+**Security notes.**
+- Sessions are a signed cookie (`bb_session`, HttpOnly, SameSite=Lax, Secure on
+  https) with a 30-day rolling expiry; it holds the Discord user id, never a
+  Discord token or the member's level. **Sign out** clears only that browser's
+  cookie. There is no server-side session list, so a copied cookie stays valid
+  until it expires — but it only opens anything while that person is still an
+  officer or owner.
+- **Rotating `SESSION_SECRET` signs everyone out** (use it as the global revoke).
+- Permissions are re-checked from Discord on every request (cached for up to
+  60 seconds), so a demoted or removed officer loses access within about a
+  minute — and a manager role changed on the Settings page applies on the
+  user's next request.
+- Sign-in limits: the bot allows 10 Discord token exchanges per minute per
+  client address and 30 per minute for the whole process. The per-client limit
+  stops one visitor from locking everyone out, but many addresses together can
+  still use up the shared 30 — so for a **public** deployment a per-IP
+  rate-limit rule at the proxy (e.g. a Cloudflare WAF rate-limiting rule)
+  covering both `/auth/login` and `/auth/callback` is **required**, not
+  optional.
 
 ### Option B — Railway / Render / VPS
 

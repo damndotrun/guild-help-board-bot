@@ -17,6 +17,21 @@ const { atLeast } = require("../../core/perms");
 
 const MAX_NOTE = 200;
 
+// The Discord season modals cap the name at 80 (setMaxLength); the web form
+// has no such cap of its own, so the action enforces it for every surface.
+const MAX_SEASON_NAME = 80;
+
+// null, or the error text for a season name that is too long or carries
+// control / bidi-control characters (help.hasUnprintable). Checked on the
+// trimmed name — the one that is stored (help.beginSeason / renameSeason trim).
+function seasonNameError(name) {
+  const trimmed = String(name ?? "").trim();
+  if (help.hasUnprintable(trimmed)) return help.PLAIN_TEXT_ERROR;
+  return trimmed.length > MAX_SEASON_NAME
+    ? `Keep the season name to ${MAX_SEASON_NAME} characters or fewer.`
+    : null;
+}
+
 const NEED = {
   member: "You can't do that.",
   officer: "You need the Manage Server permission or a manager role to do that.",
@@ -219,6 +234,8 @@ function closePendingCards(ctx, pending, data) {
 function newSeason(ctx, actor, { name } = {}) {
   const denied = gate(actor, "officer");
   if (denied) return denied;
+  const tooLong = seasonNameError(name);
+  if (tooLong) return fail("invalid", tooLong);
   const data = help.loadData();
   const pending = data.entries.filter((e) => !e.done);
   const archived = help.closeSeason(data, Date.now());
@@ -230,6 +247,8 @@ function newSeason(ctx, actor, { name } = {}) {
 function renameSeason(ctx, actor, { target, name } = {}) {
   const denied = gate(actor, "officer");
   if (denied) return denied;
+  const tooLong = seasonNameError(name);
+  if (tooLong) return fail("invalid", tooLong);
   const data = help.loadData();
   const r = help.renameSeason(data, target, name);
   if (!r.ok) return fail("invalid", "Couldn't rename that season (it may be gone, or the name was blank).");
@@ -353,6 +372,8 @@ function nudgeOff(ctx, actor) {
 
 module.exports = {
   MAX_NOTE,
+  MAX_SEASON_NAME,
+  seasonNameError,
   needHelp,
   sorted,
   closeAll,

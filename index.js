@@ -38,6 +38,17 @@ async function start() {
     process.exit(1);
   }
 
+  let web;
+  try {
+    web = config.parseWebConfig(process.env, publicUrl);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+  if (!web && publicUrl) {
+    console.warn("PUBLIC_URL is set but the web admin is off (no WEB_PORT / DISCORD_CLIENT_SECRET / SESSION_SECRET).");
+  }
+
   const modules = loadModules(config.parseModules(process.env.MODULES));
   console.log(`Modules: ${modules.map((m) => m.name).join(", ")}`);
 
@@ -57,9 +68,22 @@ async function start() {
   const route = createRouter({ modules: routed, ctxFor }); // throws on customId-prefix collisions
   collectCommands(routed); // throws on duplicate command names
 
+  // The web admin listens before the first side effect (bot.lock), so a busy
+  // port stops the start cleanly. Until the bot has logged in, getGuild() is
+  // null and every page answers 503 "not connected yet". Required lazily: a
+  // bot without web config never loads Express.
+  let webServer = null;
+  if (web) {
+    const { startWeb } = require("./web/server");
+    const getGuild = async () => (client.isReady() ? client.guilds.cache.get(process.env.GUILD_ID) ?? null : null);
+    webServer = await startWeb({ web, modules, ctxFor, perms, getGuild });
+    console.log(`Web admin listening on port ${web.port} (${web.origin})`);
+  }
+
   lock.acquireLock();
   for (const sig of ["SIGTERM", "SIGINT"]) {
     process.on(sig, () => {
+      if (webServer) webServer.close();
       lock.releaseLock();
       process.exit(0);
     });

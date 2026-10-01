@@ -825,3 +825,55 @@ test("/config category remove and nudge off via dispatch go through the actions"
   assert.equal(contentOf(off), "Stale nudges **off**.");
   assert.equal(help.loadData().nudgeChannelId, null);
 });
+
+// M3: the web form has no maxLength of its own — the action caps season names
+// for every surface (the Discord modals already capped them at 80).
+test("season names: over 80 characters → invalid for newSeason and renameSeason; nothing written", () => {
+  seed((d) => {
+    d.currentSeason = { name: "Old", startedTs: 1 };
+  });
+  const long = "x".repeat(81);
+  assert.equal(actions.newSeason(CTX, OFFICER, { name: long }).code, "invalid");
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: "current", name: long }).code, "invalid");
+  assert.equal(help.loadData().currentSeason.name, "Old");
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: "current", name: "y".repeat(80) }).ok, true);
+  assert.match(actions.seasonNameError(long), /80 characters or fewer/);
+  assert.equal(actions.seasonNameError(`  ${"z".repeat(80)}  `), null);
+  assert.equal(actions.newSeason(CTX, MEMBER, { name: long }).code, "forbidden", "the gate still comes first");
+});
+
+// F-M3: names reach Discord-rendered text (board/embed titles); a control or
+// bidi-override character could garble or spoof them — refused on every surface.
+// (bidi controls by code point: a literal one in source is invisible)
+const cp = (n) => String.fromCodePoint(n);
+const CONTROL_SAMPLES = ["a\u0000b", "a\nb", "a\tb", "a\u007fb", "a\u0085b", `a${cp(0x202e)}b`, `a${cp(0x202a)}b`, `a${cp(0x2066)}b`, `a${cp(0x2069)}b`];
+
+test("season names: control and bidi-control characters → invalid for newSeason and renameSeason; nothing written", () => {
+  seed((d) => {
+    d.currentSeason = { name: "Old", startedTs: 1 };
+  });
+  for (const bad of CONTROL_SAMPLES) {
+    const label = JSON.stringify(bad);
+    assert.equal(actions.seasonNameError(bad), help.PLAIN_TEXT_ERROR, label);
+    const r = actions.newSeason(CTX, OFFICER, { name: bad });
+    assert.deepEqual([r.code, r.error], ["invalid", help.PLAIN_TEXT_ERROR], label);
+    assert.equal(actions.renameSeason(CTX, OFFICER, { target: "current", name: bad }).code, "invalid", label);
+  }
+  assert.equal(help.loadData().currentSeason.name, "Old");
+  assert.equal(help.PLAIN_TEXT_ERROR, "Use letters, numbers and punctuation only.");
+  // ordinary text — accents, emoji (ZWJ sequences), RTL letters — is fine
+  for (const ok of ["Season 7 — Ünnep", "Spring 🏃‍♀️ run", "موسم ٣"]) assert.equal(actions.seasonNameError(ok), null, ok);
+  // surrounding whitespace is trimmed before storing, so it is not refused
+  assert.equal(actions.seasonNameError("\tSeason 8\n"), null);
+});
+
+test("category labels: control and bidi-control characters → invalid (help.addCategory, every surface); nothing written", () => {
+  seed(() => {});
+  const before = JSON.stringify(help.loadData().categories);
+  for (const bad of CONTROL_SAMPLES) {
+    const r = actions.addCategory(CTX, OWNER, { label: `Guild ${bad} Boss` });
+    assert.deepEqual([r.code, r.error], ["invalid", help.PLAIN_TEXT_ERROR], JSON.stringify(bad));
+  }
+  assert.equal(JSON.stringify(help.loadData().categories), before);
+  assert.equal(actions.addCategory(CTX, OWNER, { label: "Guild Boss — Ünnep" }).ok, true);
+});

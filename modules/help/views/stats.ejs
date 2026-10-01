@@ -1,0 +1,48 @@
+<h1>Stats</h1>
+<% if (page.notice) { %>
+<p class="notice notice-error" role="status">✕ <%= page.notice %></p>
+<% } %>
+<form method="get" action="<%= page.base %>/stats" class="inline card" hx-get="<%= page.base %>/stats" hx-trigger="change, submit" hx-push-url="true">
+  <label for="view">View</label>
+  <select id="view" name="view">
+    <% for (const v of page.views) { %>
+    <option value="<%= v.value %>"<% if (v.selected) { %> selected<% } %>><%= v.label %></option>
+    <% } %>
+  </select>
+  <button type="submit" class="btn btn-primary">Show</button>
+</form>
+<section class="card">
+  <h2><%= page.title %></h2>
+  <p><%= page.summary %></p>
+  <% if (page.empty) { %><p class="muted"><%= page.empty %></p><% } %>
+  <h2>Top helpers</h2>
+  <% if (page.helpers.length === 0) { %>
+  <p class="muted">No sorts recorded.</p>
+  <% } else { %>
+  <table class="cards">
+    <thead><tr><th>#</th><th>Helper</th><th>Sorted</th></tr></thead>
+    <tbody>
+      <% for (const h of page.helpers) { %>
+      <tr><td data-label="#"><%= h.rank %></td><td data-label="Helper"><%= h.name %></td><td data-label="Sorted"><%= h.count %></td></tr>
+      <% } %>
+    </tbody>
+  </table>
+  <% } %>
+  <h2>Requests by category</h2>
+  <% if (page.categories.length === 0) { %>
+  <p class="muted">No requests recorded.</p>
+  <% } else { %>
+  <table class="cards">
+    <thead><tr><th>Category</th><% if (page.showWaiting) { %><th>Waiting</th><% } %><th>Sorted</th></tr></thead>
+    <tbody>
+      <% for (const c of page.categories) { %>
+      <tr>
+        <td data-label="Category"><%= c.label %></td>
+        <% if (page.showWaiting) { %><td data-label="Waiting"><%= c.waiting %></td><% } %>
+        <td data-label="Sorted"><%= c.sorted %></td>
+      </tr>
+      <% } %>
+    </tbody>
+  </table>
+  <% } %>
+</section>

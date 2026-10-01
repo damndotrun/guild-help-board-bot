@@ -1,0 +1,71 @@
+<h1>Settings</h1>
+<section class="card">
+  <h2>Manager roles</h2>
+  <p class="muted">Members with one of these roles are officers. Members with Manage Server are always owners.</p>
+  <% if (page.managers.length === 0) { %>
+  <p class="muted">None yet — only members with Manage Server can manage the board.</p>
+  <% } else { %>
+  <ul>
+    <% for (const r of page.managers) { %>
+    <li>
+      <form method="post" hx-push-url="false" action="<%= page.base %>/settings/managers/remove" class="inline">
+        <span><%= r.name %></span>
+        <input type="hidden" name="roleId" value="<%= r.id %>">
+        <button type="submit" class="btn">Remove</button>
+      </form>
+    </li>
+    <% } %>
+  </ul>
+  <% } %>
+  <% if (page.addable.length > 0) { %>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/settings/managers/add" class="inline">
+    <label for="manager-add">Add a role</label>
+    <select id="manager-add" name="roleId" required>
+      <% for (const r of page.addable) { %>
+      <option value="<%= r.id %>"><%= r.name %></option>
+      <% } %>
+    </select>
+    <button type="submit" class="btn btn-primary">Add role</button>
+  </form>
+  <% } %>
+</section>
+<section class="card">
+  <h2>Notify role</h2>
+  <p class="muted">Pinged when someone posts a new request. <%= page.notify ? `Now: ${page.notify.name}.` : "Now: off." %></p>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/settings/notify" class="inline">
+    <label for="notify-role">Role</label>
+    <select id="notify-role" name="roleId">
+      <option value="off"<% if (!page.notify) { %> selected<% } %>>Off — no ping</option>
+      <% for (const r of page.notifyOptions) { %>
+      <option value="<%= r.id %>"<% if (r.selected) { %> selected<% } %>><%= r.name %></option>
+      <% } %>
+    </select>
+    <button type="submit" class="btn">Save</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Stale-request nudge</h2>
+  <p class="muted">
+    <% if (page.nudge.on) { %>On — a daily digest in #<%= page.nudge.channelName %> for requests waiting over <%= page.nudge.hours %>h.<% } else { %>Off.<% } %>
+  </p>
+  <% if (page.nudge.channels.length === 0) { %>
+  <p class="muted">The bot can't see any text channel to post in.</p>
+  <% } else { %>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/settings/nudge" class="inline">
+    <label for="nudge-channel">Channel</label>
+    <select id="nudge-channel" name="channelId" required>
+      <% for (const c of page.nudge.channels) { %>
+      <option value="<%= c.id %>"<% if (c.selected) { %> selected<% } %>>#<%= c.name %></option>
+      <% } %>
+    </select>
+    <label for="nudge-hours">After (hours)</label>
+    <input id="nudge-hours" type="number" name="hours" required min="1" max="<%= page.nudge.maxHours %>" step="1" value="<%= page.nudge.hours %>">
+    <button type="submit" class="btn"><%= page.nudge.on ? "Save" : "Turn on" %></button>
+  </form>
+  <% } %>
+  <% if (page.nudge.on) { %>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/settings/nudge/off">
+    <button type="submit" class="btn">Turn off</button>
+  </form>
+  <% } %>
+</section>

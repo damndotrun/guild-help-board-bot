@@ -1,0 +1,10 @@
+<% for (const group of nav) { %>
+<div class="nav-group">
+  <p class="nav-title"><%= group.title %></p>
+  <ul>
+    <% for (const item of group.items) { %>
+    <li><a href="<%= item.href %>"<% if (item.active) { %> aria-current="page"<% } %>><%= item.label %></a></li>
+    <% } %>
+  </ul>
+</div>
+<% } %>

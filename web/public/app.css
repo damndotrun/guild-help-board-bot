@@ -1,0 +1,82 @@
+/* Web admin — one small stylesheet, mobile first. No inline styles anywhere
+   (CSP style-src 'self'). */
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --text: #1d2126;
+  --muted: #5f6b7a;
+  --line: #d9dde3;
+  --accent: #4752c4;
+  --accent-text: #ffffff;
+  --danger: #c43d3d;
+  --ok: #1f7a4d;
+  --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --card: #1f2227;
+    --text: #e6e8eb;
+    --muted: #9aa4b1;
+    --line: #343941;
+    --accent: #6d78e8;
+    --danger: #e06464;
+    --ok: #4cc38a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
+h2 { font-size: 1.1rem; margin: 1.25rem 0 0.5rem; }
+
+.topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; padding: 0.6rem 1rem; background: var(--card); border-bottom: 1px solid var(--line); }
+.topbar .server { font-weight: 600; margin-right: auto; }
+.topbar .signout { margin: 0; }
+.badge { display: inline-block; padding: 0 0.5rem; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-size: 0.8rem; }
+
+.shell { display: block; padding: 1rem; }
+.sidebar { display: none; }
+.mobile-nav { background: var(--card); border-bottom: 1px solid var(--line); padding: 0.5rem 1rem; }
+.mobile-nav summary { cursor: pointer; font-weight: 600; }
+.nav-group { margin: 0.5rem 0; }
+.nav-title { margin: 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.nav-group ul { list-style: none; margin: 0.25rem 0 0; padding: 0; }
+.nav-group a { display: block; padding: 0.35rem 0.5rem; border-radius: var(--radius); text-decoration: none; color: var(--text); }
+.nav-group a[aria-current="page"] { background: var(--accent); color: var(--accent-text); }
+
+@media (min-width: 800px) {
+  .mobile-nav { display: none; }
+  .shell { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; padding: 1.5rem; }
+  .sidebar { display: block; }
+}
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin-bottom: 1rem; }
+.card.narrow { max-width: 34rem; }
+.muted { color: var(--muted); }
+.notice { margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-radius: var(--radius); border: 1px solid; }
+.notice-ok { color: var(--ok); border-color: var(--ok); }
+.notice-error { color: var(--danger); border-color: var(--danger); }
+.danger-zone { border-color: var(--danger); }
+
+.btn { display: inline-block; padding: 0.45rem 0.9rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+form.inline { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0; }
+label { display: block; font-size: 0.9rem; color: var(--muted); }
+input[type="text"], input[type="number"], select { font: inherit; padding: 0.4rem 0.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); color: var(--text); max-width: 100%; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+/* Phones: every table row becomes a small card; the cell's data-label is its heading. */
+@media (max-width: 640px) {
+  table.cards thead { display: none; }
+  table.cards tr { display: block; border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 0.5rem; padding: 0.25rem 0.5rem; }
+  table.cards td { display: block; border: 0; padding: 0.2rem 0; }
+  table.cards td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 0.85rem; }
+}
+
+.htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }

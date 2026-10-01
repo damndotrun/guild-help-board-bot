@@ -1,0 +1,19 @@
+<section class="card narrow danger-zone">
+  <h1><%= page.title %></h1>
+  <% if (page.expired) { %>
+  <p class="notice notice-error" role="status">✕ This confirmation expired — review and confirm again.</p>
+  <% } %>
+  <% for (const line of page.lines) { %>
+  <p><%= line %></p>
+  <% } %>
+  <form method="post" hx-push-url="false" action="<%= page.action %>" class="actions">
+    <% for (const [name, value] of Object.entries(page.fields || {})) { %>
+    <input type="hidden" name="<%= name %>" value="<%= value %>">
+    <% } %>
+    <input type="hidden" name="confirm" value="yes">
+    <input type="hidden" name="issued" value="<%= page.issued %>">
+    <input type="hidden" name="guard" value="<%= page.guard %>">
+    <button type="submit" class="btn btn-danger"><%= page.confirmLabel %></button>
+    <a class="btn" href="<%= page.cancelHref %>">Cancel</a>
+  </form>
+</section>
