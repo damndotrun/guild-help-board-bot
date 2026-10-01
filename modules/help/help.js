@@ -2751,4 +2751,5 @@ module.exports = {
   howItWorksEmbed,
   statsEmbedFor,
   memberName,
+  resolveIds,
 };
