@@ -423,6 +423,7 @@ function settingsRoutes(router, web) {
 
   router.post("/settings/managers/remove", (req, res) => {
     const roleId = web.field(req, "roleId");
+    if (roleId === "") return fail(req, res, gone); // missing or repeated field
     const r = actions.removeManagerRole(web, web.actor(req), { roleId });
     if (!r.ok) return fail(req, res, r.error);
     web.forgetLevels(); // after the action saved
@@ -430,11 +431,12 @@ function settingsRoutes(router, web) {
     return web.done(req, res, back, { ok: true, text: r.removed ? `${name} is no longer a manager role.` : `${name} wasn't a manager role.` });
   });
 
-  // roleId "" = request pings off.
+  // roleId "off" = request pings off. A missing or repeated field reads as ""
+  // and is refused, never taken for Off.
   router.post("/settings/notify", (req, res) => {
     const roleId = web.field(req, "roleId");
-    const role = roleId === "" ? null : pickedRole(req.guild, roleId);
-    if (roleId !== "" && !role) return fail(req, res, gone);
+    const role = roleId === "off" ? null : pickedRole(req.guild, roleId);
+    if (roleId !== "off" && !role) return fail(req, res, gone);
     const r = actions.setNotifyRole(web, web.actor(req), { role, guildId: req.guild.id });
     if (!r.ok) return fail(req, res, r.error);
     return web.done(req, res, back, { ok: true, text: role ? `New requests now ping ${roleName(req.guild, role.id)}.` : "Request pings are off." });

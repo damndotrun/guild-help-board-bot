@@ -11,8 +11,8 @@ const assert = require("node:assert/strict");
 const help = require("../modules/help/help");
 const helpWeb = require("../modules/help/web");
 const { normalizeModule } = require("../core/loader");
-const { startWeb, fakeGuild } = require("./fixtures/web-harness");
-const { CHANGED } = require("../web/context");
+const { startWeb, fakeGuild, GUILD_ID } = require("./fixtures/web-harness");
+const { CHANGED, NEED } = require("../web/context");
 
 const OFFICER = "100000000000000001";
 const OWNER = "100000000000000002";
@@ -712,7 +712,6 @@ const BOTROLE = "200000000000000003";
 const GENERAL = "300000000000000001";
 const VOICE = "300000000000000002";
 const NEWS = "300000000000000003";
-const { GUILD_ID } = require("./fixtures/web-harness");
 
 const settingsGuild = () =>
   fakeGuild({
@@ -755,7 +754,9 @@ test("Settings is owner-only: officer → 403 page and 403 on every POST, nothin
   const before = readData();
   await withWeb(async (w) => {
     await w.signIn(OFFICER);
-    assert.equal((await w.page("/help/settings")).res.status, 403);
+    const got = await w.page("/help/settings");
+    assert.equal(got.res.status, 403);
+    assert.ok(got.text.includes(NEED.owner), "the owner-only text");
     for (const [p, form] of [
       ["/help/settings/managers/add", { roleId: PINGS }],
       ["/help/settings/managers/remove", { roleId: MGR }],
@@ -763,7 +764,9 @@ test("Settings is owner-only: officer → 403 page and 403 on every POST, nothin
       ["/help/settings/nudge", { channelId: GENERAL, hours: "5" }],
       ["/help/settings/nudge/off", {}],
     ]) {
-      assert.equal((await w.post(p, form)).status, 403, p);
+      const r = await w.post(p, form);
+      assert.equal(r.status, 403, p);
+      assert.ok((await r.text()).includes(NEED.owner), p);
     }
   }, { guild: settingsGuild() });
   assert.equal(readData(), before);
@@ -824,7 +827,9 @@ test("Settings: add and remove a manager role — the officer's level changes on
 // M2b hardening (`unassignable` fails closed), checked for web callers: the
 // guild id always comes from the bot's guild, never from the form.
 test("Settings: @everyone, a bot-managed role or an unknown role id are refused as manager / notify role — nothing written", async () => {
-  seed();
+  seed((d) => {
+    d.notifyRoleId = PINGS; // a wrongly accepted "off" would clear it
+  });
   const before = readData();
   await withWeb(async (w) => {
     await w.signIn(OWNER);
@@ -836,6 +841,11 @@ test("Settings: @everyone, a bot-managed role or an unknown role id are refused 
       ["/help/settings/notify", { roleId: GUILD_ID }, /You can&#39;t set @everyone or a bot-managed role as the notify role\./],
       ["/help/settings/notify", { roleId: BOTROLE }, /You can&#39;t set @everyone or a bot-managed role as the notify role\./],
       ["/help/settings/notify", { roleId: "299999999999999999" }, /That role doesn&#39;t exist anymore/],
+      // A missing or repeated field reads as "" — never the Off choice.
+      ["/help/settings/notify", {}, /That role doesn&#39;t exist anymore/],
+      ["/help/settings/notify", [["roleId", PINGS], ["roleId", MGR]], /That role doesn&#39;t exist anymore/],
+      ["/help/settings/managers/remove", {}, /That role doesn&#39;t exist anymore/],
+      ["/help/settings/managers/remove", [["roleId", MGR], ["roleId", PINGS]], /That role doesn&#39;t exist anymore/],
     ];
     for (const [p, form, re] of cases) {
       const r = await w.submit(p, form);
@@ -852,7 +862,7 @@ test("Settings: notify role on and off", async () => {
     const on = await w.submit("/help/settings/notify", { roleId: PINGS });
     assert.match(on.next.text, /✓ New requests now ping Helpers &lt;b&gt;\./);
     assert.equal(help.loadData().notifyRoleId, PINGS);
-    const off = await w.submit("/help/settings/notify", { roleId: "" });
+    const off = await w.submit("/help/settings/notify", { roleId: "off" });
     assert.match(off.next.text, /✓ Request pings are off\./);
     assert.equal(help.loadData().notifyRoleId, null);
   }, { guild: settingsGuild() });

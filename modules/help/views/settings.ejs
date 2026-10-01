@@ -35,7 +35,7 @@
   <form method="post" action="<%= page.base %>/settings/notify" class="inline">
     <label for="notify-role">Role</label>
     <select id="notify-role" name="roleId">
-      <option value=""<% if (!page.notify) { %> selected<% } %>>Off — no ping</option>
+      <option value="off"<% if (!page.notify) { %> selected<% } %>>Off — no ping</option>
       <% for (const r of page.notifyOptions) { %>
       <option value="<%= r.id %>"<% if (r.selected) { %> selected<% } %>><%= r.name %></option>
       <% } %>
