@@ -13,7 +13,7 @@
           <% if (page.lastOne) { %>
           <span class="muted">The only active category — add another first.</span>
           <% } else { %>
-          <form method="post" action="<%= page.base %>/categories/archive" class="inline">
+          <form method="post" hx-push-url="false" action="<%= page.base %>/categories/archive" class="inline">
             <input type="hidden" name="categoryId" value="<%= c.id %>">
             <% if (c.open > 0) { %>
             <label for="moveto-<%= c.id %>">Move open requests to</label>
@@ -38,7 +38,7 @@
   <p class="muted">You have <%= page.maxActive %> active categories — archive one to add another.</p>
   <% } else { %>
   <p class="muted">Adding a category with an archived one's name brings it back.</p>
-  <form method="post" action="<%= page.base %>/categories/add" class="inline">
+  <form method="post" hx-push-url="false" action="<%= page.base %>/categories/add" class="inline">
     <label for="cat-label">Name</label>
     <input id="cat-label" type="text" name="label" required maxlength="<%= page.maxLabel %>">
     <label for="cat-emoji">Emoji</label>

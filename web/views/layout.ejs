@@ -30,7 +30,7 @@
     <%- include("partials/nav", { nav: layout.nav }) %>
   </nav>
   <% } %>
-  <main id="content" hx-boost="true" hx-target="#content" hx-select="#content" hx-swap="outerHTML" hx-push-url="false">
+  <main id="content" hx-boost="true" hx-target="#content" hx-select="#content" hx-swap="outerHTML">
     <% if (layout.notice) { %>
     <p class="notice <%= layout.notice.ok ? "notice-ok" : "notice-error" %>" role="status"><%= layout.notice.ok ? "✓" : "✕" %> <%= layout.notice.text %></p>
     <% } %>

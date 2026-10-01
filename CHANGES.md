@@ -64,6 +64,10 @@ tricky bits don't get re-broken.
   refused with a red line — never taken for Off or for a no-op remove. A
   manager-role change calls `web.forgetLevels()` (drops the 60 s level cache),
   so it applies on the affected user's next request.
+- **htmx history:** `<main>` is boosted and boosted GET links push the URL;
+  every POST `<form>` in a page carries `hx-push-url="false"` (a confirmation
+  page's URL is the POST action — refreshing it would 404). A test scans the
+  templates for it, so a new POST form must carry it too.
 - **Module contract:** `web: { title, nav: [{ label, path, minLevel }], routes(router, web) }`,
   mounted at `/<module>`; `minLevel` is `officer` (default) or `owner`;
   `auth`, `static`, `login`, `teammates` are reserved module names.

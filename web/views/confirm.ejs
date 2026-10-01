@@ -6,7 +6,7 @@
   <% for (const line of page.lines) { %>
   <p><%= line %></p>
   <% } %>
-  <form method="post" action="<%= page.action %>" class="actions">
+  <form method="post" hx-push-url="false" action="<%= page.action %>" class="actions">
     <% for (const [name, value] of Object.entries(page.fields || {})) { %>
     <input type="hidden" name="<%= name %>" value="<%= value %>">
     <% } %>

@@ -471,7 +471,7 @@ test("htmx: the vendored file is byte-exact 2.0.11, served from /static, loaded 
 
 // CSP forbids inline script/style: no template may carry one. Scans every
 // view the web renders (core + modules).
-test("templates: no inline <script>, style= attribute, on*= handler or hx-on anywhere", () => {
+function templateFiles() {
   const roots = [path.join(__dirname, "..", "web", "views"), path.join(__dirname, "..", "modules")];
   const files = [];
   const walk = (d) => {
@@ -482,6 +482,30 @@ test("templates: no inline <script>, style= attribute, on*= handler or hx-on any
     }
   };
   roots.forEach(walk);
+  return files;
+}
+
+// O-M4: hx-push-url="false" on <main> also stopped boosted GET links from
+// updating the address bar. Only the POST forms keep it off (a confirmation
+// page's URL is the POST action — refreshing it would 404).
+test("htmx history: boosted links push the URL; every POST form inside the content opts out", () => {
+  const layout = fs.readFileSync(path.join(__dirname, "..", "web", "views", "layout.ejs"), "utf8");
+  const main = layout.match(/<main\b[^>]*>/)[0];
+  assert.match(main, /hx-boost="true"/);
+  assert.doesNotMatch(main, /hx-push-url/, "no push-url override on <main>");
+  let forms = 0;
+  for (const f of templateFiles().filter((p) => path.basename(p) !== "layout.ejs")) {
+    for (const tag of fs.readFileSync(f, "utf8").match(/<form\b[^>]*>/g) || []) {
+      if (!/method="post"/i.test(tag)) continue;
+      forms += 1;
+      assert.match(tag, /hx-push-url="false"/, `${path.basename(f)}: ${tag}`);
+    }
+  }
+  assert.ok(forms >= 10, `found ${forms} POST forms`);
+});
+
+test("templates: no inline <script>, style= attribute, on*= handler or hx-on anywhere", () => {
+  const files = templateFiles();
   assert.ok(files.length >= 5);
   for (const f of files) {
     const src = fs.readFileSync(f, "utf8");
@@ -547,5 +571,26 @@ test("unknown path when signed in → 404 page; a too-large form → 413 page", 
     const big = await w.post("/teammates", { x: "y".repeat(20_000) });
     assert.equal(big.status, 413);
     assert.match(await big.text(), /That form was too large\./);
+  });
+});
+
+test("the officers-only 403 text has one source (context NEED.officer)", () => {
+  const { TEXT } = require("../web/server");
+  const { NEED } = require("../web/context");
+  assert.equal(TEXT.officersOnly, NEED.officer);
+  const src = fs.readFileSync(path.join(__dirname, "..", "web", "server.js"), "utf8");
+  assert.equal(src.split(NEED.officer).length - 1, 0, "the literal is not repeated in server.js");
+});
+
+test("a missing /static file → the not-found page (not 'couldn't be processed'), signed in or not", async () => {
+  await withWeb({}, async (w) => {
+    for (const signedIn of [false, true]) {
+      if (signedIn) await w.signIn(OWNER);
+      const res = await w.request("/static/nope.css");
+      assert.equal(res.status, 404);
+      const text = await res.text();
+      assert.match(text, /There&#39;s no page here\.|There's no page here\./);
+      assert.doesNotMatch(text, /couldn.*t be processed/);
+    }
   });
 });

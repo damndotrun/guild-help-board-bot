@@ -39,7 +39,7 @@ const LOOKUP_TIMEOUT_MS = 10_000;
 const COMING_SOON = Object.freeze([{ title: "Teammates", label: "Coming soon", href: "/teammates" }]);
 
 const TEXT = Object.freeze({
-  officersOnly: "This page is for officers and owners.",
+  officersOnly: NEED.officer, // one text: the nav gate and requireLevel use it too
   notReady: "The bot isn't connected to Discord yet — try again in a minute.",
   lookupFailed: "Couldn't check your role on Discord right now — try again in a minute.",
   notFound: "There's no page here.",
@@ -328,6 +328,7 @@ function createWebApp({
     let text = err.publicMessage;
     if (!text) {
       if (status === 413) text = TEXT.tooLarge;
+      else if (status === 404) text = TEXT.notFound; // e.g. a missing /static file
       else if (status < 500) text = TEXT.badRequest;
       else text = TEXT.broken;
     }
