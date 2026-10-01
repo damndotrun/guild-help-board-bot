@@ -189,17 +189,19 @@ Officers and owners can manage the board in a
 browser — seasons, stats, categories, manager roles, the notify role and stale
 nudges. Everyone signs in with Discord; the bot checks their roles live on
 every page (a demoted officer loses access within about a minute). It runs
-inside the bot's process and is **off** when none of the variables below is set
-(the bot then runs exactly as before and never loads the web code). If you set
-**any one** of them, **all** are required — a missing one stops the bot at
-startup with a message naming it.
+inside the bot's process and is **off** when none of `WEB_PORT`,
+`DISCORD_CLIENT_SECRET` and `SESSION_SECRET` is set (the bot then runs exactly as
+before and never loads the web code). If you set **any one** of those three,
+**all four** variables below (with `PUBLIC_URL`) are required — a missing one
+stops the bot at startup with a message naming it. `PUBLIC_URL` alone does not
+turn the web admin on.
 
 | Variable | What |
 |---|---|
 | `PUBLIC_URL` | The web admin's address — the **origin** only: `https://host` (or `host:port`), no path, no query, no user name or password (e.g. `https://bot.example.com`). A value with a path or credentials stops the bot at startup. Also shows officers a **Web admin** button in `/menu`; set on its own (without the others) it only adds that button. |
 | `WEB_PORT` | The port it listens on inside the container, e.g. `3000`. |
 | `DISCORD_CLIENT_SECRET` | Developer Portal → your application → **OAuth2** → Client Secret. |
-| `SESSION_SECRET` | 32+ random characters: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `SESSION_SECRET` | 32+ random characters, no spaces — generate your own: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Never reuse a value from an example or a public file: anyone who knows it can sign in as anyone. |
 
 1. Developer Portal → **OAuth2** → **Redirects** → add `<PUBLIC_URL>/auth/callback`
    exactly (e.g. `https://bot.example.com/auth/callback`).

@@ -66,6 +66,15 @@ function parseWebConfig(env, publicUrl) {
   const port = /^\d{1,5}$/.test(portRaw) ? Number(portRaw) : NaN;
   if (!(port >= 1 && port <= 65535)) throw new Error("WEB_PORT must be a port number from 1 to 65535.");
   const sessionSecret = String(env.SESSION_SECRET).trim();
+  // A generated secret (hex/base64) never contains whitespace; a value that does
+  // is almost certainly a pasted placeholder or command line — such as an
+  // uncommented example from a public file, i.e. a key anyone could sign with.
+  if (/\s/.test(sessionSecret)) {
+    throw new Error(
+      "SESSION_SECRET must not contain spaces — it looks like a placeholder, not a generated secret. Generate one with: " +
+        `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+    );
+  }
   if (sessionSecret.length < SESSION_SECRET_MIN) {
     throw new Error(
       `SESSION_SECRET must be at least ${SESSION_SECRET_MIN} characters. Generate one with: ` +

@@ -15,9 +15,13 @@ tricky bits don't get re-broken.
   Sign-in with Discord (OAuth `identify`); the bot decides the level from the
   member's live roles on every request (`guild.members.fetch({ user, force: true })`,
   60 s cache). **Off unless configured** (`PUBLIC_URL`, `WEB_PORT`,
-  `DISCORD_CLIENT_SECRET`, `SESSION_SECRET`; any web variable set → all required,
-  `core/config.js` `parseWebConfig`): without them the bot runs exactly as
-  before and never loads Express.
+  `DISCORD_CLIENT_SECRET`, `SESSION_SECRET`; any of `WEB_PORT` /
+  `DISCORD_CLIENT_SECRET` / `SESSION_SECRET` set → all four required,
+  `PUBLIC_URL` alone only adds the `/menu` button; `core/config.js`
+  `parseWebConfig`): without them the bot runs exactly as before and never
+  loads Express. A `SESSION_SECRET` containing whitespace is refused (a
+  pasted placeholder or example line, not a generated secret); `.env.example`
+  ships it empty.
 - **`web/` code map:** `server.js` (Express 5 app: helmet CSP, sessions, CSRF
   guard, sign-in routes, officer gate, layout, error pages, module mounting;
   `startWeb`), `oauth.js`, `access.js` (live level + cache), `session.js`

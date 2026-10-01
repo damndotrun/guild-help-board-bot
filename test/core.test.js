@@ -111,6 +111,27 @@ test("parseWebConfig: no error message contains the client secret or the session
   assert.throws(() => parseWebConfig({ WEB_PORT: "3000", DISCORD_CLIENT_SECRET: "fake-client-secret-xyz" }, "https://bb.example.com"), leaks);
 });
 
+test("parseWebConfig: a SESSION_SECRET with whitespace is refused (the old .env.example line, uncommented, was a PUBLIC key) — value never echoed", () => {
+  const OLD_EXAMPLE = `generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`;
+  assert.ok(OLD_EXAMPLE.length >= 32, "long enough to pass the length check on its own");
+  for (const bad of [OLD_EXAMPLE, `${"a".repeat(20)} ${"b".repeat(20)}`, `${"a".repeat(20)}\t${"b".repeat(20)}`]) {
+    assert.throws(
+      () => parseWebConfig({ ...FULL, SESSION_SECRET: bad }, "https://bb.example.com"),
+      (e) => /SESSION_SECRET/.test(e.message) && /space/i.test(e.message) && !e.message.includes(bad) && !e.message.includes("generate:"),
+      JSON.stringify(bad)
+    );
+  }
+  // surrounding whitespace is still trimmed (a pasted value with a trailing newline keeps working)
+  assert.equal(parseWebConfig({ ...FULL, SESSION_SECRET: ` ${SECRET}\n` }, "https://bb.example.com").sessionSecret, SECRET);
+});
+
+test(".env.example: SESSION_SECRET is commented out with an EMPTY value; the generate command is its own comment line", () => {
+  const lines = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8").split(/\r?\n/);
+  const assigns = lines.filter((l) => /^#?\s*SESSION_SECRET\s*=/.test(l));
+  assert.deepEqual(assigns.map((l) => l.trim()), ["# SESSION_SECRET="]);
+  assert.ok(lines.some((l) => /^#.*randomBytes\(32\)/.test(l) && !/SESSION_SECRET\s*=/.test(l)), "the generate command is on its own comment line");
+});
+
 test("parseWebConfig: WEB_PORT must be 1–65535 digits", () => {
   for (const bad of ["0", "65536", "30x", "-1", "3000.5"]) {
     assert.throws(() => parseWebConfig({ ...FULL, WEB_PORT: bad }, "https://bb.example.com"), /WEB_PORT/, bad);
