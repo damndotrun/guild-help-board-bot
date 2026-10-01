@@ -6,12 +6,14 @@
 // own) plus an EJS fragment in ./views that sees only `page`.
 const path = require("node:path");
 const help = require("./help");
+const actions = require("./actions");
 
 const BASE = "/help";
 const V = (name) => path.join(__dirname, "views", `${name}.ejs`);
 
 const nav = [
   { label: "Overview", path: "/", minLevel: "officer" },
+  { label: "Seasons", path: "/seasons", minLevel: "officer" },
   { label: "Stats", path: "/stats", minLevel: "officer" },
 ];
 
@@ -24,6 +26,9 @@ function dateOf(ts) {
   const day = d.toISOString().slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : "—"; // years beyond 9999 print with a sign
 }
+
+// Shown by Stats (unknown ?view=) and Seasons (unknown rename target).
+const SEASON_GONE = "That season isn't available anymore.";
 
 function catLabel(data, id) {
   const c = help.catOf(data, id);
@@ -56,6 +61,110 @@ async function overviewModel(guild, data, now) {
   };
 }
 
+// ---------- Seasons ----------
+
+// Past seasons: "requests · helped" from the per-request records; a season
+// from before the records existed shows only its archived sorted total.
+function seasonsModel(data) {
+  const cur = data.currentSeason || {};
+  const past = pastSeasons(data).map((s) => {
+    const recs = help.recordsForSeason(data.records, s.startedTs);
+    return {
+      target: String(s.endedTs),
+      name: help.seasonLabel(s),
+      ended: dateOf(s.endedTs),
+      requests: recs.length > 0 ? recs.length : null,
+      helped: recs.length > 0 ? recs.filter((r) => r.resolution === "sorted").length : s.sortedTotal || 0,
+    };
+  });
+  return {
+    base: BASE,
+    maxName: actions.MAX_SEASON_NAME,
+    current: {
+      name: help.seasonLabel(cur),
+      named: !!cur.name,
+      started: dateOf(cur.startedTs),
+      sorted: data.entries.filter((e) => e.done).length,
+      waiting: data.entries.filter((e) => !e.done).length,
+    },
+    past,
+  };
+}
+
+const waitingLine = (n) => (n === 1 ? "1 request is" : `${n} requests are`);
+
+// The state a Start-new-season / Reset confirmation is about. Every close or
+// begin moves it (closeSeason always stamps a new startedTs, and archives
+// bump the count), so a replayed confirmation no longer matches.
+const seasonGuard = (data) => `${(data.seasons || []).length}:${data.currentSeason?.startedTs ?? "-"}`;
+
+function seasonRoutes(router, web) {
+  const back = `${BASE}/seasons`;
+  const fail = (req, res, text) => web.done(req, res, back, { ok: false, text });
+
+  router.get("/seasons", (req, res) =>
+    web.render(req, res, { title: "Seasons", file: V("seasons"), page: seasonsModel(help.loadData()) })
+  );
+
+  // target: "current" or a past season's endedTs.
+  router.post("/seasons/rename", (req, res) => {
+    const raw = web.field(req, "target");
+    const target = raw === "current" ? "current" : /^\d{1,16}$/.test(raw) ? Number(raw) : null;
+    if (target === null) return fail(req, res, SEASON_GONE);
+    const name = web.field(req, "name");
+    const r = actions.renameSeason(web, web.actor(req), { target, name });
+    if (!r.ok) return fail(req, res, r.error);
+    return web.done(req, res, back, { ok: true, text: `Renamed to ${name.trim()}.` }, r.effects);
+  });
+
+  router.post("/seasons/new", async (req, res) => {
+    const name = web.field(req, "name").trim();
+    if (!name) return fail(req, res, "Give the new season a name.");
+    const tooLong = actions.seasonNameError(name);
+    if (tooLong) return fail(req, res, tooLong);
+    const data = help.loadData();
+    const waiting = data.entries.filter((e) => !e.done).length;
+    const ok = await web.confirmed(req, res, {
+      title: "Start a new season?",
+      lines: [
+        `New season: ${name}`,
+        `Starting a new season closes every pending request — ${waitingLine(waiting)} waiting right now. They move to history as unresolved. This can't be undone.`,
+      ],
+      action: `${BASE}/seasons/new`,
+      fields: { name },
+      confirmLabel: "Start new season",
+      cancelHref: back,
+      guard: seasonGuard(data),
+    });
+    if (!ok) return undefined;
+    const r = actions.newSeason(web, web.actor(req), { name });
+    if (!r.ok) return fail(req, res, r.error);
+    const archived = r.archived ? "Previous season archived, board cleared." : "Board cleared.";
+    return web.done(req, res, back, { ok: true, text: `Started season ${help.seasonLabel(r.data.currentSeason)}. ${archived}` }, r.effects);
+  });
+
+  router.post("/seasons/reset", async (req, res) => {
+    const data = help.loadData();
+    const waiting = data.entries.filter((e) => !e.done).length;
+    const ok = await web.confirmed(req, res, {
+      title: "Reset the season?",
+      lines: [
+        `This archives the current season and clears the board. ${waitingLine(waiting)} still waiting — they will be closed.`,
+        "This can't be undone.",
+      ],
+      action: `${BASE}/seasons/reset`,
+      fields: {},
+      confirmLabel: "Reset season",
+      cancelHref: back,
+      guard: seasonGuard(data),
+    });
+    if (!ok) return undefined;
+    const r = actions.reset(web, web.actor(req));
+    if (!r.ok) return fail(req, res, r.error);
+    return web.done(req, res, back, { ok: true, text: "Season reset — the board is cleared." }, r.effects);
+  });
+}
+
 // ---------- Stats ----------
 
 // The ended seasons, newest first (those without a usable endedTs can't be
@@ -86,7 +195,7 @@ async function statsModel(guild, data, requested) {
   const views = statsViews(data);
   const known = views.some((v) => v.value === requested);
   const view = known ? requested : "current";
-  const notice = requested && !known ? "That season isn't available anymore. Showing the current season." : null;
+  const notice = requested && !known ? `${SEASON_GONE} Showing the current season.` : null;
   let title;
   let helpers;
   let categories;
@@ -141,6 +250,8 @@ function routes(router, web) {
     return web.render(req, res, { title: "Overview", file: V("overview"), page });
   });
 
+  seasonRoutes(router, web);
+
   router.get("/stats", async (req, res) => {
     const requested = typeof req.query.view === "string" ? req.query.view : "";
     const page = await statsModel(req.guild, help.loadData(), requested);
@@ -148,4 +259,4 @@ function routes(router, web) {
   });
 }
 
-module.exports = { BASE, title: "Help board", nav, routes, dateOf, pastSeasons, overviewModel, statsViews, statsModel };
+module.exports = { BASE, title: "Help board", nav, routes, dateOf, pastSeasons, overviewModel, seasonsModel, statsViews, statsModel };

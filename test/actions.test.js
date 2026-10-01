@@ -825,3 +825,19 @@ test("/config category remove and nudge off via dispatch go through the actions"
   assert.equal(contentOf(off), "Stale nudges **off**.");
   assert.equal(help.loadData().nudgeChannelId, null);
 });
+
+// M3: the web form has no maxLength of its own — the action caps season names
+// for every surface (the Discord modals already capped them at 80).
+test("season names: over 80 characters → invalid for newSeason and renameSeason; nothing written", () => {
+  seed((d) => {
+    d.currentSeason = { name: "Old", startedTs: 1 };
+  });
+  const long = "x".repeat(81);
+  assert.equal(actions.newSeason(CTX, OFFICER, { name: long }).code, "invalid");
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: "current", name: long }).code, "invalid");
+  assert.equal(help.loadData().currentSeason.name, "Old");
+  assert.equal(actions.renameSeason(CTX, OFFICER, { target: "current", name: "y".repeat(80) }).ok, true);
+  assert.match(actions.seasonNameError(long), /80 characters or fewer/);
+  assert.equal(actions.seasonNameError(`  ${"z".repeat(80)}  `), null);
+  assert.equal(actions.newSeason(CTX, MEMBER, { name: long }).code, "forbidden", "the gate still comes first");
+});
