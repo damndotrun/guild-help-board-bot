@@ -404,7 +404,7 @@ test("Seasons: rename refusals — unknown/garbage target, blank or 81-char name
       [{ target: "current", name: "   " }, /Couldn&#39;t rename that season/],
       [{ target: "current", name: "x".repeat(81) }, /80 characters or fewer/],
       [{ target: "current", name: "Win\u0000ter" }, /Use letters, numbers and punctuation only\./],
-      [{ target: "current", name: "Win⁦ter" }, /Use letters, numbers and punctuation only\./],
+      [{ target: "current", name: `Win${String.fromCodePoint(0x2066)}ter` }, /Use letters, numbers and punctuation only\./],
     ];
     for (const [form, re] of cases) {
       const r = await w.submit("/help/seasons/rename", form);
@@ -635,7 +635,7 @@ test("Categories: add (escaped on the page), refusals as one error line, an arch
     const long = await w.submit("/help/categories/add", { label: "x".repeat(61) });
     assert.match(long.next.text, /60 characters or fewer/);
     const before = help.loadData().categories.length;
-    const bidi = await w.submit("/help/categories/add", { label: "Tower‮evil" });
+    const bidi = await w.submit("/help/categories/add", { label: `Tower${String.fromCodePoint(0x202e)}evil` });
     assert.match(bidi.next.text, /Use letters, numbers and punctuation only\./);
     assert.equal(help.loadData().categories.length, before, "nothing written");
     const back = await w.submit("/help/categories/add", { label: "raid", emoji: "" });

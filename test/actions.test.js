@@ -844,7 +844,9 @@ test("season names: over 80 characters → invalid for newSeason and renameSeaso
 
 // F-M3: names reach Discord-rendered text (board/embed titles); a control or
 // bidi-override character could garble or spoof them — refused on every surface.
-const CONTROL_SAMPLES = ["a\u0000b", "a\nb", "a\tb", "a\u007fb", "a\u0085b", "a‮b", "a‪b", "a⁦b", "a⁩b"];
+// (bidi controls by code point: a literal one in source is invisible)
+const cp = (n) => String.fromCodePoint(n);
+const CONTROL_SAMPLES = ["a\u0000b", "a\nb", "a\tb", "a\u007fb", "a\u0085b", `a${cp(0x202e)}b`, `a${cp(0x202a)}b`, `a${cp(0x2066)}b`, `a${cp(0x2069)}b`];
 
 test("season names: control and bidi-control characters → invalid for newSeason and renameSeason; nothing written", () => {
   seed((d) => {
