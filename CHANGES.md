@@ -8,6 +8,76 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-10-01 — M3 web admin
+
+- **What:** officers and owners manage the help board in a browser —
+  Overview, Seasons, Stats (officers) and Categories, Settings (owners).
+  Sign-in with Discord (OAuth `identify`); the bot decides the level from the
+  member's live roles on every request (`guild.members.fetch({ user, force: true })`,
+  60 s cache). **Off unless configured** (`PUBLIC_URL`, `WEB_PORT`,
+  `DISCORD_CLIENT_SECRET`, `SESSION_SECRET`; any web variable set → all required,
+  `core/config.js` `parseWebConfig`): without them the bot runs exactly as
+  before and never loads Express.
+- **`web/` code map:** `server.js` (Express 5 app: helmet CSP, sessions, CSRF
+  guard, sign-in routes, officer gate, layout, error pages, module mounting;
+  `startWeb`), `oauth.js`, `access.js` (live level + cache), `session.js`
+  (cookie-session, server-side rolling expiry, OAuth state, notice),
+  `security.js` (`TRUST_PROXY`, `sameOriginGuard`, token-exchange limiter,
+  `field`), `context.js` (what a module's `web.routes(router, web)` gets:
+  `render`, `done`, `confirmed`, `changed`, `requireLevel`, `actor`, `field`,
+  `forgetLevels` + its ctx), `render.js` (the only EJS entry point),
+  `vendor.js` (htmx pin), `views/`, `public/` (`app.css`, vendored htmx).
+- **Help pages — `modules/help/web.js` + `modules/help/views/`:** view models
+  (`overviewModel`, `seasonsModel`, `statsModel`, `categoriesModel`,
+  `settingsModel`) and routes under `/help`; every POST calls
+  `modules/help/actions.js`, answers 303 with one notice line, and runs the
+  action's `effects` after the response. Helpers there: `dateOf` (a timestamp →
+  the date shown on the pages), `pastSeasons` (the ended seasons, newest first,
+  that the Stats picker and the rename form can address), `failTo` (a POST's
+  refusal: one red line on the given page, nothing written).
+- **Confirmations (Start new season, Reset season, Archive category):**
+  `web.confirmed(req, res, spec)` is stateless two-step. The first POST
+  answers the confirmation page (200, nothing written) with hidden fields plus
+  `issued` (now) and `guard`; the confirming POST (`confirm=yes`) must carry an
+  `issued` that is at most 5 minutes old (`CONFIRM_TTL_MS`) and not in the
+  future, otherwise the page is shown again with "This confirmation expired".
+  `spec.guard` is **required** (`confirmed()` throws without it): the handler
+  computes it from fresh data on every call (`seasonGuard` = archived-season
+  count + the current season's `startedTs`; `categoryGuard` = the category's
+  active/archived state, the ids of its open requests, the duplicates the
+  archive would drop, and whether the move-to target is still active), and a confirming POST whose
+  guard no longer matches — back button, second tab, double click, after the
+  action already ran — is refused by `web.changed`: one red "Already done or
+  changed" line, nothing runs twice. Call the action right after `confirmed`
+  returns true, with no `await` in between.
+- **Settings page (owner):** the notify role's **Off** is an explicit choice
+  (`roleId=off`); a missing or repeated form field reads as `""` and is
+  refused with a red line — never taken for Off or for a no-op remove. A
+  manager-role change calls `web.forgetLevels()` (drops the 60 s level cache),
+  so it applies on the affected user's next request.
+- **Module contract:** `web: { title, nav: [{ label, path, minLevel }], routes(router, web) }`,
+  mounted at `/<module>`; `minLevel` is `officer` (default) or `owner`;
+  `auth`, `static`, `login`, `teammates` are reserved module names.
+- **Behaviour changes:** `PUBLIC_URL` must be a bare `http(s)://host[:port]`
+  origin — a path, `http:foo` or credentials stop the bot at startup (Discord
+  rejected such values in the menu's link button); season names over 80
+  characters are refused by the action (the Discord modals already capped them).
+- **Sessions & revocation:** the cookie is signed, not encrypted, and carries
+  only `{ userId, exp }` (plus transient OAuth state / notice); `exp` is a
+  rolling 30 days checked server-side. There is no server-side session store,
+  so Sign out only clears that browser; rotating `SESSION_SECRET` is the global
+  revoke. Access is re-derived from Discord every request (60 s cache), so a
+  demotion bites within about a minute.
+- **Upgrading htmx:** replace `web/public/vendor/htmx-<version>.min.js` with the
+  npm package's `dist/htmx.min.js`, then update `web/vendor.js` together:
+  `sha256` (`sha256sum <file>`) and `integrity`
+  (`sha384-` + `openssl dgst -sha384 -binary <file> | openssl base64 -A`).
+- **Dependencies:** express 5.2.1, ejs 6.0.1, cookie-session 2.1.1, helmet
+  8.3.0; undici 6.29.0 (`npm audit fix`). CI now fails on a high-severity
+  production advisory (`npm audit --omit=dev --audit-level=high`).
+
+---
+
 ## 2026-09-30 — M2b `/menu` core
 
 - **`/menu`** (and a **Menu** button on the pinned board, next to Need help)
@@ -588,6 +658,17 @@ fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
    actor's level itself (menu filtering is a convenience), runs
    `loadData()` → `saveData()` without an `await`, and returns its slow REST
    as `effects` for the caller to run after the ack.
+9. **The web never writes data itself and never trusts the page.** Every POST
+   calls a module action (which checks the level itself); the level comes from
+   the bot's live member fetch, never from the session or the form; only POST
+   changes anything, and `sameOriginGuard` refuses a POST whose `Origin` is not
+   `PUBLIC_URL`. Templates get exactly `{ layout, page }` through `renderView`
+   (never `res.render`, never request data as a top-level local); `<%-` only
+   for HTML our own code rendered; no inline script or style (CSP). A
+   destructive POST goes through `web.confirmed` with a `guard` computed from
+   fresh data, so a stale or replayed confirmation writes nothing. Keep
+   `Referrer-Policy: same-origin` — `no-referrer` makes browsers send
+   `Origin: null` on form POSTs and the CSRF guard would refuse every one.
 
 ## Updating
 

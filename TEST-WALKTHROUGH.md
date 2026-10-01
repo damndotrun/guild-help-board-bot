@@ -265,6 +265,72 @@ it, and the officer steps need a request the 2nd account has posted).
 
 ---
 
+## Phase 11 — Web admin in a browser (M3, test server)
+
+Against the `dev` bot at **https://bot-test.damndot.run**. You need your owner
+account, an account that only holds a manager role (**officer account**) and
+the **2nd account** without one. Use a phone for the last block.
+
+**Sign-in**
+- [ ] Open the address → **Sign in with Discord** → Discord asks to authorize
+      **BB Bot Test** (first time only) → back on **Help board › Overview**; the
+      header shows **BB Test**, **Owner** and your name.
+- [ ] **Sign out** → the sign-in page. Sign in again → straight back, no
+      consent screen this time.
+- [ ] **(2nd account)** sign in → "This page is for officers and owners." with a
+      **Sign out** button and no sidebar.
+- [ ] In Discord, `/menu` as an officer → a **Web admin** button that opens the
+      address; the 2nd account has no such button.
+
+**Officer account**
+- [ ] Sidebar: Overview, Seasons, Stats, Teammates › Coming soon — **no**
+      Categories / Settings. Typing `/help/settings` in the address bar →
+      "Only members with Manage Server can change bot settings."
+- [ ] Overview lists the open requests (have the 2nd account post one first)
+      with waiting time and note.
+- [ ] Stats: switch the view (current / all-time / a past season) — the page
+      content changes while the header and sidebar stay in place.
+- [ ] Seasons → rename the current season → "✓ Renamed to …"; the board in
+      Discord shows it after its next refresh.
+
+**Owner**
+- [ ] ⚠️ Seasons → Start new season → a confirmation page with the waiting
+      count → **Cancel** changes nothing → again → **Start new season** →
+      "✓ Started season …"; the pending request cards in Discord say
+      "Season reset — this request is closed."
+- [ ] **Replay is refused.** Seasons → Start new season (same name) in **two
+      tabs**, so both show the confirmation page. Confirm in the first tab →
+      "✓ Started season …". Then press **Start new season** in the second tab
+      → "✕ Already done or changed — nothing happened." and **no** second
+      season was started. (Pressing **Back** to an old confirmation page and
+      confirming again, or double-clicking the button, ends the same way.)
+- [ ] ⚠️ Seasons → Reset season → confirmation → confirm → "✓ Season reset — the board is cleared."
+- [ ] Leave a confirmation page open **6 minutes**, then confirm → "This
+      confirmation expired — review and confirm again."; nothing changed.
+- [ ] Categories → add "Web test" with an emoji → it appears on the board's
+      Need help buttons. Post a request in it (2nd account), then archive it
+      with **Move open requests to** → the confirmation says where it moves →
+      confirm → the request card shows the new category. Press **Back** to the
+      confirmation and confirm again → "Already done or changed — nothing
+      happened."
+- [ ] Settings → add the officer account's role as a manager role, remove it →
+      the officer account loses the officer pages on its next click. Notify
+      role → pick a role → a new request pings it; set it back to **Off — no
+      ping** (an explicit choice in the list). Nudge → a channel + 1 hour →
+      "✓ Stale nudges on …"; **Turn off**.
+- [ ] Every change shows **one** green line at the top; a refused one (e.g. a
+      category named just `!!!`) shows **one** red line and changes nothing.
+
+**Demotion while signed in**
+- [ ] Signed in as the officer account, have the owner take the manager role
+      away in Discord → within about a minute the next click shows the 403 page.
+
+**Phone**
+- [ ] The sidebar is a **Menu** drop-down at the top; tables turn into cards;
+      buttons are easy to tap; nothing scrolls sideways.
+
+---
+
 ## What this can't cover by hand
 
 These are verified in code / at the host, not clickable here — listed so you know
