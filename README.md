@@ -168,7 +168,24 @@ default `help`) selects which modules run — e.g. `MODULES: "help"`. Leave it
 unset to run exactly the help board. Each module keeps its own `<name>.json` in
 `DATA_DIR`; the help board keeps `data.json`.
 
-**Optional: the web admin.** Officers and owners can manage the board in a
+**Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
+the start command needs).
+
+> Run only **one** instance of the bot. Multiple instances sharing one
+> `data.json` (e.g. `pm2` cluster mode, or a second copy elsewhere) can
+> overwrite each other.
+
+> **⚠️ Don't roll back to a version older than the current release.** The
+> bot only keeps the `data.json` fields it knows about when it saves. Later
+> builds added fields the older ones don't recognise — the append-only `records`
+> log (helper-stats) and the stale-nudge settings (`nudgeChannelId`,
+> `nudgeThresholdHours`, `lastNudgeTs`). Starting an older build against that
+> same file drops those fields on its first save. If you must roll back, restore
+> `data.json` from the `data.json.bak` sidecar first (or keep a copy).
+
+#### Web admin (optional)
+
+Officers and owners can manage the board in a
 browser — seasons, stats, categories, manager roles, the notify role and stale
 nudges. Everyone signs in with Discord; the bot checks their roles live on
 every page (a demoted officer loses access within about a minute). It runs
@@ -197,7 +214,7 @@ startup with a message naming it.
 For a local run, `PUBLIC_URL=http://localhost:3000` + `WEB_PORT=3000` work too
 (add `http://localhost:3000/auth/callback` as a redirect as well).
 
-*Security notes.*
+**Security notes.**
 - Sessions are a signed cookie (`bb_session`, HttpOnly, SameSite=Lax, Secure on
   https) with a 30-day rolling expiry; it holds the Discord user id, never a
   Discord token or the member's level. **Sign out** clears only that browser's
@@ -213,21 +230,6 @@ For a local run, `PUBLIC_URL=http://localhost:3000` + `WEB_PORT=3000` work too
   minute for the whole process (not per visitor). Add a per-IP rate-limit rule at
   the proxy (e.g. a Cloudflare WAF rule) covering both `/auth/login` and
   `/auth/callback`.
-
-**Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
-the start command needs).
-
-> Run only **one** instance of the bot. Multiple instances sharing one
-> `data.json` (e.g. `pm2` cluster mode, or a second copy elsewhere) can
-> overwrite each other.
-
-> **⚠️ Don't roll back to a version older than the current release.** The
-> bot only keeps the `data.json` fields it knows about when it saves. Later
-> builds added fields the older ones don't recognise — the append-only `records`
-> log (helper-stats) and the stale-nudge settings (`nudgeChannelId`,
-> `nudgeThresholdHours`, `lastNudgeTs`). Starting an older build against that
-> same file drops those fields on its first save. If you must roll back, restore
-> `data.json` from the `data.json.bak` sidecar first (or keep a copy).
 
 ### Option B — Railway / Render / VPS
 

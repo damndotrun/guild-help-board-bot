@@ -294,12 +294,13 @@ the **2nd account** without one. Use a phone for the last block.
       Discord shows it after its next refresh.
 
 **Owner**
-- [ ] ⚠️ Seasons → Start new season → a confirmation page with the waiting
-      count → **Cancel** changes nothing → again → **Start new season** →
+- [ ] ⚠️ Seasons → type a season name (it is required; an empty one gives "Give
+      the new season a name.") → Start new season → a confirmation page with the
+      waiting count → **Cancel** changes nothing → again → **Start new season** →
       "✓ Started season …"; the pending request cards in Discord say
       "Season reset — this request is closed."
-- [ ] **Replay is refused.** Seasons → Start new season (same name) in **two
-      tabs**, so both show the confirmation page. Confirm in the first tab →
+- [ ] **Replay is refused.** Seasons → type a season name and press Start
+      new season in **two tabs** (same name), so both show the confirmation page. Confirm in the first tab →
       "✓ Started season …". Then press **Start new season** in the second tab
       → "✕ Already done or changed — nothing happened." and **no** second
       season was started. (Pressing **Back** to an old confirmation page and
@@ -313,8 +314,11 @@ the **2nd account** without one. Use a phone for the last block.
       confirm → the request card shows the new category. Press **Back** to the
       confirmation and confirm again → "Already done or changed — nothing
       happened."
-- [ ] Settings → add the officer account's role as a manager role, remove it →
-      the officer account loses the officer pages on its next click. Notify
+- [ ] Settings → **Manager roles**: remove the manager role the officer account
+      holds → on its next click the officer account gets the 403 page. **Add
+      that role back** (pick it in the list) → the officer pages return on its
+      next click. (The officer must have the role again before the
+      "Demotion while signed in" step below.) Notify
       role → pick a role → a new request pings it; set it back to **Off — no
       ping** (an explicit choice in the list). Nudge → a channel + 1 hour →
       "✓ Stale nudges on …"; **Turn off**.
