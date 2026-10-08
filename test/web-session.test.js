@@ -132,15 +132,16 @@ test("session: a tampered cookie (valid signature of the OLD value) is no sessio
   }
 });
 
-test("session: the cookie carries only { userId, exp } — no tokens, no level", async () => {
+test("session: the cookie carries only { userId, exp, iat } — no tokens, no level", async () => {
   const p = await probeApp();
   try {
     const res = await fetch(`${p.base}/in`, { headers: { "x-forwarded-proto": "https" } });
     const body = res.headers.getSetCookie().map((c) => c.split(";")[0]).find((c) => c.startsWith("bb_session="));
     const data = JSON.parse(Buffer.from(body.slice("bb_session=".length), "base64").toString("utf8"));
-    assert.deepEqual(Object.keys(data).sort(), ["exp", "userId"]);
+    assert.deepEqual(Object.keys(data).sort(), ["exp", "iat", "userId"]);
     assert.equal(data.userId, "u1");
     assert.ok(Number.isInteger(data.exp));
+    assert.ok(Number.isFinite(data.iat));
   } finally {
     await p.close();
   }
@@ -316,4 +317,16 @@ test("httpError carries a status and a public message", () => {
   const e = httpError(403, "No.");
   assert.equal(e.status, 403);
   assert.equal(e.publicMessage, "No.");
+});
+
+test("createSignOuts: a session issued before the user's sign-out is revoked; one issued after is not; other users untouched", () => {
+  const s = session.createSignOuts();
+  assert.equal(s.revoked("u1", 100), false, "never signed out");
+  s.record("u1", 500);
+  assert.equal(s.revoked("u1", 499), true);
+  assert.equal(s.revoked("u1", 500), true);
+  assert.equal(s.revoked("u1", 501), false);
+  assert.equal(s.revoked("u1", undefined), true, "a cookie from before iat existed");
+  assert.equal(s.revoked("u2", 1), false);
+  assert.equal(s.revoked("__proto__", 1), false, "no inherited keys");
 });

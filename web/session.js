@@ -1,7 +1,9 @@
 // The web admin's session: a signed (NOT encrypted) cookie via cookie-session.
-// It holds only { userId, exp } once signed in — plus, briefly, the OAuth
+// It holds only { userId, exp, iat } once signed in — plus, briefly, the OAuth
 // state of a sign-in in progress and a one-shot notice line. Never a Discord
 // token, never a level: the level is re-checked from the bot on every request.
+// Signing out is also recorded server-side (createSignOuts), so a copy of the
+// cookie stops working too.
 const crypto = require("node:crypto");
 const cookieSession = require("cookie-session");
 
@@ -46,9 +48,37 @@ function currentUserId(req, now) {
 }
 
 // A fresh session object: whatever the old cookie carried (a stale state or
-// notice) is gone.
+// notice) is gone. `iat` (ms) is when it was issued — createSignOuts compares it.
 function signIn(req, userId, now) {
-  req.session = { userId, exp: minuteOf(now) + SESSION_MINUTES };
+  req.session = { userId, exp: minuteOf(now) + SESSION_MINUTES, iat: now };
+}
+
+// Server-side sign-out. The cookie is signed, not stored, so clearing it in
+// one browser leaves any copy of it valid for as long as it is used. Signing
+// out therefore records the time per user, and every session that user was
+// issued until then is no session anymore — in every browser (the safer
+// default for an admin login). `store` = a core/store (persisted, so a
+// restart forgets nothing) or null (in memory; tests). Entries are never
+// pruned: a rolling session can outlive any cut-off, and there is one entry
+// per officer who ever signed out.
+function createSignOuts(store = null) {
+  const loaded = store ? store.load({ signedOutAt: {} }) : null;
+  const signedOutAt = Object.create(null);
+  const raw = loaded && loaded.signedOutAt && typeof loaded.signedOutAt === "object" ? loaded.signedOutAt : {};
+  for (const [id, at] of Object.entries(raw)) if (Number.isFinite(at)) signedOutAt[id] = at;
+  return {
+    record(userId, at) {
+      signedOutAt[userId] = at;
+      if (store) store.save({ signedOutAt: { ...signedOutAt } });
+    },
+    // A session issued at `iat` (ms; missing on cookies from before this
+    // check) is revoked when the user signed out at or after it.
+    revoked(userId, iat) {
+      const at = signedOutAt[userId];
+      if (at === undefined) return false;
+      return !(Number.isFinite(iat) && iat > at);
+    },
+  };
 }
 
 function signOut(req) {
@@ -113,6 +143,7 @@ module.exports = {
   currentUserId,
   signIn,
   signOut,
+  createSignOuts,
   issueState,
   takeState,
   setNotice,

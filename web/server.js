@@ -118,16 +118,18 @@ function defaultRunAfter(log) {
       .catch((err) => log.error("[web] follow-up after a saved change failed:", err));
 }
 
-// createWebApp({ web, modules, ctxFor, perms, getGuild, fetch?, now?, log?, runAfter?, lookupTimeoutMs? }) → express app
+// createWebApp({ web, modules, ctxFor, perms, getGuild, signOutStore?, fetch?, now?, log?, runAfter?, lookupTimeoutMs? }) → express app
 //   web      = core/config parseWebConfig() result
 //   modules  = the loaded (normalized) modules; those with `web` get pages
 //   getGuild = async () → the bot's Guild, or null while it is not ready
+//   signOutStore = a core/store for the server-side sign-outs (null = in memory)
 function createWebApp({
   web,
   modules,
   ctxFor,
   perms,
   getGuild,
+  signOutStore = null,
   fetch = globalThis.fetch,
   now = Date.now,
   log = console,
@@ -144,6 +146,19 @@ function createWebApp({
     now,
   });
   const webModules = modules.filter((m) => m.web);
+  const signOuts = session.createSignOuts(signOutStore);
+
+  // The signed-in user id, or null: an unexpired session (currentUserId) that
+  // was not signed out server-side since it was issued. A revoked one is
+  // cleared from this browser too.
+  function signedInUser(req) {
+    const userId = session.currentUserId(req, now());
+    if (userId && signOuts.revoked(userId, req.session.iat)) {
+      session.signOut(req);
+      return null;
+    }
+    return userId;
+  }
 
   // access.lookup under an overall deadline (withDeadline). The deadline only
   // ends the wait: it writes nothing to the level cache (a lookup that
@@ -181,7 +196,7 @@ function createWebApp({
     const viewer = req.viewer || null;
     // exp-checked (a session past its server-side expiry is not "signed in"),
     // not the raw cookie contents.
-    const signedIn = session.currentUserId(req, now()) !== null;
+    const signedIn = signedInUser(req) !== null;
     const layout = {
       title,
       serverName: req.guild ? req.guild.name : null,
@@ -217,7 +232,7 @@ function createWebApp({
   // ---------- sign-in / sign-out (public) ----------
 
   app.get("/login", async (req, res) => {
-    if (session.currentUserId(req, now())) return res.redirect(303, "/");
+    if (signedInUser(req)) return res.redirect(303, "/");
     return sendPage(req, res, { title: "Sign in", file: view("login") });
   });
 
@@ -287,7 +302,10 @@ function createWebApp({
     return res.redirect(303, "/");
   });
 
+  // Ends every session of this user, not just this browser's (createSignOuts).
   app.post("/auth/logout", (req, res) => {
+    const userId = signedInUser(req);
+    if (userId) signOuts.record(userId, now());
     session.signOut(req);
     res.redirect(303, "/login");
   });
@@ -295,7 +313,7 @@ function createWebApp({
   // ---------- everything below: a signed-in officer or owner ----------
 
   app.use(async (req, res, next) => {
-    const userId = session.currentUserId(req, now());
+    const userId = signedInUser(req);
     if (!userId) return res.redirect(303, "/login");
     const guild = await getGuild();
     if (!guild) return next(httpError(503, TEXT.notReady));

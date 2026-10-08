@@ -99,9 +99,9 @@ function logSink() {
   };
 }
 
-// startWeb({ modules?, guild?, now?, client?, ready?, lookupTimeoutMs? }) → harness
+// startWeb({ modules?, guild?, now?, client?, ready?, lookupTimeoutMs?, signOutStore? }) → harness
 //   modules: normalized modules (core/loader normalizeModule); default none.
-async function startWeb({ modules = [], guild = fakeGuild(), now = Date.now, client = null, ready = true, lookupTimeoutMs } = {}) {
+async function startWeb({ modules = [], guild = fakeGuild(), now = Date.now, client = null, ready = true, lookupTimeoutMs, signOutStore = null } = {}) {
   const discord = fakeDiscord();
   const log = logSink();
   const pending = [];
@@ -113,6 +113,7 @@ async function startWeb({ modules = [], guild = fakeGuild(), now = Date.now, cli
     ctxFor,
     perms,
     getGuild: async () => (ready ? guild : null),
+    signOutStore,
     fetch: discord.fetch,
     now,
     log,

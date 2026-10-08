@@ -426,6 +426,40 @@ test("sign out: POST only, clears the session", async () => {
   });
 });
 
+test("sign out ends the session server-side: a copy of the cookie (another browser, a stolen copy) stops working too", async () => {
+  let t = Date.now();
+  await withWeb({ now: () => t }, async (w) => {
+    await w.signIn(OWNER);
+    const copy = new Map(w.jar); // the same cookie in a second browser
+    t += 1000;
+    await w.post("/auth/logout");
+    const other = await w.request("/teammates", { cookies: false, headers: { cookie: [...copy].map(([k, v]) => `${k}=${v}`).join("; ") } });
+    assert.equal(other.status, 303);
+    assert.equal(other.headers.get("location"), "/login");
+    t += 1000;
+    await w.signIn(OWNER); // signing in again afterwards works
+    assert.equal((await w.page("/teammates")).res.status, 200);
+  });
+});
+
+test("sign-outs survive a restart (kept in web-sessions.json via the store)", async () => {
+  const { createStore } = require("../core/store");
+  const file = path.join(TMP, "web-sessions.json");
+  let t = Date.now();
+  let copy;
+  await withWeb({ now: () => t, signOutStore: createStore(file) }, async (w) => {
+    await w.signIn(OWNER);
+    copy = [...w.jar].map(([k, v]) => `${k}=${v}`).join("; ");
+    t += 1000;
+    await w.post("/auth/logout");
+  });
+  assert.equal(typeof JSON.parse(fs.readFileSync(file, "utf8")).signedOutAt[OWNER], "number");
+  await withWeb({ now: () => t, signOutStore: createStore(file) }, async (w) => {
+    const res = await w.request("/teammates", { cookies: false, headers: { cookie: copy } });
+    assert.equal(res.headers.get("location"), "/login");
+  });
+});
+
 test("sign out from another site is refused (CSRF): Origin mismatch → 403, still signed in", async () => {
   await withWeb({}, async (w) => {
     await w.signIn(OWNER);

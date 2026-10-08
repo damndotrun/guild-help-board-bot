@@ -8,6 +8,33 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-10-08 — Review fixes (M0–M3 review)
+
+- **Data files:** an unreadable `data.json` (help `loadData`) or module file
+  (`core/store.js`) is copied to `<file>.corrupt-<mtime>` once, before the next
+  save renames over it; a missing primary next to a valid `.bak` loads the
+  `.bak` (it used to be overwritten two saves later). `index.js` exits before
+  any side effect when `DATA_DIR` is not a writable directory, and releases
+  `bot.lock` when the start fails later; `releaseLock` only removes a lock that
+  is still this process's (pid + `startedTs`). `core/loader.js`: `dataFile` is
+  a plain `<name>.json`, never `data.json` / `web-sessions.json` /
+  `package*.json`, and never shared by two modules.
+- **Board refresh:** `refreshBoard` reads `data.json` again right before
+  `message.edit` (the argument is ignored) — an older snapshot from a slow
+  effect could otherwise drop a newer request from the public board.
+- **Discord interactions:** the request card's Claim button calls
+  `deferUpdate()` before the claimer's member lookup (it can wait on a rate
+  limit past the 3-second window) and then edits with `editReply` and tells
+  privately with `followUp`; unknown help buttons / selects / modals answer
+  "Unknown action."; the roles panel and `/stats` views send `content: ""` so
+  an earlier refusal line doesn't stay; `core/perms` `memberRoles()` reads a
+  raw API member's role-id array (an interaction before the guild is cached).
+- **Web sign-out is server-side:** the session carries `iat`;
+  `web/session.js` `createSignOuts` keeps each user's last sign-out time in
+  `DATA_DIR/web-sessions.json` (`core/store`), and `server.js` `signedInUser`
+  treats any session issued before it as signed out — every browser and any
+  copied cookie, not only the one that pressed Sign out.
+
 ## 2026-10-01 — M3 web admin
 
 - **What:** officers and owners manage the help board in a browser —

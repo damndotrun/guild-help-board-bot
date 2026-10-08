@@ -86,8 +86,11 @@ async function start() {
   let webServer = null;
   if (web) {
     const { startWeb } = require("./web/server");
+    const { createStore } = require("./core/store");
     const getGuild = async () => (client.isReady() ? client.guilds.cache.get(process.env.GUILD_ID) ?? null : null);
-    webServer = await startWeb({ web, modules, ctxFor, perms, getGuild });
+    // Sign-outs survive a restart (web/session.js createSignOuts).
+    const signOutStore = createStore(require("path").join(config.DATA_DIR, "web-sessions.json"));
+    webServer = await startWeb({ web, modules, ctxFor, perms, getGuild, signOutStore });
     console.log(`Web admin listening on port ${web.port} (${web.origin})`);
   }
 
