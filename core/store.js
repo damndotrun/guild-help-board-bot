@@ -10,18 +10,49 @@ function createStore(file) {
   const bakTmp = `${file}.bak.tmp`;
   const read = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
 
+  // Keep a copy of an unreadable file before the next save replaces it
+  // ("<file>.corrupt-<mtime>", once per bad version) — see help's loadData.
+  function keepCorruptCopy(p) {
+    try {
+      const dest = `${p}.corrupt-${Math.floor(fs.statSync(p).mtimeMs)}`;
+      if (fs.existsSync(dest)) return;
+      fs.copyFileSync(p, dest);
+      console.error(`[store] kept a copy of the unreadable ${p} as ${dest}`);
+    } catch (err) {
+      console.error(`[store] could not keep a copy of the unreadable ${p}: ${err.message}`);
+    }
+  }
+
+  // The backup, or undefined when there is none or it is unreadable.
+  function readBackup() {
+    if (!fs.existsSync(bak)) return undefined;
+    try {
+      return read(bak);
+    } catch {
+      console.error(`[store] ${bak} unreadable too`);
+      keepCorruptCopy(bak);
+      return undefined;
+    }
+  }
+
   function load(defaults = {}) {
-    if (!fs.existsSync(file)) return structuredClone(defaults);
+    if (!fs.existsSync(file)) {
+      // A missing primary next to a backup: start from the backup, or the
+      // second save would back up the near-empty new file over it.
+      const restored = readBackup();
+      if (restored === undefined) return structuredClone(defaults);
+      console.error(`[store] ${file} missing; restored from ${bak}`);
+      return restored;
+    }
     try {
       return read(file);
     } catch (err) {
       console.error(`[store] ${file} unreadable (${err.message}); restoring from ${bak}`);
-      try {
-        return read(bak);
-      } catch {
-        console.error(`[store] ${bak} unreadable too; starting from defaults`);
-        return structuredClone(defaults);
-      }
+      keepCorruptCopy(file);
+      const restored = readBackup();
+      if (restored !== undefined) return restored;
+      console.error("[store] starting from defaults");
+      return structuredClone(defaults);
     }
   }
 

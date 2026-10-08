@@ -5,6 +5,7 @@
 
 require("dotenv").config(); // before anything reads process.env
 
+const fs = require("fs");
 const { Client, GatewayIntentBits } = require("discord.js");
 const config = require("./core/config");
 const lock = require("./core/lock");
@@ -47,6 +48,16 @@ async function start() {
   }
   if (!web && publicUrl) {
     console.warn("PUBLIC_URL is set but the web admin is off (no WEB_PORT / DISCORD_CLIENT_SECRET / SESSION_SECRET).");
+  }
+
+  // Every write goes to DATA_DIR: a typo or an unmounted volume must stop the
+  // start, not leave a bot that answers "Something went wrong" to every write.
+  try {
+    fs.accessSync(config.DATA_DIR, fs.constants.R_OK | fs.constants.W_OK);
+    if (!fs.statSync(config.DATA_DIR).isDirectory()) throw new Error("not a directory");
+  } catch (e) {
+    console.error(`DATA_DIR (${config.DATA_DIR}) is not a writable directory (${e.code || e.message}) — check the path and the volume mount.`);
+    process.exit(1);
   }
 
   const modules = loadModules(config.parseModules(process.env.MODULES));
@@ -107,6 +118,9 @@ if (require.main === module) {
   });
   start().catch((err) => {
     console.error("Failed to start the bot:", err);
+    // A start that failed after acquireLock (command registration, login) must
+    // not leave a fresh heartbeat that makes the restart warn falsely.
+    lock.releaseLock();
     process.exit(1);
   });
 }

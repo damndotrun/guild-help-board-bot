@@ -188,6 +188,32 @@ test("store: a corrupt main file is never copied over a good .bak", () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "x.json.bak"), "utf8")), { a: 1 });
 });
 
+test("store: a corrupt main file is kept as .corrupt-<mtime> before the next save replaces it (once)", () => {
+  const dir = tmpDir();
+  const s = createStore(path.join(dir, "x.json"));
+  s.save({ a: 1 });
+  fs.writeFileSync(path.join(dir, "x.json"), "{broken-newest");
+  s.load({});
+  s.load({}); // a second load of the same bad file keeps no second copy
+  s.save({ a: 2 });
+  const kept = fs.readdirSync(dir).filter((f) => f.startsWith("x.json.corrupt-"));
+  assert.equal(kept.length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, kept[0]), "utf8"), "{broken-newest");
+});
+
+test("store: a missing main file next to a good .bak restores from it; the .bak survives the next saves", () => {
+  const dir = tmpDir();
+  const s = createStore(path.join(dir, "x.json"));
+  s.save({ a: 1 });
+  s.save({ a: 2 }); // .bak = {a:1}
+  fs.rmSync(path.join(dir, "x.json"));
+  const d = s.load({});
+  assert.deepEqual(d, { a: 1 });
+  s.save({ ...d, b: 1 });
+  s.save({ ...d, b: 2 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "x.json.bak"), "utf8")), { a: 1, b: 1 });
+});
+
 const { normalizeModule, loadModules } = require("../core/loader");
 const { createRouter, buildPrefixMap, buildCommandMap, EXPIRED_TEXT } = require("../core/router");
 const { MessageFlags } = require("discord.js");
@@ -378,6 +404,17 @@ test("loader: a module whose exported name differs from its MODULES key is a har
     () => loadModules(["help"], { help: () => ({ name: "other", handle: async () => {} }) }),
     /"help".*"other"|"other".*"help"/
   );
+});
+
+test("loader: dataFile must be a plain <name>.json, never a reserved one, never shared", () => {
+  const mk = (name, dataFile) => normalizeModule({ name, dataFile, handle: async () => {} });
+  for (const bad of ["data.json", "web-sessions.json", "package.json", "../x.json", "sub/x.json", "x.txt", "", 5]) {
+    assert.throws(() => mk("raw", bad), /dataFile/, String(bad));
+  }
+  assert.throws(() => mk("data"), /reserved/, "a module named data defaults to data.json");
+  assert.equal(mk("raw", "raw-v2.json").dataFile, "raw-v2.json");
+  const available = { a: () => ({ name: "a", dataFile: "shared.json", handle: async () => {} }), b: () => ({ name: "b", dataFile: "shared.json", handle: async () => {} }) };
+  assert.throws(() => loadModules(["a", "b"], available), /Two modules use the data file "shared.json"/);
 });
 
 test("loader: dataFile null means the module has no store", () => {

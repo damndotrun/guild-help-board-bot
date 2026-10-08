@@ -255,26 +255,58 @@ function shapeCategories(rawCategories) {
   return cleaned.length ? cleaned : defaultCategories();
 }
 
+// Keep a copy of an unreadable data file before the next save replaces it:
+// "<file>.corrupt-<mtime>", once per bad version of the file. The next
+// saveData renames over the primary, so without this the newest generation
+// (and with a bad .bak too, all of it) would be gone for good.
+function keepCorruptCopy(file) {
+  try {
+    const dest = `${file}.corrupt-${Math.floor(fs.statSync(file).mtimeMs)}`;
+    if (fs.existsSync(dest)) return;
+    fs.copyFileSync(file, dest);
+    console.error(`Kept a copy of the unreadable ${path.basename(file)} as ${path.basename(dest)}.`);
+  } catch (err) {
+    console.error(`Could not keep a copy of the unreadable ${path.basename(file)}: ${err.message}`);
+  }
+}
+
+// The last-known-good backup, or null when there is none or it is unreadable.
+function readBackup() {
+  if (!fs.existsSync(BAK_FILE)) return null;
+  try {
+    return readAndShape(fs.readFileSync(BAK_FILE, "utf8"));
+  } catch (bakErr) {
+    console.error(`data.json.bak also unreadable (${bakErr.message}).`);
+    keepCorruptCopy(BAK_FILE);
+    return null;
+  }
+}
+
 function loadData() {
-  if (!fs.existsSync(DATA_FILE)) return emptyData();
+  if (!fs.existsSync(DATA_FILE)) {
+    // A missing primary next to a backup (a cleanup or restore gone wrong):
+    // start from the backup — otherwise the second save would back up the
+    // near-empty new file over the only good copy.
+    const restored = readBackup();
+    if (restored) {
+      console.error("data.json is missing; restored from data.json.bak.");
+      return restored;
+    }
+    return emptyData();
+  }
   try {
     return readAndShape(fs.readFileSync(DATA_FILE, "utf8"));
   } catch (err) {
-    // data.json is unreadable — try the last-known-good backup before giving up.
-    try {
-      if (fs.existsSync(BAK_FILE)) {
-        const restored = readAndShape(fs.readFileSync(BAK_FILE, "utf8"));
-        console.error(
-          `data.json unreadable (${err.message}); restored from data.json.bak.`
-        );
-        return restored;
-      }
-    } catch (bakErr) {
-      console.error(`data.json.bak also unreadable (${bakErr.message}).`);
+    // data.json is unreadable — keep it aside, then try the last-known-good backup.
+    keepCorruptCopy(DATA_FILE);
+    const restored = readBackup();
+    if (restored) {
+      console.error(`data.json unreadable (${err.message}); restored from data.json.bak.`);
+      return restored;
     }
     console.error(
       `data.json is unreadable (${err.message}); starting from an empty board. ` +
-        "The old files are left in place for manual inspection."
+        "A copy of the unreadable file is kept next to it for manual inspection."
     );
     return emptyData();
   }

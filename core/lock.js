@@ -29,6 +29,9 @@ function isLockFresh(lock, now) {
   );
 }
 
+// What this process wrote — releaseLock removes the lock only while it is still ours.
+let ownLock = null;
+
 function acquireLock() {
   const now = Date.now();
   const existing = readLock();
@@ -43,6 +46,7 @@ function acquireLock() {
       LOCK_FILE,
       JSON.stringify({ pid: process.pid, startedTs: now, heartbeat: ts })
     );
+  ownLock = { pid: process.pid, startedTs: now };
   try {
     write(now);
   } catch (err) {
@@ -60,8 +64,14 @@ function acquireLock() {
 }
 
 // Remove the lock on graceful shutdown (Docker sends SIGTERM on stop) so a
-// fast redeploy doesn't see our own stale heartbeat and false-warn.
+// fast redeploy doesn't see our own stale heartbeat and false-warn. Only our
+// own: during an overlapping swap the file may already be the new instance's
+// (pid alone is not enough — in a container both can be pid 1). Unreadable →
+// removed, as before.
 function releaseLock() {
+  if (!ownLock) return;
+  const current = readLock();
+  if (current && (current.pid !== ownLock.pid || current.startedTs !== ownLock.startedTs)) return;
   try {
     fs.unlinkSync(LOCK_FILE);
   } catch {
