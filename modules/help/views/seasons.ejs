@@ -1,0 +1,54 @@
+<h1>Seasons</h1>
+<section class="card">
+  <h2>Current season</h2>
+  <p><strong><%= page.current.name %></strong> · started <%= page.current.started %> · <%= page.current.sorted %> sorted · <%= page.current.waiting %> waiting</p>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/seasons/rename" class="inline">
+    <input type="hidden" name="target" value="current">
+    <label for="rename-current">Rename</label>
+    <input id="rename-current" type="text" name="name" required maxlength="<%= page.maxName %>" placeholder="New name" value="<%= page.current.named ? page.current.name : "" %>">
+    <button type="submit" class="btn">Rename</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Start a new season</h2>
+  <p class="muted">Archives the current season and closes every pending request. You confirm on the next step.</p>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/seasons/new" class="inline">
+    <label for="new-season">Name</label>
+    <input id="new-season" type="text" name="name" required maxlength="<%= page.maxName %>" placeholder="e.g. Season 5 — Winter">
+    <button type="submit" class="btn btn-primary">Start new season</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Past seasons</h2>
+  <% if (page.past.length === 0) { %>
+  <p class="muted">None yet.</p>
+  <% } else { %>
+  <table class="cards">
+    <thead><tr><th>Season</th><th>Ended</th><th>Requests</th><th>Helped</th><th>Rename</th></tr></thead>
+    <tbody>
+      <% for (const s of page.past) { %>
+      <tr>
+        <td data-label="Season"><%= s.name %></td>
+        <td data-label="Ended"><%= s.ended %></td>
+        <td data-label="Requests"><%= s.requests === null ? "—" : s.requests %></td>
+        <td data-label="Helped"><%= s.helped %></td>
+        <td data-label="Rename">
+          <form method="post" hx-push-url="false" action="<%= page.base %>/seasons/rename" class="inline">
+            <input type="hidden" name="target" value="<%= s.target %>">
+            <input type="text" name="name" required maxlength="<%= page.maxName %>" placeholder="New name" aria-label="New name for <%= s.name %>">
+            <button type="submit" class="btn">Rename</button>
+          </form>
+        </td>
+      </tr>
+      <% } %>
+    </tbody>
+  </table>
+  <% } %>
+</section>
+<section class="card danger-zone">
+  <h2>Reset season</h2>
+  <p class="muted">Archives the current season and clears the board without naming a new one. You confirm on the next step.</p>
+  <form method="post" hx-push-url="false" action="<%= page.base %>/seasons/reset">
+    <button type="submit" class="btn btn-danger">Reset season</button>
+  </form>
+</section>

@@ -1,0 +1,39 @@
+<h1>Help board</h1>
+<section class="card">
+  <h2>Current season</h2>
+  <p><strong><%= page.season.name %></strong> · started <%= page.season.started %> · <%= page.season.sorted %> sorted · <%= page.open.length %> waiting</p>
+</section>
+<section class="card">
+  <h2>Open requests</h2>
+  <% if (page.open.length === 0) { %>
+  <p class="muted">Nobody is waiting right now.</p>
+  <% } else { %>
+  <table class="cards">
+    <thead><tr><th>Member</th><th>Category</th><th>Waiting</th><th>Note</th><th>Claimed by</th></tr></thead>
+    <tbody>
+      <% for (const e of page.open) { %>
+      <tr>
+        <td data-label="Member"><%= e.who %></td>
+        <td data-label="Category"><%= e.category %></td>
+        <td data-label="Waiting"><%= e.waiting %></td>
+        <td data-label="Note"><%= e.note || "—" %></td>
+        <td data-label="Claimed by"><%= e.claimedBy || "—" %></td>
+      </tr>
+      <% } %>
+    </tbody>
+  </table>
+  <% } %>
+</section>
+<section class="card">
+  <h2>Top helpers this season</h2>
+  <% if (page.topHelpers.length === 0) { %>
+  <p class="muted">No sorts recorded yet.</p>
+  <% } else { %>
+  <ol>
+    <% for (const h of page.topHelpers) { %>
+    <li><%= h.name %> — <%= h.count %></li>
+    <% } %>
+  </ol>
+  <% } %>
+  <p><a href="<%= page.base %>/stats">All stats</a></p>
+</section>

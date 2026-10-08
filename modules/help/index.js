@@ -4,6 +4,7 @@
 // than the platform store), so it declares dataFile: null and gets no ctx.store.
 const help = require("./help");
 const helpMenu = require("./menu");
+const helpWeb = require("./web");
 
 module.exports = {
   name: "help",
@@ -19,4 +20,6 @@ module.exports = {
   managerRoles: () => help.loadData().managerRoleIds,
   // The /menu "Help board" section (M2b).
   menu: { section: helpMenu.section, render: helpMenu.render, guide: helpMenu.guide },
+  // The web admin pages (M3), mounted at /help.
+  web: { title: helpWeb.title, nav: helpWeb.nav, routes: helpWeb.routes },
 };

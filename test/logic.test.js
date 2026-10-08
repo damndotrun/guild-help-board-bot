@@ -349,6 +349,15 @@ test("removeCategory: archive when empty; reassign+dedup; guards", () => {
   assert.equal(bot.removeCategory(d, "a", undefined).ok, false);
   // moveto not active / equal to category -> error
   assert.equal(bot.removeCategory(base(), "a", "a").ok, false);
+  // F-M5: a given moveto is checked even with NO open requests — unknown or
+  // archived → error, nothing mutated
+  for (const bogus of ["nope", "c"]) {
+    d = base();
+    d.categories.push({ id: "c", label: "C", emoji: "©", archived: true });
+    r = bot.removeCategory(d, "a", bogus);
+    assert.deepEqual([r.ok, r.error], [false, "`moveto` must be an active category."], bogus);
+    assert.equal(d.categories[0].archived, false, bogus);
+  }
 });
 
 test("removeCategory + logRecord: dropped duplicates get a \"removed\" record, moved entries don't", () => {

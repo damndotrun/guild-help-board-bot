@@ -11,7 +11,11 @@
     "node": ">=24"
   },
   "dependencies": {
+    "cookie-session": "^2.1.1",
     "discord.js": "^14.27.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "ejs": "^6.0.1",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0"
   }
 }
