@@ -15,6 +15,7 @@ const {
   RoleSelectMenuBuilder,
   PermissionFlagsBits,
   MessageFlags,
+  LabelBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -177,6 +178,30 @@ function setNudgeConfig(data, channelId, hours) {
   data.nudgeChannelId = channelId;
   return { ok: true };
 }
+
+// Discord's CHANNEL_OBFUSCATED channel flag (changelog 2026-08-12, enforced
+// 2026-11-16): a channel the bot cannot view still arrives over the gateway,
+// but named "___hidden___" and with most fields stripped.
+const CHANNEL_OBFUSCATED = 1 << 17;
+
+// Does the bot have every one of `perms` in this channel? An obfuscated
+// channel never. Without the bot's member or a permissionsFor (not a guild
+// channel) the flag alone decides — deliberately: GUILD_CREATE always carries
+// the bot's own member, so that is only a before-ready edge.
+function botHas(guild, channel, perms) {
+  const flags = Number(channel.flags?.bitfield ?? channel.flags ?? 0);
+  if ((flags & CHANNEL_OBFUSCATED) !== 0) return false;
+  const me = guild?.members?.me;
+  if (!me || typeof channel.permissionsFor !== "function") return true;
+  const have = channel.permissionsFor(me);
+  return !!have && perms.every((p) => have.has(p));
+}
+
+const botCanSee = (guild, channel) => botHas(guild, channel, [PermissionFlagsBits.ViewChannel]);
+
+// What the stale-nudge digest needs: see the channel, post, embed.
+const botCanPostDigest = (guild, channel) =>
+  botHas(guild, channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks]);
 
 // Turn nudges off (keep the threshold for next time). Pure — mutates data.
 function clearNudge(data) {
@@ -1915,20 +1940,20 @@ async function handleSeasonButton(interaction) {
   const action = parts[1];
 
   if (action === "new") {
-    const input = new TextInputBuilder().setCustomId("name").setLabel("New season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setPlaceholder("e.g. Season 5 — Winter");
-    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season (closes pending requests)").addComponents(new ActionRowBuilder().addComponents(input));
+    const input = new TextInputBuilder().setCustomId("name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setPlaceholder("e.g. Season 5 — Winter");
+    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season (closes pending requests)").addLabelComponents(new LabelBuilder().setLabel("New season name").setTextInputComponent(input));
     await interaction.showModal(modal);
     return;
   }
   if (action === "rename" || action === "renamepick") {
     const target = action === "rename" ? "current" : parts[2]; // "current" or "<endedTs>"
     const season = target === "current" ? data.currentSeason : (data.seasons || []).find((s) => String(s.endedTs) === String(target));
-    const input = new TextInputBuilder().setCustomId("name").setLabel("Season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true);
+    const input = new TextInputBuilder().setCustomId("name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true);
     // Only prefill when there is a real name — Discord rejects an empty setValue
     // on a text input (unnamed is the day-one state, so this path is common).
     const prefill = seasonLabel(season);
     if (prefill && prefill !== "(unnamed)") input.setValue(prefill);
-    const modal = new ModalBuilder().setCustomId(`season:renamemodal:${target}`).setTitle("Rename season").addComponents(new ActionRowBuilder().addComponents(input));
+    const modal = new ModalBuilder().setCustomId(`season:renamemodal:${target}`).setTitle("Rename season").addLabelComponents(new LabelBuilder().setLabel("Season name").setTextInputComponent(input));
     await interaction.showModal(modal);
     return;
   }
@@ -2531,14 +2556,12 @@ async function dispatch(interaction) {
           if (!label) {
             const labelInput = new TextInputBuilder()
               .setCustomId("label")
-              .setLabel("Category name")
               .setStyle(TextInputStyle.Short)
               .setMaxLength(MAX_LABEL)
               .setRequired(true)
               .setPlaceholder("e.g. Guild Boss");
             const emojiInput = new TextInputBuilder()
               .setCustomId("emoji")
-              .setLabel("Emoji")
               .setStyle(TextInputStyle.Short)
               .setMaxLength(32)
               .setRequired(false)
@@ -2546,9 +2569,9 @@ async function dispatch(interaction) {
             const modal = new ModalBuilder()
               .setCustomId("catadd:submit")
               .setTitle("Add a category")
-              .addComponents(
-                new ActionRowBuilder().addComponents(labelInput),
-                new ActionRowBuilder().addComponents(emojiInput)
+              .addLabelComponents(
+                new LabelBuilder().setLabel("Category name").setTextInputComponent(labelInput),
+                new LabelBuilder().setLabel("Emoji").setTextInputComponent(emojiInput)
               );
             await interaction.showModal(modal);
             return;
@@ -2606,6 +2629,19 @@ async function dispatch(interaction) {
         if (nSub === "set") {
           const channel = interaction.options.getChannel("channel");
           const hours = interaction.options.getInteger("hours"); // null if omitted
+          // The picker lists what the USER can see; the digest needs the bot
+          // to see, post and embed there (the web's list applies the same rule).
+          // The guild cache already holds every channel with its overwrites
+          // (obfuscated ones flagged); the option's resolved data only patches
+          // name/type, never the overwrites or flags.
+          const target = interaction.guild?.channels?.cache?.get(channel.id) ?? channel;
+          if (!botCanPostDigest(interaction.guild, target)) {
+            await respond(interaction, {
+              content: `I can't post the digest in <#${channel.id}> — give me View Channel, Send Messages and Embed Links there, or pick another channel.`,
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
           const r = actions().setNudge(helpCtx(), actorOf(interaction, data), { channelId: channel.id, hours: hours ?? undefined });
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
           await respond(interaction, {
@@ -2707,6 +2743,8 @@ module.exports = {
   removeCategory,
   setNudgeConfig,
   clearNudge,
+  botCanSee,
+  botCanPostDigest,
   readAndShape,
   categorySuggestions,
   hasOpenEntry,

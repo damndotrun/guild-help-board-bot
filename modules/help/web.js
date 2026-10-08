@@ -379,9 +379,18 @@ function roleName(guild, id) {
   return role ? role.name : "(deleted role)";
 }
 
+// A channel the bot cannot see arrives obfuscated (named "___hidden___") —
+// never show that name (help.botCanSee).
 function channelName(guild, id) {
   const channel = guild.channels.cache.get(id);
-  return channel ? channel.name : "(deleted channel)";
+  if (!channel) return "(deleted channel)";
+  return help.botCanSee(guild, channel) ? channel.name : "(hidden channel)";
+}
+
+// The same, as prose: "#name", or the bare placeholder (no "#(hidden channel)").
+function channelWhere(guild, id) {
+  const channel = guild.channels.cache.get(id);
+  return channel && help.botCanSee(guild, channel) ? `#${channel.name}` : channelName(guild, id);
 }
 
 // Roles an owner can pick: never @everyone (id = guild id) or a bot-managed
@@ -396,13 +405,14 @@ function pickableRoles(guild) {
 
 function nudgeChannels(guild) {
   return [...guild.channels.cache.values()]
-    .filter((c) => NUDGE_CHANNEL_TYPES.has(c.type))
+    .filter((c) => NUDGE_CHANNEL_TYPES.has(c.type) && help.botCanPostDigest(guild, c))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((c) => ({ id: c.id, name: c.name }));
 }
 
 function settingsModel(guild, data) {
   const roles = pickableRoles(guild);
+  const channels = nudgeChannels(guild);
   return {
     base: BASE,
     managers: data.managerRoleIds.map((id) => ({ id, name: roleName(guild, id) })),
@@ -412,9 +422,14 @@ function settingsModel(guild, data) {
     nudge: {
       on: !!data.nudgeChannelId,
       channelName: data.nudgeChannelId ? channelName(guild, data.nudgeChannelId) : null,
+      where: data.nudgeChannelId ? channelWhere(guild, data.nudgeChannelId) : null,
+      // On, but the bot can no longer post there (hidden, deleted, or a lost
+      // permission): the page says so, and the picker starts on "Pick a
+      // channel" instead of silently pre-selecting another channel.
+      unlisted: !!data.nudgeChannelId && !channels.some((c) => c.id === data.nudgeChannelId),
       hours: data.nudgeThresholdHours,
       maxHours: help.NUDGE_MAX_HOURS,
-      channels: nudgeChannels(guild).map((c) => ({ ...c, selected: c.id === data.nudgeChannelId })),
+      channels: channels.map((c) => ({ ...c, selected: c.id === data.nudgeChannelId })),
     },
   };
 }
