@@ -93,6 +93,22 @@ function normalizeJobs(mod) {
   });
 }
 
+// A module's own file in DATA_DIR: a plain "<name>.json", never one the core,
+// help or the repo already owns (help's data.json is schema-frozen; the web
+// admin keeps its sign-outs in web-sessions.json).
+const DATA_FILE_RE = /^[a-z][a-z0-9-]*\.json$/;
+const RESERVED_DATA_FILES = new Set(["data.json", "web-sessions.json", "package.json", "package-lock.json"]);
+
+function normalizeDataFile(mod) {
+  if (mod.dataFile === null) return null;
+  const file = mod.dataFile === undefined ? `${mod.name}.json` : mod.dataFile;
+  if (typeof file !== "string" || !DATA_FILE_RE.test(file)) {
+    throw new Error(`[${mod.name}] dataFile must be a plain file name like "${mod.name}.json" (got ${String(file)})`);
+  }
+  if (RESERVED_DATA_FILES.has(file)) throw new Error(`[${mod.name}] dataFile "${file}" is reserved`);
+  return file;
+}
+
 function normalizeModule(mod) {
   if (!mod || typeof mod.name !== "string" || !NAME_RE.test(mod.name)) {
     throw new Error(`Invalid module name: ${mod && mod.name}`);
@@ -102,7 +118,7 @@ function normalizeModule(mod) {
     name: mod.name,
     aliases: mod.aliases || [],
     // dataFile: null = the module keeps its own persistence and gets no ctx.store.
-    dataFile: mod.dataFile === null ? null : mod.dataFile || `${mod.name}.json`,
+    dataFile: normalizeDataFile(mod),
     commands: (mod.commands || []).map((c) => (typeof c.toJSON === "function" ? c.toJSON() : c)),
     handle: mod.handle || buildHandle(mod),
     bind: mod.bind || null,
@@ -119,7 +135,7 @@ function normalizeModule(mod) {
 }
 
 function loadModules(names, available = AVAILABLE) {
-  return names.map((n) => {
+  const mods = names.map((n) => {
     // hasOwn: MODULES=constructor / toString must not resolve to an inherited member.
     if (!Object.hasOwn(available, n)) {
       throw new Error(`Unknown module "${n}" in MODULES (known: ${Object.keys(available).join(", ")})`);
@@ -130,6 +146,11 @@ function loadModules(names, available = AVAILABLE) {
     }
     return mod;
   });
+  // Two modules on one file would overwrite each other's data.
+  const files = mods.map((m) => m.dataFile).filter(Boolean);
+  const dup = files.find((f, i) => files.indexOf(f) !== i);
+  if (dup) throw new Error(`Two modules use the data file "${dup}"`);
+  return mods;
 }
 
 module.exports = { AVAILABLE, WEB_RESERVED, buildHandle, normalizeModule, loadModules };

@@ -29,6 +29,9 @@ function isLockFresh(lock, now) {
   );
 }
 
+// What this process wrote — releaseLock removes the lock only while it is still ours.
+let ownLock = null;
+
 function acquireLock() {
   const now = Date.now();
   const existing = readLock();
@@ -45,12 +48,14 @@ function acquireLock() {
     );
   try {
     write(now);
+    ownLock = { pid: process.pid, startedTs: now };
   } catch (err) {
     console.error("Could not write bot.lock:", err.message);
   }
   const timer = setInterval(() => {
     try {
       write(Date.now());
+      ownLock = { pid: process.pid, startedTs: now };
     } catch {
       // transient FS error — the next tick will retry
     }
@@ -60,8 +65,14 @@ function acquireLock() {
 }
 
 // Remove the lock on graceful shutdown (Docker sends SIGTERM on stop) so a
-// fast redeploy doesn't see our own stale heartbeat and false-warn.
+// fast redeploy doesn't see our own stale heartbeat and false-warn. Only our
+// own: during an overlapping swap the file may already be the new instance's
+// (pid alone is not enough — in a container both can be pid 1). Unreadable →
+// removed, as before.
 function releaseLock() {
+  if (!ownLock) return;
+  const current = readLock();
+  if (current && (current.pid !== ownLock.pid || current.startedTs !== ownLock.startedTs)) return;
   try {
     fs.unlinkSync(LOCK_FILE);
   } catch {

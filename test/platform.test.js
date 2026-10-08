@@ -132,6 +132,35 @@ test("compat: an existing data.json in DATA_DIR is read as-is", () => {
   assert.equal(loaded.boardMessageId, "222222222222222222");
 });
 
+test("data.json unreadable: a copy is kept before the next save, then the .bak is used", () => {
+  for (const f of fs.readdirSync(TMP)) if (f.startsWith("data.json")) fs.rmSync(path.join(TMP, f));
+  const d = bot.emptyData();
+  d.boardChannelId = "111111111111111111";
+  bot.saveData(d);
+  bot.saveData(d); // .bak = d
+  fs.writeFileSync(path.join(TMP, "data.json"), "{not json");
+  assert.equal(bot.loadData().boardChannelId, "111111111111111111");
+  bot.saveData(bot.loadData());
+  const kept = fs.readdirSync(TMP).filter((f) => f.startsWith("data.json.corrupt-"));
+  assert.equal(kept.length, 1);
+  assert.equal(fs.readFileSync(path.join(TMP, kept[0]), "utf8"), "{not json");
+  for (const f of kept) fs.rmSync(path.join(TMP, f));
+});
+
+test("data.json missing next to a good .bak: loaded from the .bak, which the next saves keep", () => {
+  for (const f of fs.readdirSync(TMP)) if (f.startsWith("data.json")) fs.rmSync(path.join(TMP, f));
+  const d = bot.emptyData();
+  d.boardChannelId = "111111111111111111";
+  bot.saveData(d);
+  bot.saveData(d); // .bak = d
+  fs.rmSync(path.join(TMP, "data.json"));
+  const loaded = bot.loadData();
+  assert.equal(loaded.boardChannelId, "111111111111111111");
+  bot.saveData(loaded);
+  bot.saveData(loaded);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(TMP, "data.json.bak"), "utf8")).boardChannelId, "111111111111111111");
+});
+
 test("compat: nothing is written under modules/help/ and no help.json appears", () => {
   bot.saveData(bot.loadData());
   const helpDir = path.join(__dirname, "..", "modules", "help");
@@ -145,6 +174,20 @@ test("compat: save → load → save keeps data.json byte-identical", () => {
   const first = fs.readFileSync(path.join(TMP, "data.json"), "utf8");
   bot.saveData(bot.loadData());
   assert.equal(fs.readFileSync(path.join(TMP, "data.json"), "utf8"), first);
+});
+
+test("lock: releaseLock removes only this process's own lock", () => {
+  const lock = require("../core/lock");
+  const file = path.join(TMP, "bot.lock");
+  clearInterval(lock.acquireLock());
+  const own = JSON.parse(fs.readFileSync(file, "utf8"));
+  // Another instance took over the file (same pid is possible in containers).
+  fs.writeFileSync(file, JSON.stringify({ ...own, startedTs: own.startedTs + 1 }));
+  lock.releaseLock();
+  assert.equal(fs.existsSync(file), true, "someone else's lock stays");
+  fs.writeFileSync(file, JSON.stringify(own));
+  lock.releaseLock();
+  assert.equal(fs.existsSync(file), false, "our own lock is removed");
 });
 
 test("index re-exports the help logic and the lock predicate", () => {

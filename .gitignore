@@ -9,6 +9,8 @@
 *.json.bak
 *.json.tmp
 *.json.bak.tmp
+*.json.corrupt-*
+*.json.bak.corrupt-*
 bot.lock
 
 # Dependencies

@@ -28,7 +28,7 @@ require("dotenv").config();
 // data.json lives in the platform DATA_DIR (default: the repo root, as before
 // the move into modules/help/) — see core/config.js.
 const { DATA_DIR } = require("../../core/config");
-const { computeLevel } = require("../../core/perms");
+const { computeLevel, memberRoles } = require("../../core/perms");
 
 // ./actions requires this file, so it is loaded lazily (at call time) to keep
 // the require graph acyclic.
@@ -280,26 +280,58 @@ function shapeCategories(rawCategories) {
   return cleaned.length ? cleaned : defaultCategories();
 }
 
+// Keep a copy of an unreadable data file before the next save replaces it:
+// "<file>.corrupt-<mtime>", once per bad version of the file. The next
+// saveData renames over the primary, so without this the newest generation
+// (and with a bad .bak too, all of it) would be gone for good.
+function keepCorruptCopy(file) {
+  try {
+    const dest = `${file}.corrupt-${Math.floor(fs.statSync(file).mtimeMs)}`;
+    if (fs.existsSync(dest)) return;
+    fs.copyFileSync(file, dest);
+    console.error(`Kept a copy of the unreadable ${path.basename(file)} as ${path.basename(dest)}.`);
+  } catch (err) {
+    console.error(`Could not keep a copy of the unreadable ${path.basename(file)}: ${err.message}`);
+  }
+}
+
+// The last-known-good backup, or null when there is none or it is unreadable.
+function readBackup() {
+  if (!fs.existsSync(BAK_FILE)) return null;
+  try {
+    return readAndShape(fs.readFileSync(BAK_FILE, "utf8"));
+  } catch (bakErr) {
+    console.error(`data.json.bak also unreadable (${bakErr.message}).`);
+    keepCorruptCopy(BAK_FILE);
+    return null;
+  }
+}
+
 function loadData() {
-  if (!fs.existsSync(DATA_FILE)) return emptyData();
+  if (!fs.existsSync(DATA_FILE)) {
+    // A missing primary next to a backup (a cleanup or restore gone wrong):
+    // start from the backup — otherwise the second save would back up the
+    // near-empty new file over the only good copy.
+    const restored = readBackup();
+    if (restored) {
+      console.error("data.json is missing; restored from data.json.bak.");
+      return restored;
+    }
+    return emptyData();
+  }
   try {
     return readAndShape(fs.readFileSync(DATA_FILE, "utf8"));
   } catch (err) {
-    // data.json is unreadable — try the last-known-good backup before giving up.
-    try {
-      if (fs.existsSync(BAK_FILE)) {
-        const restored = readAndShape(fs.readFileSync(BAK_FILE, "utf8"));
-        console.error(
-          `data.json unreadable (${err.message}); restored from data.json.bak.`
-        );
-        return restored;
-      }
-    } catch (bakErr) {
-      console.error(`data.json.bak also unreadable (${bakErr.message}).`);
+    // data.json is unreadable — keep it aside, then try the last-known-good backup.
+    keepCorruptCopy(DATA_FILE);
+    const restored = readBackup();
+    if (restored) {
+      console.error(`data.json unreadable (${err.message}); restored from data.json.bak.`);
+      return restored;
     }
     console.error(
       `data.json is unreadable (${err.message}); starting from an empty board. ` +
-        "The old files are left in place for manual inspection."
+        "A copy of the unreadable file is kept next to it for manual inspection."
     );
     return emptyData();
   }
@@ -351,7 +383,7 @@ function isManager(interaction, data) {
 function levelOfInteraction(interaction, data) {
   return computeLevel({
     permissions: interaction.memberPermissions,
-    roleCache: interaction.member?.roles?.cache,
+    roleCache: memberRoles(interaction.member),
     managerRoleIds: data.managerRoleIds,
   });
 }
@@ -1308,13 +1340,22 @@ async function statsEmbedFor(guild, data, view) {
   return seasonHelperEmbed(data, season, await resolveIds(guild, top.map(([id]) => id)));
 }
 
-async function refreshBoard(client, data) {
+// Edits the board from the data ON DISK, read again right before the edit —
+// never from the caller's snapshot: refreshes run in `effects`, after other
+// REST calls, and an older snapshot landing last would drop a newer request
+// from the public board until the next change. `_snapshot` is kept so the
+// call sites read as before; a name missing from `names` (a request that
+// arrived during the lookups) falls back to its stored username.
+async function refreshBoard(client, _snapshot) {
+  const data = loadData();
   if (!data.boardChannelId || !data.boardMessageId) return;
   try {
     const channel = await client.channels.fetch(data.boardChannelId);
     const names = await resolveNames(channel.guild, data);
     const message = await channel.messages.fetch(data.boardMessageId);
-    await message.edit({ embeds: [buildBoardEmbed(data, names)], components: [needHelpRow()] });
+    const current = loadData();
+    if (current.boardChannelId !== data.boardChannelId || current.boardMessageId !== data.boardMessageId) return;
+    await message.edit({ embeds: [buildBoardEmbed(current, names)], components: [needHelpRow()] });
   } catch (err) {
     console.error("Could not refresh board message:", err.message);
   }
@@ -1720,7 +1761,12 @@ function onReady() {
 // ---------- button handling (one-click officer actions) ----------
 async function handleButton(interaction) {
   const [ns, action, entryId] = interaction.customId.split(":");
-  if (ns !== "help") return;
+  if (ns !== "help") {
+    // An alias prefix with no button of that name (stats:, resolve:, …) —
+    // acknowledge so Discord doesn't show "This interaction failed".
+    await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+    return;
+  }
 
   const data = loadData();
   if (!isManager(interaction, data)) {
@@ -1772,61 +1818,95 @@ async function handleButton(interaction) {
     let r = toggleClaim(entry, interaction.user.id, Date.now());
     let workingData = data;
     let workingEntry = entry;
-    if (r.action === "blocked") {
-      // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
-      // check" (rate limit / 5xx / network) — only the former justifies
-      // auto-release. A transient error must NOT be treated as a departure.
-      const guild = interaction.guild;
-      let member = null;
-      let verifyFailed = !guild;
-      if (guild) {
-        try {
-          member = guild.members.cache.get(r.by) || (await guild.members.fetch(r.by));
-        } catch (err) {
-          if (isGoneError(err)) member = null; // confirmed gone
-          else verifyFailed = true;
-        }
+    // The membership check below can wait on Discord REST (a rate limit can
+    // sleep for seconds) — past Discord's 3-second ack window. So before any
+    // such wait the tap is acknowledged with deferUpdate; from then on the
+    // card is edited with editReply and the private notices go out as
+    // ephemeral follow-ups (respond() would edit the PUBLIC card instead).
+    let deferred = false;
+    const tell = async (content) => {
+      if (!deferred) return respond(interaction, { content, flags: MessageFlags.Ephemeral });
+      try {
+        return await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+      } catch (err) {
+        console.error("Failed to follow up on the claim:", err?.message ?? err);
       }
-      if (verifyFailed) {
-        await respond(interaction, { content: "Couldn't verify the current claimer — try again.", flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (member) {
-        await respond(interaction, { content: `🙌 **${member.displayName}** is already on this.`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      // Stale claim — the holder is confirmed gone. Invariant #1: the
-      // membership check above was an await since loadData, so re-load fresh,
-      // re-find the entry by id, and apply the release+claim to that copy
-      // rather than saving our now-possibly-stale snapshot.
-      const fresh = loadData();
-      const freshEntry = fresh.entries.find((e) => e.id === entryId);
-      if (!freshEntry || freshEntry.done) {
-        try {
-          await interaction.update({ components: [] });
-        } catch {
-          await respond(interaction, { content: "That request has already been handled.", flags: MessageFlags.Ephemeral });
-        }
-        return;
-      }
-      // F1: recheck the fresh claim before releasing — it may have changed
-      // hands (to a LIVE claim) during the membership check's await window.
-      r = applyStaleClaimRelease(freshEntry, r.by, interaction.user.id, Date.now());
+    };
+    const editCard = (payload) => (deferred ? interaction.editReply(payload) : interaction.update(payload));
+    let saved = false;
+    try {
       if (r.action === "blocked") {
-        const holder2 = await memberName(interaction.guild, r.by);
-        await respond(interaction, { content: `🙌 **${holder2 || "Another officer"}** is already on this.`, flags: MessageFlags.Ephemeral });
-        return;
+        // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
+        // check" (rate limit / 5xx / network) — only the former justifies
+        // auto-release. A transient error must NOT be treated as a departure.
+        const guild = interaction.guild;
+        let member = null;
+        let verifyFailed = !guild;
+        if (guild) {
+          try {
+            member = guild.members.cache.get(r.by) || null;
+            if (!member) {
+              await interaction.deferUpdate();
+              deferred = true;
+              member = await guild.members.fetch(r.by);
+            }
+          } catch (err) {
+            if (isGoneError(err)) member = null; // confirmed gone
+            else verifyFailed = true;
+          }
+        }
+        if (verifyFailed) {
+          await tell("Couldn't verify the current claimer — try again.");
+          return;
+        }
+        if (member) {
+          await tell(`🙌 **${member.displayName}** is already on this.`);
+          return;
+        }
+        // Stale claim — the holder is confirmed gone. Invariant #1: the
+        // membership check above was an await since loadData, so re-load fresh,
+        // re-find the entry by id, and apply the release+claim to that copy
+        // rather than saving our now-possibly-stale snapshot.
+        const fresh = loadData();
+        const freshEntry = fresh.entries.find((e) => e.id === entryId);
+        if (!freshEntry || freshEntry.done) {
+          try {
+            await editCard({ components: [] });
+          } catch {
+            await tell("That request has already been handled.");
+          }
+          return;
+        }
+        // F1: recheck the fresh claim before releasing — it may have changed
+        // hands (to a LIVE claim) during the membership check's await window.
+        r = applyStaleClaimRelease(freshEntry, r.by, interaction.user.id, Date.now());
+        if (r.action === "blocked") {
+          const holder2 = await memberName(interaction.guild, r.by);
+          await tell(`🙌 **${holder2 || "Another officer"}** is already on this.`);
+          return;
+        }
+        workingData = fresh;
+        workingEntry = freshEntry;
       }
-      workingData = fresh;
-      workingEntry = freshEntry;
+      saveData(workingData);
+      saved = true;
+      const cat = catOf(workingData, workingEntry.category);
+      await editCard({
+        embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
+        components: [requestButtons(workingEntry.id)],
+        allowedMentions: { parse: [] },
+      });
+    } catch (err) {
+      // Once deferred, the router's fallback answer would land on the PUBLIC
+      // card (editReply of the deferred update) — answer privately instead.
+      if (!deferred) throw err;
+      console.error("Claim failed after the acknowledgement:", err?.message ?? err);
+      // Saved but the card edit failed: say so (another tap would release it)
+      // and still bring the board up to date.
+      await tell(saved ? "Done, but the request card couldn't be updated." : "Something went wrong — please try again.");
+      if (saved) await refreshBoard(client, workingData);
+      return;
     }
-    saveData(workingData);
-    const cat = catOf(workingData, workingEntry.category);
-    await interaction.update({
-      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
-      components: [requestButtons(workingEntry.id)],
-      allowedMentions: { parse: [] },
-    });
     await refreshBoard(client, workingData);
   } else {
     // Unknown / future action — acknowledge so Discord doesn't show "failed".
@@ -1891,7 +1971,7 @@ async function handleStatsView(interaction) {
     await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") });
     return;
   }
-  await interaction.editReply({ embeds: [embed], components: statsPanelComponents(data, value) });
+  await interaction.editReply({ content: "", embeds: [embed], components: statsPanelComponents(data, value) });
 }
 
 async function handleStatsMember(interaction) {
@@ -1900,7 +1980,7 @@ async function handleStatsMember(interaction) {
   const helperId = interaction.values[0];
   const name = (await memberName(interaction.guild, helperId)) || "(left the server)";
   const view = selectedViewFrom(interaction.message?.components) || "current";
-  await interaction.editReply({ embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, view) });
+  await interaction.editReply({ content: "", embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, view) });
 }
 
 async function handleSeasonCommand(interaction, data) {
@@ -2042,6 +2122,7 @@ async function updateRolesPanel(interaction, data) {
   // surface as an unhandled throw up to the top-level "Something went wrong".
   try {
     await interaction.update({
+      content: "", // clears a refusal line left by an earlier tap (an edit keeps fields it isn't sent)
       embeds: [rolesPanelEmbed(data)],
       components: rolesPanelComponents(data, roleNameResolver(interaction)),
     });
@@ -2344,9 +2425,14 @@ async function dispatch(interaction) {
     if (interaction.isModalSubmit()) {
       if (interaction.customId.startsWith("season:")) { await handleSeasonModal(interaction); return; }
       if (interaction.customId === "catadd:submit") { await handleCatAddModal(interaction); return; }
+      await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
       return;
     }
-    if (!interaction.isChatInputCommand()) return;
+    if (!interaction.isChatInputCommand()) {
+      // A select (or other component) with a customId nothing above handles.
+      await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+      return;
+    }
 
     const data = loadData();
 

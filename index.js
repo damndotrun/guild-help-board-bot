@@ -5,6 +5,7 @@
 
 require("dotenv").config(); // before anything reads process.env
 
+const fs = require("fs");
 const { Client, GatewayIntentBits } = require("discord.js");
 const config = require("./core/config");
 const lock = require("./core/lock");
@@ -49,6 +50,16 @@ async function start() {
     console.warn("PUBLIC_URL is set but the web admin is off (no WEB_PORT / DISCORD_CLIENT_SECRET / SESSION_SECRET).");
   }
 
+  // Every write goes to DATA_DIR: a typo or an unmounted volume must stop the
+  // start, not leave a bot that answers "Something went wrong" to every write.
+  try {
+    fs.accessSync(config.DATA_DIR, fs.constants.R_OK | fs.constants.W_OK);
+    if (!fs.statSync(config.DATA_DIR).isDirectory()) throw new Error("not a directory");
+  } catch (e) {
+    console.error(`DATA_DIR (${config.DATA_DIR}) is not a writable directory (${e.code || e.message}) — check the path and the volume mount.`);
+    process.exit(1);
+  }
+
   const modules = loadModules(config.parseModules(process.env.MODULES));
   console.log(`Modules: ${modules.map((m) => m.name).join(", ")}`);
 
@@ -75,8 +86,11 @@ async function start() {
   let webServer = null;
   if (web) {
     const { startWeb } = require("./web/server");
+    const { createStore } = require("./core/store");
     const getGuild = async () => (client.isReady() ? client.guilds.cache.get(process.env.GUILD_ID) ?? null : null);
-    webServer = await startWeb({ web, modules, ctxFor, perms, getGuild });
+    // Sign-outs survive a restart (web/session.js createSignOuts).
+    const signOutStore = createStore(require("path").join(config.DATA_DIR, "web-sessions.json"));
+    webServer = await startWeb({ web, modules, ctxFor, perms, getGuild, signOutStore });
     console.log(`Web admin listening on port ${web.port} (${web.origin})`);
   }
 
@@ -107,6 +121,9 @@ if (require.main === module) {
   });
   start().catch((err) => {
     console.error("Failed to start the bot:", err);
+    // A start that failed after acquireLock (command registration, login) must
+    // not leave a fresh heartbeat that makes the restart warn falsely.
+    lock.releaseLock();
     process.exit(1);
   });
 }

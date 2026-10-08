@@ -18,13 +18,17 @@ const { createCtxFor } = require("../core/runtime");
 const help = require("../modules/help/help");
 const helpModule = require("../modules/help");
 
-// The permission gate exactly as it was before M2b — the oracle for parity.
+// The permission gate as it was before M2b — the oracle for parity — plus
+// one deliberate change (review 2026-10-08): a raw API member (guild not
+// cached yet, roles = an array of ids) is read by its roles instead of being
+// treated as having none.
 function legacyIsManager(interaction, data) {
   const perms = interaction.memberPermissions;
   if (perms && perms.has(PermissionFlagsBits.ManageGuild)) return true;
   const roleIds = data.managerRoleIds || [];
   if (roleIds.length === 0) return false;
-  const cache = interaction.member?.roles?.cache;
+  const raw = interaction.member?.roles;
+  const cache = Array.isArray(raw) ? new Set(raw) : raw?.cache;
   if (cache) return roleIds.some((id) => cache.has(id));
   return false;
 }
@@ -33,7 +37,7 @@ const PERMISSIONS = [{ has: (f) => f === PermissionFlagsBits.ManageGuild }, { ha
 const MEMBERS = [
   { roles: { cache: new Map([["r1", true]]) } },
   { roles: { cache: new Map() } },
-  { roles: ["r1"] }, // raw API member (not cached) — no role cache
+  { roles: ["r1"] }, // raw API member (not cached) — roles is an array of ids
   undefined,
 ];
 const ROLE_SETS = [[], ["r1"], ["r2", "r1"], ["r2"]];
@@ -122,4 +126,14 @@ test("actorOf: user id, display name and the level from the same rule", () => {
   assert.deepEqual(help.actorOf(officer, data), { userId: "u1", displayName: "Kovi", level: "officer" });
   const bare = { user: { id: "u2", username: "zed" }, member: null, memberPermissions: null };
   assert.deepEqual(help.actorOf(bare, data), { userId: "u2", displayName: "zed", level: "member" });
+});
+
+test("a raw API member (roles = array of ids, guild not cached yet) gets the same level", () => {
+  const { createPerms, memberRoles } = require("../core/perms");
+  const perms = createPerms({ getManagerRoleIds: () => ["r-off"] });
+  const none = { has: () => false };
+  assert.equal(perms.levelOf({ roles: ["r-off"] }, none), "officer");
+  assert.equal(perms.levelOf({ roles: ["r-x"] }, none), "member");
+  assert.equal(perms.levelOf({ roles: { cache: new Map([["r-off", {}]]) } }, none), "officer");
+  assert.equal(memberRoles(null), undefined);
 });

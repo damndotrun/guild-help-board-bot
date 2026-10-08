@@ -13,6 +13,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const help = require("../modules/help/help");
 const actions = require("../modules/help/actions");
+const { MessageFlags } = require("discord.js");
 
 const CTX = { client: null }; // effects must survive without a Discord client
 const MEMBER = { userId: "u1", displayName: "Kovi", level: "member" };
@@ -846,8 +847,10 @@ test("the /config roles panel via dispatch goes through the actions (guards unch
   bot.guild.roles.cache.set("b1", { managed: true, name: "Bot" });
   await help.dispatch(bot);
   assert.equal(contentOf(bot), "You can't add @everyone or a bot-managed role as a manager role.");
-  await help.dispatch(component("role", "roles:add", OWNER, { values: ["r1"], rights: boss }));
+  const ok = component("role", "roles:add", OWNER, { values: ["r1"], rights: boss });
+  await help.dispatch(ok);
   assert.deepEqual(help.loadData().managerRoleIds, ["r1"]);
+  assert.equal(ok.calls[0][1].content, "", "a success clears the refusal line an earlier tap left on the panel");
   await help.dispatch(component("string", "roles:remove", OWNER, { values: ["r1"], rights: boss }));
   assert.deepEqual(help.loadData().managerRoleIds, []);
   await help.dispatch(component("role", "roles:notify", OWNER, { values: ["r2"], rights: boss }));
@@ -944,4 +947,81 @@ test("category labels: control and bidi-control characters → invalid (help.add
   }
   assert.equal(JSON.stringify(help.loadData().categories), before);
   assert.equal(actions.addCategory(CTX, OWNER, { label: "Guild Boss — Ünnep" }).ok, true);
+});
+
+test("refreshBoard edits the board from the data on disk, never from an older snapshot", async () => {
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; d.entries = [entry("e1", "u1", "mvp5k")]; });
+  const stale = help.loadData(); // an effect's snapshot taken before…
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; d.entries = [entry("e1", "u1", "mvp5k"), entry("e2", "u2", "mvp5k")]; }); // …a newer request was saved
+  const client = fakeClient();
+  await help.refreshBoard(client, stale);
+  const edit = client.log.find((x) => x.op === "edit" && x.messageId === "bm1");
+  const text = JSON.stringify(edit.payload.embeds[0].toJSON());
+  assert.match(text, /Kovi/);
+  assert.match(text, /Zed/, "the request saved after the snapshot is on the board");
+});
+
+// The Claim button when someone else holds the claim (help.js handleButton).
+function claimTap(holderLookup) {
+  seed((d) => { d.managerRoleIds = ["r-off"]; d.entries = [entry("e1", "u1", "mvp5k", { claimedBy: "o9", claimedTs: 1 })]; });
+  const i = component("button", "help:claim:e1", OFFICER, { rights: { roles: ["r-off"] } });
+  i.guild = { id: "g1", roles: { cache: new Map() }, members: { cache: new Map(), fetch: holderLookup } };
+  return i;
+}
+
+test("Claim held by someone not cached: the tap is deferred BEFORE the member lookup; the notice is a private follow-up", async () => {
+  let deferredFirst = null;
+  const i = claimTap(async () => { deferredFirst = i.deferred; return { displayName: "Nora" }; });
+  await help.dispatch(i);
+  assert.equal(deferredFirst, true, "acknowledged before waiting on Discord");
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].content, "🙌 **Nora** is already on this.");
+  assert.equal(i.calls[1][1].flags, MessageFlags.Ephemeral);
+  assert.equal(help.loadData().entries[0].claimedBy, "o9");
+});
+
+test("Claim held by someone who left: released and taken over, the card edited with editReply after the defer", async () => {
+  const i = claimTap(async () => { throw Object.assign(new Error("Unknown Member"), { code: 10007 }); });
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "editReply"]);
+  assert.match(i.calls[1][1].embeds[0].data.description, /Offi/);
+  assert.equal(help.loadData().entries[0].claimedBy, "o1");
+});
+
+test("Claim held by a cached member: answered at once, no defer", async () => {
+  const i = claimTap(async () => { throw new Error("must not fetch"); });
+  i.guild.members.cache.set("o9", { displayName: "Nora" });
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["reply"]);
+  assert.equal(i.calls[0][1].content, "🙌 **Nora** is already on this.");
+});
+
+test("a help button, select or modal nothing handles is still answered (no 'This interaction failed')", async () => {
+  seed();
+  for (const i of [
+    component("button", "stats:nope", MEMBER),
+    component("string", "board:nope", MEMBER),
+    component("role", "roles:nope", MEMBER),
+    component("modal", "catadd:nope", MEMBER),
+  ]) {
+    await help.dispatch(i);
+    assert.deepEqual(i.calls, [["reply", { content: "Unknown action.", flags: MessageFlags.Ephemeral }]], i.customId);
+  }
+});
+
+test("Claim: a lookup that can't verify after the defer is a private follow-up", async () => {
+  const i = claimTap(async () => { throw Object.assign(new Error("rate limited"), { status: 429 }); });
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].content, "Couldn't verify the current claimer — try again.");
+});
+
+test("Claim: a failure after the defer never writes on the public card — a private follow-up instead", async () => {
+  const i = claimTap(async () => { throw Object.assign(new Error("Unknown Member"), { code: 10007 }); });
+  i.editReply = async () => { throw Object.assign(new Error("Unknown Message"), { code: 10008 }); };
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].content, "Done, but the request card couldn't be updated.", "the claim was saved before the edit failed");
+  assert.equal(i.calls[1][1].flags, MessageFlags.Ephemeral);
+  assert.equal(help.loadData().entries[0].claimedBy, "o1");
 });

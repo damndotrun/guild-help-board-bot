@@ -219,10 +219,10 @@ For a local run, `PUBLIC_URL=http://localhost:3000` + `WEB_PORT=3000` work too
 **Security notes.**
 - Sessions are a signed cookie (`bb_session`, HttpOnly, SameSite=Lax, Secure on
   https) with a 30-day rolling expiry; it holds the Discord user id, never a
-  Discord token or the member's level. **Sign out** clears only that browser's
-  cookie. There is no server-side session list, so a copied cookie stays valid
-  until it expires — but it only opens anything while that person is still an
-  officer or owner.
+  Discord token or the member's level. **Sign out** ends that person's
+  sessions in every browser: the time is kept in `web-sessions.json` in
+  `DATA_DIR`, and any cookie issued before it (another device, a copied
+  cookie) no longer works.
 - **Rotating `SESSION_SECRET` signs everyone out** (use it as the global revoke).
 - Permissions are re-checked from Discord on every request (cached for up to
   60 seconds), so a demoted or removed officer loses access within about a
@@ -257,5 +257,10 @@ so `data.json` survives restarts.
 Entries are stored in `data.json`. By default it sits next to `index.js`; set
 the `DATA_DIR` environment variable to keep it on a persistent volume instead
 (as the TrueNAS setup above does). Writes are atomic, and a corrupt file is
-detected and recovered from rather than crashing the bot. Other modules store
+detected and recovered from rather than crashing the bot: the unreadable file
+is kept as `data.json.corrupt-<time>` and the bot continues from
+`data.json.bak`. If `data.json` is missing but `data.json.bak` exists, the bot
+starts from the backup — to really start over, delete both. Delete the
+`.corrupt-*` copies by hand once you have looked at them. The bot refuses
+to start when `DATA_DIR` is not a writable directory. Other modules store
 their data next to it as `<module>.json` (same atomic write + `.bak` safety).

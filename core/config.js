@@ -22,7 +22,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || null;
 // host, no trailing slash). Unset/blank → null. Throws a message naming PUBLIC_URL.
 // The message NEVER echoes the value: it may carry credentials (https://user:pw@host).
 const PUBLIC_URL_MAX = 512;
-const ORIGIN_SHAPE = /^https?:\/\/[^/?#@\s]+\/?$/i;
+const ORIGIN_SHAPE = /^https?:\/\/[^/\\?#@\s]+\/?$/i;
 function parsePublicUrl(raw) {
   const value = String(raw ?? "").trim();
   if (value === "") return null;
