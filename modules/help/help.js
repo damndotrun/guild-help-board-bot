@@ -185,8 +185,9 @@ function setNudgeConfig(data, channelId, hours) {
 const CHANNEL_OBFUSCATED = 1 << 17;
 
 // Does the bot have every one of `perms` in this channel? An obfuscated
-// channel never. Without the bot's member (not cached yet) or a
-// permissionsFor (not a guild channel) the flag alone decides.
+// channel never. Without the bot's member or a permissionsFor (not a guild
+// channel) the flag alone decides — deliberately: GUILD_CREATE always carries
+// the bot's own member, so that is only a before-ready edge.
 function botHas(guild, channel, perms) {
   const flags = Number(channel.flags?.bitfield ?? channel.flags ?? 0);
   if ((flags & CHANNEL_OBFUSCATED) !== 0) return false;
@@ -2630,6 +2631,9 @@ async function dispatch(interaction) {
           const hours = interaction.options.getInteger("hours"); // null if omitted
           // The picker lists what the USER can see; the digest needs the bot
           // to see, post and embed there (the web's list applies the same rule).
+          // The guild cache already holds every channel with its overwrites
+          // (obfuscated ones flagged); the option's resolved data only patches
+          // name/type, never the overwrites or flags.
           const target = interaction.guild?.channels?.cache?.get(channel.id) ?? channel;
           if (!botCanPostDigest(interaction.guild, target)) {
             await respond(interaction, {
