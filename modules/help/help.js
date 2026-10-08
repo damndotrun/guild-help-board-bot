@@ -179,6 +179,29 @@ function setNudgeConfig(data, channelId, hours) {
   return { ok: true };
 }
 
+// Discord's CHANNEL_OBFUSCATED channel flag (changelog 2026-08-12, enforced
+// 2026-11-16): a channel the bot cannot view still arrives over the gateway,
+// but named "___hidden___" and with most fields stripped.
+const CHANNEL_OBFUSCATED = 1 << 17;
+
+// Does the bot have every one of `perms` in this channel? An obfuscated
+// channel never. Without the bot's member (not cached yet) or a
+// permissionsFor (not a guild channel) the flag alone decides.
+function botHas(guild, channel, perms) {
+  const flags = Number(channel.flags?.bitfield ?? channel.flags ?? 0);
+  if ((flags & CHANNEL_OBFUSCATED) !== 0) return false;
+  const me = guild?.members?.me;
+  if (!me || typeof channel.permissionsFor !== "function") return true;
+  const have = channel.permissionsFor(me);
+  return !!have && perms.every((p) => have.has(p));
+}
+
+const botCanSee = (guild, channel) => botHas(guild, channel, [PermissionFlagsBits.ViewChannel]);
+
+// What the stale-nudge digest needs: see the channel, post, embed.
+const botCanPostDigest = (guild, channel) =>
+  botHas(guild, channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks]);
+
 // Turn nudges off (keep the threshold for next time). Pure — mutates data.
 function clearNudge(data) {
   data.nudgeChannelId = null;
@@ -2605,6 +2628,16 @@ async function dispatch(interaction) {
         if (nSub === "set") {
           const channel = interaction.options.getChannel("channel");
           const hours = interaction.options.getInteger("hours"); // null if omitted
+          // The picker lists what the USER can see; the digest needs the bot
+          // to see, post and embed there (the web's list applies the same rule).
+          const target = interaction.guild?.channels?.cache?.get(channel.id) ?? channel;
+          if (!botCanPostDigest(interaction.guild, target)) {
+            await respond(interaction, {
+              content: `I can't post the digest in <#${channel.id}> — give me View Channel, Send Messages and Embed Links there, or pick another channel.`,
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
           const r = actions().setNudge(helpCtx(), actorOf(interaction, data), { channelId: channel.id, hours: hours ?? undefined });
           if (!r.ok) { await respond(interaction, { content: r.error, flags: MessageFlags.Ephemeral }); return; }
           await respond(interaction, {
@@ -2706,6 +2739,8 @@ module.exports = {
   removeCategory,
   setNudgeConfig,
   clearNudge,
+  botCanSee,
+  botCanPostDigest,
   readAndShape,
   categorySuggestions,
   hasOpenEntry,

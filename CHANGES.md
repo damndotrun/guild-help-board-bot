@@ -12,11 +12,15 @@ tricky bits don't get re-broken.
 
 - **Hidden channels in the web admin:** from 2026-11-16 Discord sends the
   channels a bot cannot view *obfuscated* (channel flag `CHANNEL_OBFUSCATED`,
-  `1 << 17`; name `___hidden___`, most fields stripped). The Settings page's
-  nudge channel list (`modules/help/web.js` `nudgeChannels`) now leaves out
-  every channel the bot cannot see — obfuscated, or no View Channel for the
-  bot's own member (`botCanSee`) — so the POST refuses them too; the current
-  nudge channel shows as "(hidden channel)" if the bot lost access to it.
+  `1 << 17`; name `___hidden___`, most fields stripped). `help.botCanSee` /
+  `help.botCanPostDigest` (`modules/help/help.js`) check the flag, then the
+  bot's own permissions (View Channel; + Send Messages and Embed Links for the
+  digest). The web Settings nudge list offers only channels the digest can be
+  posted in (so the POST refuses the rest), and `/config nudge set` refuses
+  them too. If the configured channel is lost, the page names it
+  "(hidden channel)" / "(deleted channel)" (never `___hidden___`), shows a
+  red notice, and the picker starts on "Pick a channel" instead of silently
+  pre-selecting another one.
 - **Modals use Label components:** the three legacy modals in
   `modules/help/help.js` (new season, rename season, `/config category add`)
   wrap each text input in a `LabelBuilder` (`addLabelComponents`) instead of

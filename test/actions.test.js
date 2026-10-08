@@ -795,6 +795,50 @@ test("the season and category modals wrap each text input in a Label (no legacy 
   assert.deepEqual(labelled(cat), [[18, "Category name", 4, "label", undefined], [18, "Emoji", 4, "emoji", undefined]]);
 });
 
+test("Label-wrapped modal submits parse with discord.js's own field reader", async () => {
+  const { ModalSubmitInteraction, ModalSubmitFields } = require("discord.js");
+  // The raw MODAL_SUBMIT payload shape Discord sends for Label components.
+  const fieldsOf = (inputs) => new ModalSubmitFields(
+    inputs.map(([id, value]) => ModalSubmitInteraction.transformComponent({ type: 18, id: 1, component: { type: 4, id: 2, custom_id: id, value } })),
+  );
+  const boss = { manageGuild: true };
+  seed();
+  const cat = component("modal", "catadd:submit", OWNER, { rights: boss });
+  cat.fields = fieldsOf([["label", "Guild Boss"], ["emoji", ""]]);
+  await help.dispatch(cat);
+  assert.ok(help.loadData().categories.some((c) => c.label === "Guild Boss" && !c.archived));
+
+  const season = component("modal", "season:newmodal", OWNER, { rights: boss });
+  season.fields = fieldsOf([["name", "S8"]]);
+  await help.dispatch(season);
+  assert.equal(help.loadData().currentSeason.name, "S8");
+});
+
+test("/config nudge set refuses a channel the bot cannot post the digest in; nothing written", async () => {
+  const { PermissionFlagsBits } = require("discord.js");
+  const boss = { manageGuild: true };
+  seed();
+  const me = { id: "bot" };
+  const chan = (id, extra) => ({ id, type: 0, permissionsFor: () => ({ has: () => true }), ...extra });
+  const channels = new Map([
+    ["c-obf", chan("c-obf", { flags: { bitfield: 1 << 17 } })],
+    ["c-ro", chan("c-ro", { permissionsFor: () => ({ has: (p) => p !== PermissionFlagsBits.EmbedLinks }) })],
+    ["c-ok", chan("c-ok")],
+  ]);
+  const run = async (id) => {
+    const i = slash("config", { group: "nudge", sub: "set", channel: { id }, hours: 24 }, OWNER, boss);
+    i.guild = { id: "g1", roles: { cache: new Map() }, members: { me }, channels: { cache: channels } };
+    await help.dispatch(i);
+    return contentOf(i);
+  };
+  for (const id of ["c-obf", "c-ro"]) {
+    assert.match(await run(id), /^I can't post the digest in <#c-[a-z]+> — give me View Channel, Send Messages and Embed Links there/);
+    assert.equal(help.loadData().nudgeChannelId, null);
+  }
+  assert.match(await run("c-ok"), /^Stale nudges \*\*on\*\*/);
+  assert.equal(help.loadData().nudgeChannelId, "c-ok");
+});
+
 test("the /config roles panel via dispatch goes through the actions (guards unchanged)", async () => {
   const boss = { manageGuild: true };
   seed();
