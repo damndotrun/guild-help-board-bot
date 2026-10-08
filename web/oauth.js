@@ -23,14 +23,21 @@ class OAuthError extends Error {
   }
 }
 
+// An OAuth error code (access_denied, invalid_grant, …) made safe to log: a
+// plain lower-case code, or "other" for anything else (odd characters, too
+// long, repeated, not a string). Used for the callback's `error` query param
+// and for the token response's `error` field.
+function sanitizeOAuthCode(raw) {
+  return typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "other";
+}
+
 // The standard OAuth `error` field of a failed token response, for the log
-// only: a plain lower-case code or "other". The body itself is never kept,
-// quoted or logged — it can echo the authorization code.
+// only. The body itself is never kept, quoted or logged — it can echo the
+// authorization code.
 async function oauthErrorCode(res) {
   try {
     const body = await res.json();
-    const raw = body && body.error;
-    return typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "other";
+    return sanitizeOAuthCode(body && body.error);
   } catch {
     return "other";
   }
@@ -93,4 +100,4 @@ async function fetchUserId({ accessToken, fetch = globalThis.fetch }) {
   return body.id;
 }
 
-module.exports = { AUTHORIZE_URL, API, USER_AGENT, OAuthError, newState, authorizeUrl, exchangeCode, fetchUserId };
+module.exports = { AUTHORIZE_URL, API, USER_AGENT, OAuthError, sanitizeOAuthCode, newState, authorizeUrl, exchangeCode, fetchUserId };

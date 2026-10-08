@@ -237,8 +237,7 @@ function createWebApp({
     if (req.query.error !== undefined) {
       // Discord's OAuth error code (access_denied, consent_required, …) — only
       // a plain code is logged; anything else (repeated, odd characters) is "other".
-      const raw = req.query.error;
-      const errorCode = typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "other";
+      const errorCode = oauth.sanitizeOAuthCode(req.query.error);
       log.warn(`[web] Discord sign-in returned an error (prompt=${prompt}), error code: ${errorCode}`);
       // prompt=none only works for someone who already authorized the app —
       // ask once more, this time with Discord's consent screen.
@@ -272,7 +271,12 @@ function createWebApp({
       // sign-in. Only the error's name, HTTP status and Discord's sanitized
       // OAuth error code are logged, never its message: a SyntaxError quotes
       // the response body, a network error the host.
-      log.error("[web] Discord sign-in failed:", [err?.name ?? "Error", err?.status, err?.code].filter((x) => x != null && x !== "").join(" "));
+      // `code` only from our own OAuthError (already sanitized): other errors
+      // have unrelated .code values (a DOMException timeout is 23, a network
+      // error ECONNREFUSED).
+      const parts = [err?.name ?? "Error"];
+      if (err instanceof oauth.OAuthError) parts.push(err.status, err.code);
+      log.error("[web] Discord sign-in failed:", parts.filter((x) => x != null && x !== "").join(" "));
       // Not a 5xx: Cloudflare would replace an origin 502 with its own "Bad
       // gateway" page and the person would never see this text. A red notice
       // on the sign-in page instead.

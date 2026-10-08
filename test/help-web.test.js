@@ -491,17 +491,19 @@ test("Seasons: replaying the Start-new-season confirm form is a no-op with the '
   });
 });
 
-test("Seasons: the Reset confirmation with nobody waiting says so (no '0 requests are still waiting')", async () => {
+test("Seasons: the Reset and Start-new-season confirmations with nobody waiting say so (one shared wording, no '0 requests')", async () => {
   seed((d) => {
     d.currentSeason = { name: "Old", startedTs: 1 };
     d.entries = [];
   });
   await withWeb(async (w) => {
     await w.signIn(OFFICER);
-    const html = await (await w.post("/help/seasons/reset", {})).text();
-    assert.match(html, /Nobody is waiting right now\./);
-    assert.doesNotMatch(html, /0 requests/);
-    assert.doesNotMatch(html, /they will be closed/);
+    const reset = await (await w.post("/help/seasons/reset", {})).text();
+    const start = await (await w.post("/help/seasons/new", { name: "S6" })).text();
+    for (const html of [reset, start]) {
+      assert.match(html, /Nobody is waiting right now\./);
+      assert.doesNotMatch(html, /0 requests/);
+    }
   });
 });
 
@@ -513,7 +515,7 @@ test("Seasons: Reset season asks first, then clears the board (unnamed season)",
   await withWeb(async (w) => {
     await w.signIn(OFFICER);
     const html = await (await w.post("/help/seasons/reset", {})).text();
-    assert.match(html, /1 request is still waiting/);
+    assert.match(html, /1 request is waiting right now\./);
     assert.match(html, /class="btn btn-danger">Reset season</);
     assert.equal(help.loadData().entries.length, 1);
     const go = await w.submit("/help/seasons/reset", confirmForm(html, {}));

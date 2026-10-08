@@ -86,6 +86,13 @@ test("exchangeCode: a non-2xx answer carries Discord's OAuth error code (sanitiz
   }
 });
 
+test("sanitizeOAuthCode: a plain lower-case code passes, everything else is 'other'", () => {
+  for (const ok of ["invalid_grant", "access_denied", "a"]) assert.equal(oauth.sanitizeOAuthCode(ok), ok);
+  for (const bad of ["", "Has Space", "x".repeat(41), "a\nb", "<b>", ["invalid_grant"], 5, null, undefined, {}]) {
+    assert.equal(oauth.sanitizeOAuthCode(bad), "other");
+  }
+});
+
 test("exchangeCode: a failed exchange never leaks the client secret or the code into the error", async () => {
   const SECRET = "fake-client-secret-DO-NOT-LEAK";
   const CODE = "fake-auth-code-DO-NOT-LEAK";

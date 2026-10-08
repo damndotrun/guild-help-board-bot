@@ -114,7 +114,12 @@ function seasonsModel(data) {
   };
 }
 
-const waitingLine = (n) => (n === 1 ? "1 request is" : `${n} requests are`);
+// One sentence for both season confirmations (Start new season, Reset): how
+// many requests are waiting right now, with a real zero case.
+const waitingNow = (n) => {
+  if (n === 0) return "Nobody is waiting right now.";
+  return `${n === 1 ? "1 request is" : `${n} requests are`} waiting right now.`;
+};
 
 // The state a Start-new-season / Reset confirmation is about. Every close or
 // begin re-stamps currentSeason.startedTs, so a replayed confirmation no
@@ -155,7 +160,7 @@ function seasonRoutes(router, web) {
       title: "Start a new season?",
       lines: [
         `New season: ${name}`,
-        `Starting a new season closes every pending request — ${waitingLine(waiting)} waiting right now. They move to history as unresolved. This can't be undone.`,
+        `Starting a new season closes every pending request; they move to history as unresolved. ${waitingNow(waiting)} This can't be undone.`,
       ],
       action: `${BASE}/seasons/new`,
       fields: { name },
@@ -176,7 +181,7 @@ function seasonRoutes(router, web) {
     const ok = await web.confirmed(req, res, {
       title: "Reset the season?",
       lines: [
-        `This archives the current season and clears the board. ${waiting === 0 ? "Nobody is waiting right now." : `${waitingLine(waiting)} still waiting — they will be closed.`}`,
+        `This archives the current season and clears the board; any pending request is closed. ${waitingNow(waiting)}`,
         "This can't be undone.",
       ],
       action: `${BASE}/seasons/reset`,

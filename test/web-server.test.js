@@ -185,6 +185,19 @@ test("callback: a token-exchange error body that is not JSON (or has an odd erro
   }
 });
 
+test("callback: a real timeout (DOMException TimeoutError, legacy .code 23) logs the error name only, not the numeric DOM code", async () => {
+  await withWeb({}, async (w) => {
+    w.discord.handler = () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); };
+    const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
+    const res = await w.request(`/auth/callback?code=x&state=${state}`);
+    assert.equal(res.status, 303);
+    const line = w.log.errors.find((l) => /Discord sign-in failed/.test(l));
+    assert.ok(line, w.log.errors.join("\n"));
+    assert.match(line, /Discord sign-in failed: TimeoutError$/);
+    assert.ok(!/23/.test(line), line);
+  });
+});
+
 test("callback: a failing user lookup (/users/@me) takes the same 303 /login path, no session", async () => {
   await withWeb({}, async (w) => {
     w.discord.who.userId = "not-a-snowflake"; // /users/@me answers an invalid id
