@@ -35,6 +35,25 @@ tricky bits don't get re-broken.
   treats any session issued before it as signed out — every browser and any
   copied cookie, not only the one that pressed Sign out.
 
+## 2026-10-08 — Discord platform changes (obfuscated channels, modal Labels)
+
+- **Hidden channels in the web admin:** from 2026-11-16 Discord sends the
+  channels a bot cannot view *obfuscated* (channel flag `CHANNEL_OBFUSCATED`,
+  `1 << 17`; name `___hidden___`, most fields stripped). `help.botCanSee` /
+  `help.botCanPostDigest` (`modules/help/help.js`) check the flag, then the
+  bot's own permissions (View Channel; + Send Messages and Embed Links for the
+  digest). The web Settings nudge list offers only channels the digest can be
+  posted in (so the POST refuses the rest), and `/config nudge set` refuses
+  them too. If the configured channel is lost, the page names it
+  "(hidden channel)" / "(deleted channel)" (never `___hidden___`), shows a
+  red notice, and the picker starts on "Pick a channel" instead of silently
+  pre-selecting another one.
+- **Modals use Label components:** the three legacy modals in
+  `modules/help/help.js` (new season, rename season, `/config category add`)
+  wrap each text input in a `LabelBuilder` (`addLabelComponents`) instead of
+  an `ActionRow` holding a labelled `TextInput` — the pattern `/menu`'s note
+  modal already uses. Custom ids and `fields.getTextInputValue` are unchanged.
+
 ## 2026-10-01 — M3 web admin
 
 - **What:** officers and owners manage the help board in a browser —

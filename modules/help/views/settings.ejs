@@ -46,14 +46,20 @@
 <section class="card">
   <h2>Stale-request nudge</h2>
   <p class="muted">
-    <% if (page.nudge.on) { %>On — a daily digest in #<%= page.nudge.channelName %> for requests waiting over <%= page.nudge.hours %>h.<% } else { %>Off.<% } %>
+    <% if (page.nudge.on) { %>On — a daily digest in <%= page.nudge.where %> for requests waiting over <%= page.nudge.hours %>h.<% } else { %>Off.<% } %>
   </p>
+  <% if (page.nudge.unlisted) { %>
+  <p class="notice notice-error">The bot can't post the digest in <%= page.nudge.where %> — pick another channel, or give the bot View Channel, Send Messages and Embed Links there.</p>
+  <% } %>
   <% if (page.nudge.channels.length === 0) { %>
   <p class="muted">The bot can't see any text channel to post in.</p>
   <% } else { %>
   <form method="post" hx-push-url="false" action="<%= page.base %>/settings/nudge" class="inline">
     <label for="nudge-channel">Channel</label>
     <select id="nudge-channel" name="channelId" required>
+      <% if (page.nudge.unlisted) { %>
+      <option value="" selected disabled>Pick a channel</option>
+      <% } %>
       <% for (const c of page.nudge.channels) { %>
       <option value="<%= c.id %>"<% if (c.selected) { %> selected<% } %>>#<%= c.name %></option>
       <% } %>

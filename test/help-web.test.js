@@ -8,6 +8,7 @@ process.env.DATA_DIR = TMP;
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { PermissionFlagsBits } = require("discord.js");
 const help = require("../modules/help/help");
 const helpWeb = require("../modules/help/web");
 const { normalizeModule } = require("../core/loader");
@@ -1026,6 +1027,71 @@ test("Settings: nudge refusals — a voice / unknown channel, 0, 8761, 1.5, text
     }
   }, { guild: settingsGuild() });
   assert.equal(readData(), before);
+});
+
+// A guild where the bot is a cached member: one channel Discord sends
+// obfuscated (CHANNEL_OBFUSCATED, 1 << 17), one it denies View Channel on,
+// one it can see but not post in.
+const SECRET = "300000000000000004";
+const STAFF = "300000000000000005";
+const READONLY = "300000000000000006";
+const hiddenGuild = () => {
+  const g = settingsGuild();
+  const me = { id: "BOT" };
+  g.members.me = me;
+  const perms = (denied = []) => (member) => ({ has: (flag) => member === me && !denied.includes(flag) });
+  for (const c of g.channels.cache.values()) c.permissionsFor = perms();
+  g.channels.cache.set(SECRET, { id: SECRET, name: "___hidden___", type: 0, flags: { bitfield: 1 << 17 }, permissionsFor: perms() });
+  g.channels.cache.set(STAFF, { id: STAFF, name: "staff", type: 0, flags: { bitfield: 0 }, permissionsFor: perms([PermissionFlagsBits.ViewChannel]) });
+  g.channels.cache.set(READONLY, { id: READONLY, name: "readonly", type: 0, flags: { bitfield: 0 }, permissionsFor: perms([PermissionFlagsBits.SendMessages]) });
+  return g;
+};
+
+test("settingsModel: only channels the bot can post the digest in are offered; hidden ones are never named", () => {
+  const nudgeOf = (channelId) => helpWeb.settingsModel(hiddenGuild(), seed((d) => { d.nudgeChannelId = channelId; })).nudge;
+  const staff = nudgeOf(STAFF);
+  assert.deepEqual(staff.channels.map((c) => c.id), [GENERAL, NEWS]);
+  assert.deepEqual([staff.channelName, staff.where, staff.unlisted], ["(hidden channel)", "(hidden channel)", true]);
+  const secret = nudgeOf(SECRET);
+  assert.deepEqual([secret.channelName, secret.where, secret.unlisted], ["(hidden channel)", "(hidden channel)", true]);
+  const readonly = nudgeOf(READONLY);
+  assert.deepEqual([readonly.channelName, readonly.where, readonly.unlisted], ["readonly", "#readonly", true]);
+  const gone = nudgeOf("399999999999999999");
+  assert.deepEqual([gone.where, gone.unlisted], ["(deleted channel)", true]);
+  const general = nudgeOf(GENERAL);
+  assert.deepEqual([general.where, general.unlisted], ["#general", false]);
+  assert.equal(nudgeOf(null).unlisted, false);
+  // A bare numeric flags field (not a BitField) is read the same way.
+  const g = hiddenGuild();
+  g.channels.cache.get(GENERAL).flags = 1 << 17;
+  assert.deepEqual(helpWeb.settingsModel(g, seed()).nudge.channels.map((c) => c.id), [NEWS]);
+});
+
+test("Settings page: a nudge channel the bot lost says so and pre-selects nothing", async () => {
+  seed((d) => { d.nudgeChannelId = STAFF; d.nudgeThresholdHours = 24; });
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    const { text } = await w.page("/help/settings");
+    assert.match(text, /On — a daily digest in \(hidden channel\) for requests waiting over 24h\./);
+    assert.doesNotMatch(text, /#\(hidden channel\)|___hidden___|#staff/);
+    assert.match(text, /The bot can't post the digest in \(hidden channel\)/);
+    assert.match(text, /<option value="" selected disabled>Pick a channel<\/option>/);
+    assert.doesNotMatch(text, /<option value="\d+" selected>/);
+  }, { guild: hiddenGuild() });
+});
+
+test("Settings: nudge refuses a channel the bot cannot post in — nothing written", async () => {
+  seed();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    for (const channelId of [SECRET, STAFF, READONLY, ""]) {
+      const r = await w.submit("/help/settings/nudge", { channelId, hours: "5" });
+      assert.match(r.next.text, /Pick a text channel from the list\./, channelId);
+      assert.equal(help.loadData().nudgeChannelId, null);
+    }
+    const ok = await w.submit("/help/settings/nudge", { channelId: GENERAL, hours: "5" });
+    assert.match(ok.next.text, /✓ Stale nudges on — a daily digest in #general/);
+  }, { guild: hiddenGuild() });
 });
 
 test("an owner's sidebar: Overview, Seasons, Stats, Categories, Settings (M2 spec §6 order), then Teammates", async () => {
