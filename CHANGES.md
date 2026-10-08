@@ -8,6 +8,21 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-10-08 — Discord platform changes (obfuscated channels, modal Labels)
+
+- **Hidden channels in the web admin:** from 2026-11-16 Discord sends the
+  channels a bot cannot view *obfuscated* (channel flag `CHANNEL_OBFUSCATED`,
+  `1 << 17`; name `___hidden___`, most fields stripped). The Settings page's
+  nudge channel list (`modules/help/web.js` `nudgeChannels`) now leaves out
+  every channel the bot cannot see — obfuscated, or no View Channel for the
+  bot's own member (`botCanSee`) — so the POST refuses them too; the current
+  nudge channel shows as "(hidden channel)" if the bot lost access to it.
+- **Modals use Label components:** the three legacy modals in
+  `modules/help/help.js` (new season, rename season, `/config category add`)
+  wrap each text input in a `LabelBuilder` (`addLabelComponents`) instead of
+  an `ActionRow` holding a labelled `TextInput` — the pattern `/menu`'s note
+  modal already uses. Custom ids and `fields.getTextInputValue` are unchanged.
+
 ## 2026-10-01 — M3 web admin
 
 - **What:** officers and owners manage the help board in a browser —

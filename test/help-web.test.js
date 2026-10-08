@@ -8,6 +8,7 @@ process.env.DATA_DIR = TMP;
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { PermissionFlagsBits } = require("discord.js");
 const help = require("../modules/help/help");
 const helpWeb = require("../modules/help/web");
 const { normalizeModule } = require("../core/loader");
@@ -1026,6 +1027,47 @@ test("Settings: nudge refusals — a voice / unknown channel, 0, 8761, 1.5, text
     }
   }, { guild: settingsGuild() });
   assert.equal(readData(), before);
+});
+
+// A guild where the bot is a cached member: one channel Discord sends
+// obfuscated (CHANNEL_OBFUSCATED, 1 << 17), one it denies View Channel on.
+const SECRET = "300000000000000004";
+const STAFF = "300000000000000005";
+const hiddenGuild = () => {
+  const g = settingsGuild();
+  const me = { id: "BOT" };
+  g.members.me = me;
+  const canView = (ok) => (member) => ({ has: (flag) => member === me && flag === PermissionFlagsBits.ViewChannel && ok });
+  for (const c of g.channels.cache.values()) c.permissionsFor = canView(true);
+  g.channels.cache.set(SECRET, { id: SECRET, name: "___hidden___", type: 0, flags: { bitfield: 1 << 17 }, permissionsFor: canView(true) });
+  g.channels.cache.set(STAFF, { id: STAFF, name: "staff", type: 0, flags: { bitfield: 0 }, permissionsFor: canView(false) });
+  return g;
+};
+
+test("settingsModel: channels the bot cannot see (obfuscated, or no View Channel) are never offered or named", () => {
+  const staff = helpWeb.settingsModel(hiddenGuild(), seed((d) => { d.nudgeChannelId = STAFF; }));
+  assert.deepEqual(staff.nudge.channels.map((c) => c.id), [GENERAL, NEWS]);
+  assert.equal(staff.nudge.channelName, "(hidden channel)");
+  const secret = helpWeb.settingsModel(hiddenGuild(), seed((d) => { d.nudgeChannelId = SECRET; }));
+  assert.equal(secret.nudge.channelName, "(hidden channel)");
+  // A bare numeric flags field (not a BitField) is read the same way.
+  const g = hiddenGuild();
+  g.channels.cache.get(GENERAL).flags = 1 << 17;
+  assert.deepEqual(helpWeb.settingsModel(g, seed()).nudge.channels.map((c) => c.id), [NEWS]);
+});
+
+test("Settings: nudge refuses a channel the bot cannot see — nothing written", async () => {
+  seed();
+  await withWeb(async (w) => {
+    await w.signIn(OWNER);
+    for (const channelId of [SECRET, STAFF]) {
+      const r = await w.submit("/help/settings/nudge", { channelId, hours: "5" });
+      assert.match(r.next.text, /Pick a text channel from the list\./, channelId);
+      assert.equal(help.loadData().nudgeChannelId, null);
+    }
+    const ok = await w.submit("/help/settings/nudge", { channelId: GENERAL, hours: "5" });
+    assert.match(ok.next.text, /✓ Stale nudges on — a daily digest in #general/);
+  }, { guild: hiddenGuild() });
 });
 
 test("an owner's sidebar: Overview, Seasons, Stats, Categories, Settings (M2 spec §6 order), then Teammates", async () => {

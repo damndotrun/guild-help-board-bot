@@ -5,7 +5,7 @@
 // response. Each page is a view model (a pure-ish function, tested on its
 // own) plus an EJS fragment in ./views that sees only `page`.
 const path = require("node:path");
-const { ChannelType } = require("discord.js");
+const { ChannelType, PermissionFlagsBits } = require("discord.js");
 const help = require("./help");
 const actions = require("./actions");
 
@@ -379,9 +379,26 @@ function roleName(guild, id) {
   return role ? role.name : "(deleted role)";
 }
 
+// Discord's CHANNEL_OBFUSCATED channel flag (changelog 2026-08-12, enforced
+// 2026-11-16): a channel the bot cannot view still arrives over the gateway,
+// but named "___hidden___" and with most fields stripped.
+const CHANNEL_OBFUSCATED = 1 << 17;
+
+// Can the bot see this channel? An obfuscated one never; otherwise the bot's
+// own View Channel permission decides. Without the bot's member (not cached
+// yet) the flag alone decides.
+function botCanSee(guild, channel) {
+  const flags = Number(channel.flags?.bitfield ?? channel.flags ?? 0);
+  if ((flags & CHANNEL_OBFUSCATED) !== 0) return false;
+  const me = guild.members.me;
+  if (!me || typeof channel.permissionsFor !== "function") return true;
+  return channel.permissionsFor(me)?.has(PermissionFlagsBits.ViewChannel) === true;
+}
+
 function channelName(guild, id) {
   const channel = guild.channels.cache.get(id);
-  return channel ? channel.name : "(deleted channel)";
+  if (!channel) return "(deleted channel)";
+  return botCanSee(guild, channel) ? channel.name : "(hidden channel)";
 }
 
 // Roles an owner can pick: never @everyone (id = guild id) or a bot-managed
@@ -396,7 +413,7 @@ function pickableRoles(guild) {
 
 function nudgeChannels(guild) {
   return [...guild.channels.cache.values()]
-    .filter((c) => NUDGE_CHANNEL_TYPES.has(c.type))
+    .filter((c) => NUDGE_CHANNEL_TYPES.has(c.type) && botCanSee(guild, c))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((c) => ({ id: c.id, name: c.name }));
 }

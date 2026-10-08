@@ -771,6 +771,30 @@ test("reset:confirm, season:newmodal and /config via dispatch go through the act
   assert.equal(contentOf(nudge), "Stale nudges **on** — daily digest to <#c5> for requests older than **24h**.");
 });
 
+test("the season and category modals wrap each text input in a Label (no legacy action rows)", async () => {
+  const boss = { manageGuild: true };
+  seed((d) => { d.currentSeason.name = "S6"; });
+  const shown = async (i) => {
+    await help.dispatch(i);
+    assert.equal(i.calls[0][0], "showModal");
+    return i.calls[0][1].toJSON();
+  };
+  const labelled = (modal) => modal.components.map((c) => [c.type, c.label, c.component.type, c.component.custom_id, c.component.label]);
+
+  const fresh = await shown(component("button", "season:new", OWNER, { rights: boss }));
+  assert.equal(fresh.custom_id, "season:newmodal");
+  assert.deepEqual(labelled(fresh), [[18, "New season name", 4, "name", undefined]]);
+
+  const rename = await shown(component("button", "season:rename", OWNER, { rights: boss }));
+  assert.equal(rename.custom_id, "season:renamemodal:current");
+  assert.deepEqual(labelled(rename), [[18, "Season name", 4, "name", undefined]]);
+  assert.equal(rename.components[0].component.value, "S6");
+
+  const cat = await shown(slash("config", { group: "category", sub: "add" }, OWNER, boss));
+  assert.equal(cat.custom_id, "catadd:submit");
+  assert.deepEqual(labelled(cat), [[18, "Category name", 4, "label", undefined], [18, "Emoji", 4, "emoji", undefined]]);
+});
+
 test("the /config roles panel via dispatch goes through the actions (guards unchanged)", async () => {
   const boss = { manageGuild: true };
   seed();

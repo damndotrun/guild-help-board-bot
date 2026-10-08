@@ -15,6 +15,7 @@ const {
   RoleSelectMenuBuilder,
   PermissionFlagsBits,
   MessageFlags,
+  LabelBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -1915,20 +1916,20 @@ async function handleSeasonButton(interaction) {
   const action = parts[1];
 
   if (action === "new") {
-    const input = new TextInputBuilder().setCustomId("name").setLabel("New season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setPlaceholder("e.g. Season 5 — Winter");
-    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season (closes pending requests)").addComponents(new ActionRowBuilder().addComponents(input));
+    const input = new TextInputBuilder().setCustomId("name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true).setPlaceholder("e.g. Season 5 — Winter");
+    const modal = new ModalBuilder().setCustomId("season:newmodal").setTitle("Start a new season (closes pending requests)").addLabelComponents(new LabelBuilder().setLabel("New season name").setTextInputComponent(input));
     await interaction.showModal(modal);
     return;
   }
   if (action === "rename" || action === "renamepick") {
     const target = action === "rename" ? "current" : parts[2]; // "current" or "<endedTs>"
     const season = target === "current" ? data.currentSeason : (data.seasons || []).find((s) => String(s.endedTs) === String(target));
-    const input = new TextInputBuilder().setCustomId("name").setLabel("Season name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true);
+    const input = new TextInputBuilder().setCustomId("name").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true);
     // Only prefill when there is a real name — Discord rejects an empty setValue
     // on a text input (unnamed is the day-one state, so this path is common).
     const prefill = seasonLabel(season);
     if (prefill && prefill !== "(unnamed)") input.setValue(prefill);
-    const modal = new ModalBuilder().setCustomId(`season:renamemodal:${target}`).setTitle("Rename season").addComponents(new ActionRowBuilder().addComponents(input));
+    const modal = new ModalBuilder().setCustomId(`season:renamemodal:${target}`).setTitle("Rename season").addLabelComponents(new LabelBuilder().setLabel("Season name").setTextInputComponent(input));
     await interaction.showModal(modal);
     return;
   }
@@ -2531,14 +2532,12 @@ async function dispatch(interaction) {
           if (!label) {
             const labelInput = new TextInputBuilder()
               .setCustomId("label")
-              .setLabel("Category name")
               .setStyle(TextInputStyle.Short)
               .setMaxLength(MAX_LABEL)
               .setRequired(true)
               .setPlaceholder("e.g. Guild Boss");
             const emojiInput = new TextInputBuilder()
               .setCustomId("emoji")
-              .setLabel("Emoji")
               .setStyle(TextInputStyle.Short)
               .setMaxLength(32)
               .setRequired(false)
@@ -2546,9 +2545,9 @@ async function dispatch(interaction) {
             const modal = new ModalBuilder()
               .setCustomId("catadd:submit")
               .setTitle("Add a category")
-              .addComponents(
-                new ActionRowBuilder().addComponents(labelInput),
-                new ActionRowBuilder().addComponents(emojiInput)
+              .addLabelComponents(
+                new LabelBuilder().setLabel("Category name").setTextInputComponent(labelInput),
+                new LabelBuilder().setLabel("Emoji").setTextInputComponent(emojiInput)
               );
             await interaction.showModal(modal);
             return;
