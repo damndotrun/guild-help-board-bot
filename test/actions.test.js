@@ -1021,6 +1021,7 @@ test("Claim: a failure after the defer never writes on the public card — a pri
   i.editReply = async () => { throw Object.assign(new Error("Unknown Message"), { code: 10008 }); };
   await help.dispatch(i);
   assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
-  assert.equal(i.calls[1][1].content, "Something went wrong — please try again.");
+  assert.equal(i.calls[1][1].content, "Done, but the request card couldn't be updated.", "the claim was saved before the edit failed");
   assert.equal(i.calls[1][1].flags, MessageFlags.Ephemeral);
+  assert.equal(help.loadData().entries[0].claimedBy, "o1");
 });

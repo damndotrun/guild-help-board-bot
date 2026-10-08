@@ -1833,6 +1833,7 @@ async function handleButton(interaction) {
       }
     };
     const editCard = (payload) => (deferred ? interaction.editReply(payload) : interaction.update(payload));
+    let saved = false;
     try {
       if (r.action === "blocked") {
         // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
@@ -1888,6 +1889,7 @@ async function handleButton(interaction) {
         workingEntry = freshEntry;
       }
       saveData(workingData);
+      saved = true;
       const cat = catOf(workingData, workingEntry.category);
       await editCard({
         embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
@@ -1899,7 +1901,10 @@ async function handleButton(interaction) {
       // card (editReply of the deferred update) — answer privately instead.
       if (!deferred) throw err;
       console.error("Claim failed after the acknowledgement:", err?.message ?? err);
-      await tell("Something went wrong — please try again.");
+      // Saved but the card edit failed: say so (another tap would release it)
+      // and still bring the board up to date.
+      await tell(saved ? "Done, but the request card couldn't be updated." : "Something went wrong — please try again.");
+      if (saved) await refreshBoard(client, workingData);
       return;
     }
     await refreshBoard(client, workingData);

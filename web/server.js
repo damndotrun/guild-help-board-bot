@@ -298,7 +298,8 @@ function createWebApp({
       session.setNotice(req, { ok: false, text: TEXT.discordFailed });
       return res.redirect(303, "/login");
     }
-    session.signIn(req, userId, now(), signOuts.issuedAt(userId, now()));
+    const t = now();
+    session.signIn(req, userId, t, signOuts.issuedAt(userId, t));
     return res.redirect(303, "/");
   });
 
