@@ -176,7 +176,7 @@ function seasonRoutes(router, web) {
     const ok = await web.confirmed(req, res, {
       title: "Reset the season?",
       lines: [
-        `This archives the current season and clears the board. ${waitingLine(waiting)} still waiting — they will be closed.`,
+        `This archives the current season and clears the board. ${waiting === 0 ? "Nobody is waiting right now." : `${waitingLine(waiting)} still waiting — they will be closed.`}`,
         "This can't be undone.",
       ],
       action: `${BASE}/seasons/reset`,

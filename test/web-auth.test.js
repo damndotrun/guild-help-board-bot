@@ -61,6 +61,31 @@ test("exchangeCode: a non-2xx answer or a body without access_token is an OAuthE
   await assert.rejects(oauth.exchangeCode({ code: "x", clientId: "1", clientSecret: "s", redirectUri: "r", fetch: empty.fetch }), oauth.OAuthError);
 });
 
+test("exchangeCode: a non-2xx answer carries Discord's OAuth error code (sanitized) as err.code; anything else is 'other', never a throw", async () => {
+  const reject = (json) => oauth.exchangeCode({
+    code: "x", clientId: "1", clientSecret: "s", redirectUri: "r",
+    fetch: async () => ({ ok: false, status: 400, json }),
+  }).then(() => assert.fail("should have rejected"), (e) => e);
+  for (const code of ["invalid_grant", "invalid_client", "invalid_request"]) {
+    const err = await reject(async () => ({ error: code, error_description: "bad CODE-SECRET" }));
+    assert.ok(err instanceof oauth.OAuthError);
+    assert.equal(err.code, code);
+    assert.equal(err.status, 400);
+    assert.ok(!err.message.includes("CODE-SECRET") && !err.message.includes(code), "the message stays HTTP-status only");
+  }
+  for (const json of [
+    async () => { throw new SyntaxError("not json"); },
+    async () => ({ error: "Has Space\nAnd-Newline" }),
+    async () => ({ error: "x".repeat(41) }),
+    async () => ({ error: "" }),
+    async () => ({ error: 5 }),
+    async () => ({}),
+    async () => null,
+  ]) {
+    assert.equal((await reject(json)).code, "other");
+  }
+});
+
 test("exchangeCode: a failed exchange never leaks the client secret or the code into the error", async () => {
   const SECRET = "fake-client-secret-DO-NOT-LEAK";
   const CODE = "fake-auth-code-DO-NOT-LEAK";

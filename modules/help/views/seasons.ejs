@@ -5,7 +5,7 @@
   <form method="post" hx-push-url="false" action="<%= page.base %>/seasons/rename" class="inline">
     <input type="hidden" name="target" value="current">
     <label for="rename-current">Rename</label>
-    <input id="rename-current" type="text" name="name" required maxlength="<%= page.maxName %>" value="<%= page.current.named ? page.current.name : "" %>">
+    <input id="rename-current" type="text" name="name" required maxlength="<%= page.maxName %>" placeholder="New name" value="<%= page.current.named ? page.current.name : "" %>">
     <button type="submit" class="btn">Rename</button>
   </form>
 </section>
@@ -35,7 +35,7 @@
         <td data-label="Rename">
           <form method="post" hx-push-url="false" action="<%= page.base %>/seasons/rename" class="inline">
             <input type="hidden" name="target" value="<%= s.target %>">
-            <input type="text" name="name" required maxlength="<%= page.maxName %>" aria-label="New name for <%= s.name %>">
+            <input type="text" name="name" required maxlength="<%= page.maxName %>" placeholder="New name" aria-label="New name for <%= s.name %>">
             <button type="submit" class="btn">Rename</button>
           </form>
         </td>

@@ -15,10 +15,24 @@ const TIMEOUT_MS = 10_000;
 const SNOWFLAKE = /^\d{17,20}$/;
 
 class OAuthError extends Error {
-  constructor(message, status = null) {
+  constructor(message, status = null, code = null) {
     super(message);
     this.name = "OAuthError";
     this.status = status;
+    this.code = code; // Discord's OAuth error code (invalid_grant, …) or "other"; null when none
+  }
+}
+
+// The standard OAuth `error` field of a failed token response, for the log
+// only: a plain lower-case code or "other". The body itself is never kept,
+// quoted or logged — it can echo the authorization code.
+async function oauthErrorCode(res) {
+  try {
+    const body = await res.json();
+    const raw = body && body.error;
+    return typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : "other";
+  } catch {
+    return "other";
   }
 }
 
@@ -58,7 +72,7 @@ async function exchangeCode({ code, clientId, clientSecret, redirectUri, fetch =
     }).toString(),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
-  if (!res.ok) throw new OAuthError(`token exchange failed (HTTP ${res.status})`, res.status);
+  if (!res.ok) throw new OAuthError(`token exchange failed (HTTP ${res.status})`, res.status, await oauthErrorCode(res));
   const body = await res.json();
   if (!body || typeof body.access_token !== "string" || body.access_token === "") {
     throw new OAuthError("token exchange returned no access_token");

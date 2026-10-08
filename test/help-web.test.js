@@ -386,6 +386,11 @@ test("Seasons: rename the current and a past season; notice line; the board refr
     const p = await w.submit("/help/seasons/rename", { target: "9000", name: "Autumn" });
     assert.match(p.next.text, /✓ Renamed to Autumn\./);
     assert.equal(help.loadData().seasons[0].name, "Autumn");
+    // every Rename input (current and past seasons) has a placeholder
+    const { text } = await w.page("/help/seasons");
+    const inputs = text.match(/<input[^>]*name="name"[^>]*>/g).filter((i) => !/id="new-season"/.test(i));
+    assert.equal(inputs.length, 2);
+    for (const i of inputs) assert.match(i, /placeholder="New name"/);
   }, { client });
 });
 
@@ -483,6 +488,20 @@ test("Seasons: replaying the Start-new-season confirm form is a no-op with the '
     assert.equal(help.loadData().seasons.length, 1);
     const { text } = await w.page("/help/seasons");
     assert.match(text, new RegExp(`notice-error[^>]*>✕ ${CHANGED.replace(".", "\\.")}`));
+  });
+});
+
+test("Seasons: the Reset confirmation with nobody waiting says so (no '0 requests are still waiting')", async () => {
+  seed((d) => {
+    d.currentSeason = { name: "Old", startedTs: 1 };
+    d.entries = [];
+  });
+  await withWeb(async (w) => {
+    await w.signIn(OFFICER);
+    const html = await (await w.post("/help/seasons/reset", {})).text();
+    assert.match(html, /Nobody is waiting right now\./);
+    assert.doesNotMatch(html, /0 requests/);
+    assert.doesNotMatch(html, /they will be closed/);
   });
 });
 

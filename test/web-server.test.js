@@ -140,21 +140,79 @@ test("callback: Discord's error code is logged at warn level, sanitized (anythin
   });
 });
 
-test("callback: Discord failing the token exchange → 502 page, logged, no session", async () => {
+// A failed sign-in must never answer 5xx: Cloudflare swaps an origin 502 for its
+// own "Bad gateway" page, so the person would never see our text. It is a red
+// notice on the sign-in page (303 /login), no session.
+
+test("callback: Discord refusing the token exchange (400 invalid_grant) → 303 /login with a red notice; the OAuth error code is logged, the code never", async () => {
+  await withWeb({}, async (w) => {
+    const CODE = "fake-auth-code-DO-NOT-LOG";
+    w.discord.handler = (url) => {
+      if (url.endsWith("/oauth2/token")) return { ok: false, status: 400, json: async () => ({ error: "invalid_grant", error_description: `bad ${CODE}` }) };
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
+    const res = await w.request(`/auth/callback?code=${CODE}&state=${state}`);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/login");
+    const login = await w.page("/login");
+    assert.equal(login.res.status, 200);
+    assert.match(login.text, /notice-error[^>]*>✕ Discord sign-in didn&#39;t complete\. Try again\./);
+    assert.match(login.text, /Sign in with Discord/);
+    assert.ok(w.log.errors.some((l) => /Discord sign-in failed: OAuthError 400 invalid_grant/.test(l)), w.log.errors.join("\n"));
+    assert.ok(!w.log.lines.some((l) => l.includes("DO-NOT-LOG") || l.includes("error_description")), "neither the code nor the raw body is logged");
+    assert.equal((await w.request("/")).headers.get("location"), "/login", "no session");
+  });
+});
+
+test("callback: a token-exchange error body that is not JSON (or has an odd error value) logs 'other', still 303 /login", async () => {
+  const bodies = [
+    async () => { throw new SyntaxError("Unexpected token '<' SECRET-BODY"); },
+    async () => ({ error: "<b>EVIL\nINJECTED" }),
+    async () => ({ error: ["invalid_grant"] }),
+    async () => null,
+  ];
+  for (const json of bodies) {
+    await withWeb({}, async (w) => {
+      w.discord.handler = () => ({ ok: false, status: 400, json });
+      const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
+      const res = await w.request(`/auth/callback?code=x&state=${state}`);
+      assert.equal(res.status, 303);
+      assert.equal(res.headers.get("location"), "/login");
+      assert.ok(w.log.errors.some((l) => /Discord sign-in failed: OAuthError 400 other$/.test(l)), w.log.errors.join("\n"));
+      assert.ok(!w.log.lines.some((l) => /SECRET|EVIL|INJECTED|<b>/.test(l)), "the raw body is never logged");
+    });
+  }
+});
+
+test("callback: a failing user lookup (/users/@me) takes the same 303 /login path, no session", async () => {
   await withWeb({}, async (w) => {
     w.discord.who.userId = "not-a-snowflake"; // /users/@me answers an invalid id
     const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
     const res = await w.request(`/auth/callback?code=x&state=${state}`);
-    assert.equal(res.status, 502);
-    assert.ok(w.log.lines.some((l) => /Discord sign-in failed/.test(l)));
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/login");
+    assert.ok(w.log.errors.some((l) => /Discord sign-in failed/.test(l)));
+    assert.match((await w.page("/login")).text, /Discord sign-in didn&#39;t complete\. Try again\./);
     assert.equal((await w.request("/")).headers.get("location"), "/login");
+  });
+  await withWeb({}, async (w) => {
+    w.discord.handler = (url) => {
+      if (url.endsWith("/oauth2/token")) return { ok: true, status: 200, json: async () => ({ access_token: "tok" }) };
+      return { ok: false, status: 401, json: async () => ({ message: "401: Unauthorized" }) };
+    };
+    const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
+    const res = await w.request(`/auth/callback?code=x&state=${state}`);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), "/login");
+    assert.ok(w.log.errors.some((l) => /Discord sign-in failed: OAuthError 401$/.test(l)), w.log.errors.join("\n"));
   });
 });
 
 // Ruling: ANY failure of the exchange is a failed sign-in with a generic page;
 // neither the log nor the page ever carries err.message (a SyntaxError quotes
 // the response body, a network error the host).
-test("callback: ANY error (bad JSON body, network failure, timeout) → generic 502; err.message is never logged or rendered", async () => {
+test("callback: ANY error (bad JSON body, network failure, timeout) → 303 /login with the generic notice; err.message is never logged or rendered", async () => {
   const cases = [
     ["SyntaxError", () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token 'SECRET-BODY' in JSON"); } })],
     ["TypeError", () => { throw Object.assign(new TypeError("fetch failed to SECRET-HOST"), { cause: new Error("ECONNREFUSED SECRET-HOST") }); }],
@@ -165,9 +223,10 @@ test("callback: ANY error (bad JSON body, network failure, timeout) → generic 
       w.discord.handler = handler;
       const state = new URL((await w.request("/auth/login")).headers.get("location")).searchParams.get("state");
       const res = await w.request(`/auth/callback?code=x&state=${state}`);
-      const text = await res.text();
-      assert.equal(res.status, 502, name);
-      assert.match(text, /Discord sign-in failed\./, name);
+      assert.equal(res.status, 303, name);
+      assert.equal(res.headers.get("location"), "/login", name);
+      const text = (await w.page("/login")).text;
+      assert.match(text, /Discord sign-in didn&#39;t complete\. Try again\./, name);
       assert.doesNotMatch(text, /SECRET/, `${name}: page`);
       const logged = w.log.lines.join("\n");
       assert.match(logged, /Discord sign-in failed/, name);
@@ -235,7 +294,8 @@ test("callback: one anonymous client looping login → callback(junk code) canno
       const state = new URL((await w.request("/auth/login", { ip: EVIL })).headers.get("location")).searchParams.get("state");
       statuses.push((await w.request(`/auth/callback?code=junk&state=${state}`, { ip: EVIL })).status);
     }
-    assert.equal(statuses.filter((s) => s === 502).length, CLIENT_CALLBACKS_PER_MINUTE);
+    assert.equal(statuses.filter((s) => s === 303).length, CLIENT_CALLBACKS_PER_MINUTE);
+    assert.ok(!statuses.some((s) => s >= 500), "a failed sign-in is never a 5xx");
     assert.equal(statuses.filter((s) => s === 429).length, CALLBACKS_PER_MINUTE - CLIENT_CALLBACKS_PER_MINUTE);
     w.discord.handler = null;
     w.jar.clear();

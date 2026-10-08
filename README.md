@@ -228,6 +228,12 @@ For a local run, `PUBLIC_URL=http://localhost:3000` + `WEB_PORT=3000` work too
   60 seconds), so a demoted or removed officer loses access within about a
   minute — and a manager role changed on the Settings page applies on the
   user's next request.
+- A sign-in Discord refuses (e.g. a wrong `DISCORD_CLIENT_SECRET` or a redirect
+  URI that isn't registered) sends the person back to the sign-in page with a
+  red "didn't complete" line — never a 5xx, which Cloudflare would replace with
+  its own "Bad gateway" page. The container log then has
+  `[web] Discord sign-in failed: OAuthError 400 <code>`, where `<code>` is
+  Discord's OAuth error (`invalid_grant`, `invalid_client`, …) or `other`.
 - Sign-in limits: the bot allows 10 Discord token exchanges per minute per
   client address and 30 per minute for the whole process. The per-client limit
   stops one visitor from locking everyone out, but many addresses together can

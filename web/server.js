@@ -47,7 +47,7 @@ const TEXT = Object.freeze({
   noCode: "Discord didn't send a sign-in code. Start again from the sign-in page.",
   cancelled: "Sign-in was cancelled.",
   busy: "Too many sign-ins right now — wait a minute and try again.",
-  discordFailed: "Discord sign-in failed. Try again in a moment.",
+  discordFailed: "Discord sign-in didn't complete. Try again.",
   notHttps:
     "This address isn't being reached over HTTPS, so the sign-in cookie can't be set. " +
     "(For the operator: the proxy must send X-Forwarded-Proto: https.)",
@@ -269,10 +269,15 @@ function createWebApp({
       userId = await oauth.fetchUserId({ accessToken, fetch });
     } catch (err) {
       // ANY failure (OAuthError, timeout, bad JSON, network) is a failed
-      // sign-in. Only the error's name and HTTP status are logged, never its
-      // message: a SyntaxError quotes the response body, a network error the host.
-      log.error("[web] Discord sign-in failed:", err?.name ?? "Error", err?.status ?? "");
-      return next(httpError(502, TEXT.discordFailed));
+      // sign-in. Only the error's name, HTTP status and Discord's sanitized
+      // OAuth error code are logged, never its message: a SyntaxError quotes
+      // the response body, a network error the host.
+      log.error("[web] Discord sign-in failed:", [err?.name ?? "Error", err?.status, err?.code].filter((x) => x != null && x !== "").join(" "));
+      // Not a 5xx: Cloudflare would replace an origin 502 with its own "Bad
+      // gateway" page and the person would never see this text. A red notice
+      // on the sign-in page instead.
+      session.setNotice(req, { ok: false, text: TEXT.discordFailed });
+      return res.redirect(303, "/login");
     }
     session.signIn(req, userId, now());
     return res.redirect(303, "/");
