@@ -1315,13 +1315,22 @@ async function statsEmbedFor(guild, data, view) {
   return seasonHelperEmbed(data, season, await resolveIds(guild, top.map(([id]) => id)));
 }
 
-async function refreshBoard(client, data) {
+// Edits the board from the data ON DISK, read again right before the edit —
+// never from the caller's snapshot: refreshes run in `effects`, after other
+// REST calls, and an older snapshot landing last would drop a newer request
+// from the public board until the next change. `_snapshot` is kept so the
+// call sites read as before; a name missing from `names` (a request that
+// arrived during the lookups) falls back to its stored username.
+async function refreshBoard(client, _snapshot) {
+  const data = loadData();
   if (!data.boardChannelId || !data.boardMessageId) return;
   try {
     const channel = await client.channels.fetch(data.boardChannelId);
     const names = await resolveNames(channel.guild, data);
     const message = await channel.messages.fetch(data.boardMessageId);
-    await message.edit({ embeds: [buildBoardEmbed(data, names)], components: [needHelpRow()] });
+    const current = loadData();
+    if (current.boardChannelId !== data.boardChannelId || current.boardMessageId !== data.boardMessageId) return;
+    await message.edit({ embeds: [buildBoardEmbed(current, names)], components: [needHelpRow()] });
   } catch (err) {
     console.error("Could not refresh board message:", err.message);
   }

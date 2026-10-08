@@ -877,3 +877,15 @@ test("category labels: control and bidi-control characters → invalid (help.add
   assert.equal(JSON.stringify(help.loadData().categories), before);
   assert.equal(actions.addCategory(CTX, OWNER, { label: "Guild Boss — Ünnep" }).ok, true);
 });
+
+test("refreshBoard edits the board from the data on disk, never from an older snapshot", async () => {
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; d.entries = [entry("e1", "u1", "mvp5k")]; });
+  const stale = help.loadData(); // an effect's snapshot taken before…
+  seed((d) => { d.boardChannelId = "b1"; d.boardMessageId = "bm1"; d.entries = [entry("e1", "u1", "mvp5k"), entry("e2", "u2", "mvp5k")]; }); // …a newer request was saved
+  const client = fakeClient();
+  await help.refreshBoard(client, stale);
+  const edit = client.log.find((x) => x.op === "edit" && x.messageId === "bm1");
+  const text = JSON.stringify(edit.payload.embeds[0].toJSON());
+  assert.match(text, /Kovi/);
+  assert.match(text, /Zed/, "the request saved after the snapshot is on the board");
+});
