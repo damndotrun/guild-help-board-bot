@@ -1833,66 +1833,75 @@ async function handleButton(interaction) {
       }
     };
     const editCard = (payload) => (deferred ? interaction.editReply(payload) : interaction.update(payload));
-    if (r.action === "blocked") {
-      // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
-      // check" (rate limit / 5xx / network) — only the former justifies
-      // auto-release. A transient error must NOT be treated as a departure.
-      const guild = interaction.guild;
-      let member = null;
-      let verifyFailed = !guild;
-      if (guild) {
-        try {
-          member = guild.members.cache.get(r.by) || null;
-          if (!member) {
-            await interaction.deferUpdate();
-            deferred = true;
-            member = await guild.members.fetch(r.by);
-          }
-        } catch (err) {
-          if (isGoneError(err)) member = null; // confirmed gone
-          else verifyFailed = true;
-        }
-      }
-      if (verifyFailed) {
-        await tell("Couldn't verify the current claimer — try again.");
-        return;
-      }
-      if (member) {
-        await tell(`🙌 **${member.displayName}** is already on this.`);
-        return;
-      }
-      // Stale claim — the holder is confirmed gone. Invariant #1: the
-      // membership check above was an await since loadData, so re-load fresh,
-      // re-find the entry by id, and apply the release+claim to that copy
-      // rather than saving our now-possibly-stale snapshot.
-      const fresh = loadData();
-      const freshEntry = fresh.entries.find((e) => e.id === entryId);
-      if (!freshEntry || freshEntry.done) {
-        try {
-          await editCard({ components: [] });
-        } catch {
-          await tell("That request has already been handled.");
-        }
-        return;
-      }
-      // F1: recheck the fresh claim before releasing — it may have changed
-      // hands (to a LIVE claim) during the membership check's await window.
-      r = applyStaleClaimRelease(freshEntry, r.by, interaction.user.id, Date.now());
+    try {
       if (r.action === "blocked") {
-        const holder2 = await memberName(interaction.guild, r.by);
-        await tell(`🙌 **${holder2 || "Another officer"}** is already on this.`);
-        return;
+        // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
+        // check" (rate limit / 5xx / network) — only the former justifies
+        // auto-release. A transient error must NOT be treated as a departure.
+        const guild = interaction.guild;
+        let member = null;
+        let verifyFailed = !guild;
+        if (guild) {
+          try {
+            member = guild.members.cache.get(r.by) || null;
+            if (!member) {
+              await interaction.deferUpdate();
+              deferred = true;
+              member = await guild.members.fetch(r.by);
+            }
+          } catch (err) {
+            if (isGoneError(err)) member = null; // confirmed gone
+            else verifyFailed = true;
+          }
+        }
+        if (verifyFailed) {
+          await tell("Couldn't verify the current claimer — try again.");
+          return;
+        }
+        if (member) {
+          await tell(`🙌 **${member.displayName}** is already on this.`);
+          return;
+        }
+        // Stale claim — the holder is confirmed gone. Invariant #1: the
+        // membership check above was an await since loadData, so re-load fresh,
+        // re-find the entry by id, and apply the release+claim to that copy
+        // rather than saving our now-possibly-stale snapshot.
+        const fresh = loadData();
+        const freshEntry = fresh.entries.find((e) => e.id === entryId);
+        if (!freshEntry || freshEntry.done) {
+          try {
+            await editCard({ components: [] });
+          } catch {
+            await tell("That request has already been handled.");
+          }
+          return;
+        }
+        // F1: recheck the fresh claim before releasing — it may have changed
+        // hands (to a LIVE claim) during the membership check's await window.
+        r = applyStaleClaimRelease(freshEntry, r.by, interaction.user.id, Date.now());
+        if (r.action === "blocked") {
+          const holder2 = await memberName(interaction.guild, r.by);
+          await tell(`🙌 **${holder2 || "Another officer"}** is already on this.`);
+          return;
+        }
+        workingData = fresh;
+        workingEntry = freshEntry;
       }
-      workingData = fresh;
-      workingEntry = freshEntry;
+      saveData(workingData);
+      const cat = catOf(workingData, workingEntry.category);
+      await editCard({
+        embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
+        components: [requestButtons(workingEntry.id)],
+        allowedMentions: { parse: [] },
+      });
+    } catch (err) {
+      // Once deferred, the router's fallback answer would land on the PUBLIC
+      // card (editReply of the deferred update) — answer privately instead.
+      if (!deferred) throw err;
+      console.error("Claim failed after the acknowledgement:", err?.message ?? err);
+      await tell("Something went wrong — please try again.");
+      return;
     }
-    saveData(workingData);
-    const cat = catOf(workingData, workingEntry.category);
-    await editCard({
-      embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
-      components: [requestButtons(workingEntry.id)],
-      allowedMentions: { parse: [] },
-    });
     await refreshBoard(client, workingData);
   } else {
     // Unknown / future action — acknowledge so Discord doesn't show "failed".

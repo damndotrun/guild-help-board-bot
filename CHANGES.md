@@ -18,7 +18,10 @@ tricky bits don't get re-broken.
   `bot.lock` when the start fails later; `releaseLock` only removes a lock that
   is still this process's (pid + `startedTs`). `core/loader.js`: `dataFile` is
   a plain `<name>.json`, never `data.json` / `web-sessions.json` /
-  `package*.json`, and never shared by two modules.
+  `package*.json`, and never shared by two modules. `PUBLIC_URL` with a
+  backslash is refused (URL parsing reads `\` as `/` — a path in disguise).
+  The `.corrupt-*` copies are never deleted by the bot: remove them by hand
+  once looked at.
 - **Board refresh:** `refreshBoard` reads `data.json` again right before
   `message.edit` (the argument is ignored) — an older snapshot from a slow
   effect could otherwise drop a newer request from the public board.

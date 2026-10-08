@@ -44,7 +44,7 @@ test("parsePublicUrl: scheme-less, non-http(s), spaced or over-long values fail 
 // Polish backlog (M2b): an odd-but-valid URL such as "http:foo" passed new URL()
 // but Discord rejects it in a Link button (400) — officers got no /menu reply.
 test("parsePublicUrl: only the literal http(s)://host[:port] shape — no path, query, fragment or credentials", () => {
-  for (const bad of ["http:foo", "https:/bb.example.com", "https://", "https://bb.example.com/admin", "https://bb.example.com?x=1", "https://bb.example.com/#top", "https://user:pw@bb.example.com"]) {
+  for (const bad of ["http:foo", "https:/bb.example.com", "https://", "https://bb.example.com/admin", "https://bb.example.com?x=1", "https://bb.example.com/#top", "https://user:pw@bb.example.com", "https://bb.example.com\\evil"]) {
     assert.throws(() => parsePublicUrl(bad), /PUBLIC_URL/, bad);
   }
 });

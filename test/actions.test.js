@@ -1008,3 +1008,19 @@ test("a help button, select or modal nothing handles is still answered (no 'This
     assert.deepEqual(i.calls, [["reply", { content: "Unknown action.", flags: MessageFlags.Ephemeral }]], i.customId);
   }
 });
+
+test("Claim: a lookup that can't verify after the defer is a private follow-up", async () => {
+  const i = claimTap(async () => { throw Object.assign(new Error("rate limited"), { status: 429 }); });
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].content, "Couldn't verify the current claimer — try again.");
+});
+
+test("Claim: a failure after the defer never writes on the public card — a private follow-up instead", async () => {
+  const i = claimTap(async () => { throw Object.assign(new Error("Unknown Member"), { code: 10007 }); });
+  i.editReply = async () => { throw Object.assign(new Error("Unknown Message"), { code: 10008 }); };
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].content, "Something went wrong — please try again.");
+  assert.equal(i.calls[1][1].flags, MessageFlags.Ephemeral);
+});

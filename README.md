@@ -260,6 +260,7 @@ the `DATA_DIR` environment variable to keep it on a persistent volume instead
 detected and recovered from rather than crashing the bot: the unreadable file
 is kept as `data.json.corrupt-<time>` and the bot continues from
 `data.json.bak`. If `data.json` is missing but `data.json.bak` exists, the bot
-starts from the backup — to really start over, delete both. The bot refuses
+starts from the backup — to really start over, delete both. Delete the
+`.corrupt-*` copies by hand once you have looked at them. The bot refuses
 to start when `DATA_DIR` is not a writable directory. Other modules store
 their data next to it as `<module>.json` (same atomic write + `.bak` safety).

@@ -330,3 +330,20 @@ test("createSignOuts: a session issued before the user's sign-out is revoked; on
   assert.equal(s.revoked("u2", 1), false);
   assert.equal(s.revoked("__proto__", 1), false, "no inherited keys");
 });
+
+test("createSignOuts.issuedAt: a new session is always issued after the last sign-out (a clock that stepped back can't loop the user)", () => {
+  const s = session.createSignOuts();
+  assert.equal(s.issuedAt("u1", 100), 100);
+  s.record("u1", 500);
+  assert.equal(s.issuedAt("u1", 400), 501);
+  assert.equal(s.revoked("u1", s.issuedAt("u1", 400)), false);
+  assert.equal(s.issuedAt("u1", 900), 900);
+});
+
+test("session: the rolling renewal keeps iat (only exp moves)", () => {
+  const req = { session: null };
+  session.signIn(req, "u1", 0, 42);
+  session.currentUserId(req, 5 * 60_000);
+  assert.equal(req.session.iat, 42);
+  assert.ok(req.session.exp > 30 * 24 * 60);
+});

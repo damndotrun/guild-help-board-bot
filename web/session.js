@@ -48,9 +48,10 @@ function currentUserId(req, now) {
 }
 
 // A fresh session object: whatever the old cookie carried (a stale state or
-// notice) is gone. `iat` (ms) is when it was issued — createSignOuts compares it.
-function signIn(req, userId, now) {
-  req.session = { userId, exp: minuteOf(now) + SESSION_MINUTES, iat: now };
+// notice) is gone. `iat` (ms) is when it was issued — createSignOuts compares
+// it (and createSignOuts.issuedAt picks it; default now).
+function signIn(req, userId, now, iat = now) {
+  req.session = { userId, exp: minuteOf(now) + SESSION_MINUTES, iat };
 }
 
 // Server-side sign-out. The cookie is signed, not stored, so clearing it in
@@ -70,6 +71,13 @@ function createSignOuts(store = null) {
     record(userId, at) {
       signedOutAt[userId] = at;
       if (store) store.save({ signedOutAt: { ...signedOutAt } });
+    },
+    // The `iat` for a new session: now, but always after the user's last
+    // sign-out — if the server clock stepped back since, a fresh sign-in
+    // would otherwise count as revoked and loop back to /login.
+    issuedAt(userId, now) {
+      const at = signedOutAt[userId];
+      return at === undefined ? now : Math.max(now, at + 1);
     },
     // A session issued at `iat` (ms; missing on cookies from before this
     // check) is revoked when the user signed out at or after it.

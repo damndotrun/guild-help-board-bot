@@ -46,15 +46,16 @@ function acquireLock() {
       LOCK_FILE,
       JSON.stringify({ pid: process.pid, startedTs: now, heartbeat: ts })
     );
-  ownLock = { pid: process.pid, startedTs: now };
   try {
     write(now);
+    ownLock = { pid: process.pid, startedTs: now };
   } catch (err) {
     console.error("Could not write bot.lock:", err.message);
   }
   const timer = setInterval(() => {
     try {
       write(Date.now());
+      ownLock = { pid: process.pid, startedTs: now };
     } catch {
       // transient FS error — the next tick will retry
     }
