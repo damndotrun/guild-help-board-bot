@@ -1788,6 +1788,21 @@ async function handleButton(interaction) {
     let r = toggleClaim(entry, interaction.user.id, Date.now());
     let workingData = data;
     let workingEntry = entry;
+    // The membership check below can wait on Discord REST (a rate limit can
+    // sleep for seconds) — past Discord's 3-second ack window. So before any
+    // such wait the tap is acknowledged with deferUpdate; from then on the
+    // card is edited with editReply and the private notices go out as
+    // ephemeral follow-ups (respond() would edit the PUBLIC card instead).
+    let deferred = false;
+    const tell = async (content) => {
+      if (!deferred) return respond(interaction, { content, flags: MessageFlags.Ephemeral });
+      try {
+        return await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+      } catch (err) {
+        console.error("Failed to follow up on the claim:", err?.message ?? err);
+      }
+    };
+    const editCard = (payload) => (deferred ? interaction.editReply(payload) : interaction.update(payload));
     if (r.action === "blocked") {
       // F2: distinguish "definitely gone" (Unknown Member/User) from "couldn't
       // check" (rate limit / 5xx / network) — only the former justifies
@@ -1797,18 +1812,23 @@ async function handleButton(interaction) {
       let verifyFailed = !guild;
       if (guild) {
         try {
-          member = guild.members.cache.get(r.by) || (await guild.members.fetch(r.by));
+          member = guild.members.cache.get(r.by) || null;
+          if (!member) {
+            await interaction.deferUpdate();
+            deferred = true;
+            member = await guild.members.fetch(r.by);
+          }
         } catch (err) {
           if (isGoneError(err)) member = null; // confirmed gone
           else verifyFailed = true;
         }
       }
       if (verifyFailed) {
-        await respond(interaction, { content: "Couldn't verify the current claimer — try again.", flags: MessageFlags.Ephemeral });
+        await tell("Couldn't verify the current claimer — try again.");
         return;
       }
       if (member) {
-        await respond(interaction, { content: `🙌 **${member.displayName}** is already on this.`, flags: MessageFlags.Ephemeral });
+        await tell(`🙌 **${member.displayName}** is already on this.`);
         return;
       }
       // Stale claim — the holder is confirmed gone. Invariant #1: the
@@ -1819,9 +1839,9 @@ async function handleButton(interaction) {
       const freshEntry = fresh.entries.find((e) => e.id === entryId);
       if (!freshEntry || freshEntry.done) {
         try {
-          await interaction.update({ components: [] });
+          await editCard({ components: [] });
         } catch {
-          await respond(interaction, { content: "That request has already been handled.", flags: MessageFlags.Ephemeral });
+          await tell("That request has already been handled.");
         }
         return;
       }
@@ -1830,7 +1850,7 @@ async function handleButton(interaction) {
       r = applyStaleClaimRelease(freshEntry, r.by, interaction.user.id, Date.now());
       if (r.action === "blocked") {
         const holder2 = await memberName(interaction.guild, r.by);
-        await respond(interaction, { content: `🙌 **${holder2 || "Another officer"}** is already on this.`, flags: MessageFlags.Ephemeral });
+        await tell(`🙌 **${holder2 || "Another officer"}** is already on this.`);
         return;
       }
       workingData = fresh;
@@ -1838,7 +1858,7 @@ async function handleButton(interaction) {
     }
     saveData(workingData);
     const cat = catOf(workingData, workingEntry.category);
-    await interaction.update({
+    await editCard({
       embeds: [new EmbedBuilder().setColor(0x5ac9a1).setDescription(cardDescription(cat, workingEntry, r.action === "claimed" ? byName : null)).setFooter({ text: "Officers: use the buttons below when it's handled" }).setTimestamp(workingEntry.ts ? new Date(workingEntry.ts) : null)],
       components: [requestButtons(workingEntry.id)],
       allowedMentions: { parse: [] },

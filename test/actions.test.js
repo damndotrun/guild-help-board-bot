@@ -13,6 +13,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const help = require("../modules/help/help");
 const actions = require("../modules/help/actions");
+const { MessageFlags } = require("discord.js");
 
 const CTX = { client: null }; // effects must survive without a Discord client
 const MEMBER = { userId: "u1", displayName: "Kovi", level: "member" };
@@ -888,4 +889,39 @@ test("refreshBoard edits the board from the data on disk, never from an older sn
   const text = JSON.stringify(edit.payload.embeds[0].toJSON());
   assert.match(text, /Kovi/);
   assert.match(text, /Zed/, "the request saved after the snapshot is on the board");
+});
+
+// The Claim button when someone else holds the claim (help.js handleButton).
+function claimTap(holderLookup) {
+  seed((d) => { d.managerRoleIds = ["r-off"]; d.entries = [entry("e1", "u1", "mvp5k", { claimedBy: "o9", claimedTs: 1 })]; });
+  const i = component("button", "help:claim:e1", OFFICER, { rights: { roles: ["r-off"] } });
+  i.guild = { id: "g1", roles: { cache: new Map() }, members: { cache: new Map(), fetch: holderLookup } };
+  return i;
+}
+
+test("Claim held by someone not cached: the tap is deferred BEFORE the member lookup; the notice is a private follow-up", async () => {
+  let deferredFirst = null;
+  const i = claimTap(async () => { deferredFirst = i.deferred; return { displayName: "Nora" }; });
+  await help.dispatch(i);
+  assert.equal(deferredFirst, true, "acknowledged before waiting on Discord");
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].content, "🙌 **Nora** is already on this.");
+  assert.equal(i.calls[1][1].flags, MessageFlags.Ephemeral);
+  assert.equal(help.loadData().entries[0].claimedBy, "o9");
+});
+
+test("Claim held by someone who left: released and taken over, the card edited with editReply after the defer", async () => {
+  const i = claimTap(async () => { throw Object.assign(new Error("Unknown Member"), { code: 10007 }); });
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "editReply"]);
+  assert.match(i.calls[1][1].embeds[0].data.description, /Offi/);
+  assert.equal(help.loadData().entries[0].claimedBy, "o1");
+});
+
+test("Claim held by a cached member: answered at once, no defer", async () => {
+  const i = claimTap(async () => { throw new Error("must not fetch"); });
+  i.guild.members.cache.set("o9", { displayName: "Nora" });
+  await help.dispatch(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["reply"]);
+  assert.equal(i.calls[0][1].content, "🙌 **Nora** is already on this.");
 });
