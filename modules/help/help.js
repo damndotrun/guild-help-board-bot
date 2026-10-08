@@ -27,7 +27,7 @@ require("dotenv").config();
 // data.json lives in the platform DATA_DIR (default: the repo root, as before
 // the move into modules/help/) — see core/config.js.
 const { DATA_DIR } = require("../../core/config");
-const { computeLevel } = require("../../core/perms");
+const { computeLevel, memberRoles } = require("../../core/perms");
 
 // ./actions requires this file, so it is loaded lazily (at call time) to keep
 // the require graph acyclic.
@@ -358,7 +358,7 @@ function isManager(interaction, data) {
 function levelOfInteraction(interaction, data) {
   return computeLevel({
     permissions: interaction.memberPermissions,
-    roleCache: interaction.member?.roles?.cache,
+    roleCache: memberRoles(interaction.member),
     managerRoleIds: data.managerRoleIds,
   });
 }
@@ -1736,7 +1736,12 @@ function onReady() {
 // ---------- button handling (one-click officer actions) ----------
 async function handleButton(interaction) {
   const [ns, action, entryId] = interaction.customId.split(":");
-  if (ns !== "help") return;
+  if (ns !== "help") {
+    // An alias prefix with no button of that name (stats:, resolve:, …) —
+    // acknowledge so Discord doesn't show "This interaction failed".
+    await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+    return;
+  }
 
   const data = loadData();
   if (!isManager(interaction, data)) {
@@ -1927,7 +1932,7 @@ async function handleStatsView(interaction) {
     await interaction.editReply({ content: "That season is gone.", embeds: [], components: statsPanelComponents(data, "current") });
     return;
   }
-  await interaction.editReply({ embeds: [embed], components: statsPanelComponents(data, value) });
+  await interaction.editReply({ content: "", embeds: [embed], components: statsPanelComponents(data, value) });
 }
 
 async function handleStatsMember(interaction) {
@@ -1936,7 +1941,7 @@ async function handleStatsMember(interaction) {
   const helperId = interaction.values[0];
   const name = (await memberName(interaction.guild, helperId)) || "(left the server)";
   const view = selectedViewFrom(interaction.message?.components) || "current";
-  await interaction.editReply({ embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, view) });
+  await interaction.editReply({ content: "", embeds: [memberEmbed(data, helperId, name)], components: statsPanelComponents(data, view) });
 }
 
 async function handleSeasonCommand(interaction, data) {
@@ -2078,6 +2083,7 @@ async function updateRolesPanel(interaction, data) {
   // surface as an unhandled throw up to the top-level "Something went wrong".
   try {
     await interaction.update({
+      content: "", // clears a refusal line left by an earlier tap (an edit keeps fields it isn't sent)
       embeds: [rolesPanelEmbed(data)],
       components: rolesPanelComponents(data, roleNameResolver(interaction)),
     });
@@ -2380,9 +2386,14 @@ async function dispatch(interaction) {
     if (interaction.isModalSubmit()) {
       if (interaction.customId.startsWith("season:")) { await handleSeasonModal(interaction); return; }
       if (interaction.customId === "catadd:submit") { await handleCatAddModal(interaction); return; }
+      await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
       return;
     }
-    if (!interaction.isChatInputCommand()) return;
+    if (!interaction.isChatInputCommand()) {
+      // A select (or other component) with a customId nothing above handles.
+      await respond(interaction, { content: "Unknown action.", flags: MessageFlags.Ephemeral });
+      return;
+    }
 
     const data = loadData();
 

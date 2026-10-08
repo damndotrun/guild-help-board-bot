@@ -779,8 +779,10 @@ test("the /config roles panel via dispatch goes through the actions (guards unch
   bot.guild.roles.cache.set("b1", { managed: true, name: "Bot" });
   await help.dispatch(bot);
   assert.equal(contentOf(bot), "You can't add @everyone or a bot-managed role as a manager role.");
-  await help.dispatch(component("role", "roles:add", OWNER, { values: ["r1"], rights: boss }));
+  const ok = component("role", "roles:add", OWNER, { values: ["r1"], rights: boss });
+  await help.dispatch(ok);
   assert.deepEqual(help.loadData().managerRoleIds, ["r1"]);
+  assert.equal(ok.calls[0][1].content, "", "a success clears the refusal line an earlier tap left on the panel");
   await help.dispatch(component("string", "roles:remove", OWNER, { values: ["r1"], rights: boss }));
   assert.deepEqual(help.loadData().managerRoleIds, []);
   await help.dispatch(component("role", "roles:notify", OWNER, { values: ["r2"], rights: boss }));
@@ -924,4 +926,17 @@ test("Claim held by a cached member: answered at once, no defer", async () => {
   await help.dispatch(i);
   assert.deepEqual(i.calls.map(([k]) => k), ["reply"]);
   assert.equal(i.calls[0][1].content, "🙌 **Nora** is already on this.");
+});
+
+test("a help button, select or modal nothing handles is still answered (no 'This interaction failed')", async () => {
+  seed();
+  for (const i of [
+    component("button", "stats:nope", MEMBER),
+    component("string", "board:nope", MEMBER),
+    component("role", "roles:nope", MEMBER),
+    component("modal", "catadd:nope", MEMBER),
+  ]) {
+    await help.dispatch(i);
+    assert.deepEqual(i.calls, [["reply", { content: "Unknown action.", flags: MessageFlags.Ephemeral }]], i.customId);
+  }
 });

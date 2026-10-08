@@ -22,6 +22,14 @@ function computeLevel({ permissions, roleCache, managerRoleIds }) {
   return "member";
 }
 
+// A member's role ids as something with .has(id). discord.js hands an
+// interaction the raw API member (roles = an array of ids) when the guild is
+// not cached yet — e.g. right after login; a GuildMember has roles.cache.
+function memberRoles(member) {
+  if (Array.isArray(member?.roles)) return new Set(member.roles);
+  return member?.roles?.cache;
+}
+
 function atLeast(level, min) {
   const have = LEVELS.indexOf(level);
   const need = LEVELS.indexOf(min);
@@ -44,7 +52,7 @@ function managerRolesFrom(modules) {
 
 function createPerms({ getManagerRoleIds = () => [] } = {}) {
   function levelOf(member, permissions = member?.permissions) {
-    return computeLevel({ permissions, roleCache: member?.roles?.cache, managerRoleIds: getManagerRoleIds() });
+    return computeLevel({ permissions, roleCache: memberRoles(member), managerRoleIds: getManagerRoleIds() });
   }
   // An interaction carries the resolved permissions separately (memberPermissions).
   function levelOfInteraction(interaction) {
@@ -53,4 +61,4 @@ function createPerms({ getManagerRoleIds = () => [] } = {}) {
   return { levelOf, levelOfInteraction, atLeast };
 }
 
-module.exports = { LEVELS, LEVEL_LABEL, computeLevel, atLeast, managerRolesFrom, createPerms };
+module.exports = { LEVELS, LEVEL_LABEL, computeLevel, memberRoles, atLeast, managerRolesFrom, createPerms };
