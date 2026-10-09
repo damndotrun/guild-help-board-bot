@@ -21,7 +21,7 @@ function config() {
         buttons: [
           { id: "sup", label: "SUP", emoji: "💥", pingRoleIds: ["r-sup"], subscribeRoleId: "r-sup" },
           { id: "dps", label: "DPS", emoji: "💥", pingRoleIds: ["r-dps"], subscribeRoleId: "r-dps" },
-          { id: "gm", label: "GM", emoji: "⚔️", pingRoleIds: ["r-gm"], subscribeRoleId: null },
+          { id: "gm", label: "GM", emoji: "⚔\uFE0F", pingRoleIds: ["r-gm"], subscribeRoleId: null },
         ],
       },
       {
