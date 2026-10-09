@@ -362,45 +362,60 @@ B holds `💥 SUP`. Phone block last.
 
 **A search, now**
 - [ ] **(A)** **Start a search** → the modal (Looking for · Starts in ·
-      Note) → `BASIC · SUP`, empty, "gg" → "Your search is live — your thread:
-      #…". A private thread opened with A only: intro line + **Requests** (0).
+      Note) → `BASIC · SUP`, empty, "gg" → the modal closes with NO answer
+      line ("Your search is live" is gone). A private thread opened with A
+      only, holding ONE bot message: the intro line + **Requests** (0) +
+      red **Cancel search**. No "BB Bot Test added A to the thread" line.
 - [ ] Under the board a ping `@💥 SUP **A** is looking for **BASIC · SUP** ·
-      now` → it disappears after about a minute.
+      now` → B's phone notifies; the ping is gone after about 5 seconds.
 - [ ] The board shows a teal **Now** box: `💥 **BASIC · SUP** · **A**`,
       `now · gg`, **Join**.
 - [ ] **(B)** **Join** → "Request sent to **A** — you're #1 in line…" +
       **Cancel request**. B gets ONE DM card, silently (no sound): **Your
       request** + Cancel, **Start a search**.
-- [ ] **(A)** The thread: "<@A> **B** wants to join · 1 waiting"; the panel
-      lists **1 · B** with **Accept**. The board: "1 interested".
+- [ ] **(A)** The thread: "<@A> **B** wants to join · 1 waiting" notifies A
+      and is gone after about 5 seconds; the thread message (edited) lists
+      **1 · B** with **Accept**. The board: "1 interested".
 - [ ] **(B)** Join again → "You already asked… #1".
 
 **Accept and confirm**
-- [ ] **(A)** **Accept** → B is added to the thread; "WAKEY-WAKEY! @A you
-      accepted **B**…" with an amber **Confirm 0 / 2** box and a green **I'm
-      here**. B's DM card is replaced by a new one with sound: **You're in!**
-      (A's avatar) + the Confirm box + **Open the thread**.
+- [ ] **(A)** **Accept** → B is added to the thread (no "added B to the
+      thread" line stays — it needs **Manage Messages**, see Menu, officer,
+      owner); NO "WAKEY-WAKEY" message: the ONE thread message is edited —
+      "You picked **B** for **BASIC · SUP**.", Requests (B accepted), and an
+      amber **Confirm 0 / 2** box with the green **I'm here** at the right
+      INSIDE the box; no **Cancel search** any more. B's DM card is replaced
+      by a new one with sound: **You're in!** (A's avatar) + the Confirm box
+      + **Open the thread**.
+- [ ] **(B, DMs closed — see Closed DMs)** Same accept → one line "<@B> —
+      **A** picked you, tap I'm here." pings B and is gone after about 5
+      seconds.
 - [ ] **(B)** **I'm here** on the DM card → the box shows "B ✓" in the thread
-      and on the card (1 / 2).
-- [ ] Wait a minute → A gets "<@A> — tap I'm here when you're ready." in the
-      thread (the previous one deleted).
-- [ ] **(A)** **I'm here** in the thread → "✓ Game on", a teal **Game on!**
-      box with B's avatar; the board moves them to **Just started**; B's card
-      shows "✓ Game on!". After 5 minutes they leave the board; the thread
-      stays open.
+      message and on the card (1 / 2).
+- [ ] Wait a minute → "<@A> — tap I'm here when you're ready." notifies A in
+      the thread and is gone after about 5 seconds.
+- [ ] **(A)** **I'm here** in the thread message → the Confirm box turns into
+      a teal **Game on!** box with B's avatar in the SAME message; the board
+      moves them to **Just started**; B's card shows "✓ Game on!". After 5
+      minutes they leave the board; 15 minutes after the start the thread is
+      archived (not locked — a new message there unarchives it).
 
 **Deadlines**
 - [ ] New search by A, B joins, A accepts, **only A** taps I'm here, wait 5
-      minutes → B's card: red "You didn't confirm in time"; the thread's
-      welcome turns red "…didn't confirm — your search is open again", B is
-      removed from the thread, the search is back in **Now**.
+      minutes → B's card: red "You didn't confirm in time"; the thread
+      message gets a red box "…didn't confirm — your search is open again"
+      above Requests (Accept and Cancel search are back), B is removed from
+      the thread (no "removed B" line stays), the search is back in **Now**.
 - [ ] Same, but only B taps → after 5 minutes the search is cancelled: B's
-      card "A didn't confirm"; the thread gets "Search closed — not confirmed in
-      time." and is locked.
+      card "A didn't confirm"; the thread message turns grey with "Search
+      closed — not confirmed in time." inside it; the thread is locked and
+      archived at once.
 - [ ] **(A)** A timed search (Starts in `8`) → the **Timed** box with a
-      countdown; B joins, A accepts → **Fixed**, the Confirm box says "You'll be
-      asked to confirm 5 minutes before the start". At start − 5 min: "Heads up
-      @A — your game starts in 5 minutes!" and B's card notifies again.
+      countdown; B joins, A accepts → **Fixed**, the Confirm box in the thread
+      message says "You'll be asked to confirm 5 minutes before the start" and
+      has no **I'm here** yet. At start − 5 min: "Heads up @A @B — your game
+      starts in 5 minutes!" notifies both (gone after about 5 seconds), the
+      Confirm box gets its **I'm here**, and B's card notifies again.
 
 **Leaving**
 - [ ] **(B)** Cancel on the card → no answer line (the tap is only
@@ -408,14 +423,15 @@ B holds `💥 SUP`. Phone block last.
       have no open requests right now." + **Start a search**) and is
       deleted about 24 hours later; the thread's Removed box shows "B —
       cancelled".
-- [ ] **(A)** **Cancel search** (red) → "Search cancelled."; the thread gets
-      "Search cancelled." and is locked; B's card: "A's search was cancelled".
-- [ ] A now-search with no Accept → after 30 minutes: "Search expired.",
-      locked; B's card: "…search expired".
+- [ ] **(A)** **Cancel search** (red) → "Search cancelled."; the thread
+      message turns grey with "Search cancelled." inside it, the thread is
+      locked and archived; B's card: "A's search was cancelled".
+- [ ] A now-search with no Accept → after 30 minutes: "Search expired." in
+      the thread message, locked and archived; B's card: "…search expired".
 
 **Busy rule**
 - [ ] B has his own open search AND a request on A's; A accepts B, both tap
-      I'm here → B's own search is cancelled (its thread locked), his other
+      I'm here → B's own search is cancelled (its thread locked and archived), his other
       requests disappear; his card: "Your other requests were cancelled."
 
 **Closed DMs (notices)**
@@ -438,6 +454,10 @@ B holds `💥 SUP`. Phone block last.
       cards say it was cancelled.
 - [ ] **(A, owner)** With a permission removed from the bot in the channel and
       the bot restarted → the Teammates screen names the missing permission.
+- [ ] **(A, owner)** Without **Manage Messages** for the bot in the channel
+      (restart) → the Teammates screen shows "Optional, missing in the board
+      channel: ManageMessages"; searches still work, only the "added X to
+      the thread" lines stay in the threads. Give it back afterwards.
 
 **Self-repair**
 - [ ] Delete the bot's message by hand → within 30 s it is back (banner,
@@ -446,6 +466,9 @@ B holds `💥 SUP`. Phone block last.
 - [ ] Upgrading from a build with separate block messages: after the restart
       the old banner / panel / board messages are gone and ONE message stands
       in their place.
+- [ ] Upgrading with a game waiting for I'm here (an old WAKEY welcome in
+      its thread): within 30 s of the restart the thread message shows the
+      Confirm box and the old welcome message is gone.
 
 **Phone**
 - [ ] Every box is readable at phone width; badges sit at the right of the

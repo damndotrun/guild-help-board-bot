@@ -170,8 +170,12 @@ unset to run exactly the help board. Each module keeps its own `<name>.json` in
 
 **Teammate finder (`lfg`).** Add it with `MODULES: "help,lfg"`. It runs the
 looking-for-game channel: members tap **Start a search**, get a private
-thread (it auto-archives after 3 days) where requests line up, and pick a
-partner with **Accept**; both tap **I'm here** before the game counts.
+thread — one live message the bot keeps editing — where requests line up,
+and pick a partner with **Accept**; both tap **I'm here** before the game
+counts. Pings (in the channel and the threads) are deleted a few seconds
+after they notify. A cancelled / expired search's thread is locked and
+archived at once; a played game's thread is archived 15 minutes after the
+start (not locked).
 Requests and news live on one DM card per member; `/menu › Teammates` has the
 same actions plus My roles and Notifications. No slash command, no setup
 command — on first start it finds a text channel whose name contains
