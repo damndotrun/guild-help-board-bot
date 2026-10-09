@@ -71,8 +71,9 @@ tricky bits don't get re-broken.
       a search left without a thread (dropped after 2 min, `thread_failed`)
       heal themselves; the rest stays as it was until the next event touches
       it.
-  17. lfg: every re-rendered select gets a fresh `custom_id`
-      (`render.renderTag()`, like help's `rolesRenderTag`) — an identical
+  17. lfg: every select re-rendered after a pick gets a fresh `custom_id`
+      (`render.renderTag()`, like help's `rolesRenderTag`; the channel
+      picker: only `resetPanel` / a repost, see 22) — an identical
       one freezes in the client.
   18. lfg: the payloads with a variable-length list — the channel message
       (banner + panel + board, validated as ONE message), the request panel
@@ -109,9 +110,11 @@ tricky bits don't get re-broken.
       A layout with no active block posts nothing (an empty V2 message is
       refused) and takes ours down.
       Every send / edit carries `{ parse: [] }`; the 60-second ping stays a
-      separate message under it. The sent-payload hash ignores the role
-      picker's render tag; every edit (board change or `resetPanel`) sends a
-      fresh tag, so ANY edit also resets a member's open role pick.
+      separate message under it. The role picker's tag is STABLE across
+      board-driven edits (`channel.pickerTag`, in memory — after a restart the
+      first render mints one), so a board change does not touch an open pick;
+      a fresh tag only from `resetPanel` (right after a pick — invariant 17)
+      and on a repost (a new message). The sent-payload hash ignores the tag.
 
 ## 2026-10-09 — `/config roles` select no longer freezes after a refusal
 

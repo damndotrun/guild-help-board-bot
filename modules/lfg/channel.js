@@ -22,9 +22,16 @@ let hiddenLogged = false;
 let tailSkipLogged = false;
 
 // The last payload sent per message id: an unchanged message is never re-sent.
-// The role picker's per-render tag (render.renderTag) is left out of the hash,
-// or every render would count as a change.
+// The role picker's tag (render.renderTag) is left out of the hash, so a tag
+// minted after a restart is no change by itself.
 const lastSent = new Map();
+// The role picker's custom_id tag on the live message. STABLE across
+// board-driven edits (a member's open pick survives a board change); a fresh
+// one only from resetPanel — right after a pick, where an identical custom_id
+// would freeze in the client (invariant 17) — and on a repost (a new message).
+// In memory: after a restart the first render mints one.
+let pickerTag = null;
+const stableTag = () => pickerTag || (pickerTag = R.renderTag());
 const hashOf = (payload) =>
   JSON.stringify(payload, (key, value) => (key === "custom_id" && typeof value === "string" && value.startsWith("lfg:roles:") ? "lfg:roles:" : value));
 
@@ -54,9 +61,9 @@ const hasRoleIn = (guild) => (id) => !guild || !guild.roles || guild.roles.cache
 // per-block ids of a store from before the one-message build (migration).
 const knownIds = (channelData) => [channelData.mainMessageId, ...Object.values(channelData.messageIds || {})].filter(Boolean);
 
-async function renderNow(ctx, data, blocks, now) {
+async function renderNow(ctx, data, blocks, now, tag) {
   const guild = await D.getGuild(ctx, data.config);
-  return R.renderStack(data, blocks, now, D.lookFor(ctx, guild), hasRoleIn(guild));
+  return R.renderStack(data, blocks, now, D.lookFor(ctx, guild), hasRoleIn(guild), tag);
 }
 
 // Delete our message(s) and post the stack again (no ping) — after a restart
@@ -76,15 +83,17 @@ async function repost(ctx, channel, data, blocks, now) {
   cleared.channel.mainMessageId = null;
   delete cleared.channel.messageIds;
   store.save(ctx, cleared);
-  let payload = await renderNow(ctx, data, blocks, now);
+  const tag = R.renderTag(); // a new message: a new picker tag
+  let payload = await renderNow(ctx, data, blocks, now, tag);
   if (!payload) {
     // Never skip the message: a missing id would repost every tick. The panel
     // and the empty board stand in; the next edit brings the real board once it fits.
     ctx.log.error("the channel blocks do not fit one message — posting the panel and an empty board");
     const guild = await D.getGuild(ctx, data.config);
-    payload = R.renderStackFallback(data.config, blocks, hasRoleIn(guild));
+    payload = R.renderStackFallback(data.config, blocks, hasRoleIn(guild), tag);
   }
   const msg = await channel.send(payload);
+  pickerTag = tag;
   lastSent.set(msg.id, hashOf(payload));
   const fresh = store.load(ctx); // no await between this load and the save
   fresh.channel.mainMessageId = msg.id;
@@ -161,7 +170,7 @@ function sync(ctx, { checkTail = false } = {}) {
         }
       }
     }
-    const payload = await renderNow(ctx, data, blocks, now);
+    const payload = await renderNow(ctx, data, blocks, now, stableTag()); // a board edit keeps the picker's custom_id
     if (!payload) {
       ctx.log.error("the channel blocks do not fit one message — keeping the last one");
       return "invalid";
@@ -181,7 +190,9 @@ function sync(ctx, { checkTail = false } = {}) {
 
 // The role picker keeps the member's pick on screen until its message is
 // re-rendered — editing the message resets it for everyone (§3.1). Always
-// sent, even when nothing else changed: clearing the picker is the point.
+// sent, even when nothing else changed: clearing the picker is the point. The
+// ONE place a live message gets a fresh picker tag (right after a pick, so the
+// client does not freeze the select — invariant 17).
 function resetPanel(ctx) {
   return enqueue(ctx, async () => {
     const now = D.nowOf(ctx);
@@ -190,9 +201,13 @@ function resetPanel(ctx) {
     const blocks = activeBlocks(data.config);
     const id = data.channel.mainMessageId;
     if (!id || data.channel.messageIds || !blocks.some((b) => b.type === "panel")) return;
-    const payload = await renderNow(ctx, data, blocks, now);
+    const tag = R.renderTag();
+    const payload = await renderNow(ctx, data, blocks, now, tag);
     if (!payload) return; // logged by the next sync, which keeps the last message
-    if (await D.edit(ctx, data.config.channelId, id, payload)) lastSent.set(id, hashOf(payload));
+    if (await D.edit(ctx, data.config.channelId, id, payload)) {
+      pickerTag = tag; // a failed edit leaves the old tag on the message — and here
+      lastSent.set(id, hashOf(payload));
+    }
   });
 }
 
@@ -237,6 +252,7 @@ function expirePing(ctx) {
 // Tests only: forget the sent-payload cache and start a fresh chain.
 function _reset() {
   lastSent.clear();
+  pickerTag = null;
   hiddenLogged = false;
   tailSkipLogged = false;
   chain = Promise.resolve();

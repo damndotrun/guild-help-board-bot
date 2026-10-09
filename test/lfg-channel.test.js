@@ -61,6 +61,43 @@ test("sync: the first run posts exactly ONE message — banner · panel · board
   assert.equal(fake.messagesIn("ch1").length, 1);
 });
 
+test("picker tag: a board-only edit keeps the select's custom_id; resetPanel changes it; the next board edit keeps the new one", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const posted = pickerId(sends(fake)[0].payload);
+  const addListing = (id) => { const d = store.load(ctx); d.listings.push(listing(id, `u-${id}`)); store.save(ctx, d); };
+  addListing("L1");
+  assert.equal(await C.sync(ctx), "edited");
+  const edits = () => fake.ops.filter((o) => o.op === "edit");
+  assert.equal(pickerId(edits()[0].payload), posted, "a board edit keeps the picker as it was");
+  await C.resetPanel(ctx);
+  const reset = pickerId(edits()[1].payload);
+  assert.notEqual(reset, posted, "resetPanel mints a fresh one");
+  addListing("L2");
+  assert.equal(await C.sync(ctx), "edited");
+  assert.equal(pickerId(edits()[2].payload), reset, "and later board edits keep that one");
+});
+
+test("picker tag: a repost (new message) gets a fresh tag; a failed resetPanel edit keeps the old one", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const first = pickerId(sends(fake)[0].payload);
+  fake.messagesIn("ch1").push({ id: "x1", payload: {}, authorId: "u1" });
+  assert.equal(await C.sync(ctx, { checkTail: true }), "reposted");
+  const second = pickerId(sends(fake)[1].payload);
+  assert.notEqual(second, first);
+  const ch = fake.channels.get("ch1");
+  const realEdit = ch.messages.edit;
+  ch.messages.edit = async () => { throw new Error("Missing Access"); };
+  await C.resetPanel(ctx); // logged by D.edit, tag not adopted
+  ch.messages.edit = realEdit;
+  const d = store.load(ctx);
+  d.listings.push(listing("L1", "u1"));
+  store.save(ctx, d);
+  assert.equal(await C.sync(ctx), "edited");
+  assert.equal(pickerId(fake.ops.filter((o) => o.op === "edit").pop().payload), second);
+});
+
 test("sync: a board change edits only the one message, in place", async () => {
   const { fake, ctx } = setup();
   await C.sync(ctx);
