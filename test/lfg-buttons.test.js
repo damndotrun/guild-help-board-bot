@@ -69,7 +69,7 @@ test("every lfg: customId in the module source has a handler", () => {
   for (const a of actions) assert.ok(handled.has(a), `lfg:${a} has no handler`);
 });
 
-test("Start my own search: the modal; or a one-line answer (not set up / own search with Cancel / busy)", async () => {
+test("Start a search: the modal; or a one-line answer (not set up / own search with Cancel / busy)", async () => {
   let i = btnTap("lfg:start", DANI);
   await route(i);
   assert.match(last(i)[1].content, /isn't set up yet/);
@@ -91,7 +91,7 @@ test("Start my own search: the modal; or a one-line answer (not set up / own sea
   assert.equal(last(i)[0], "showModal");
 });
 
-test("Start my own search: a custom emoji the guild lost is left off its Looking for option — from the channel and from a DM card (cached guild)", async () => {
+test("Start a search: a custom emoji the guild lost is left off its Looking for option — from the channel and from a DM card (cached guild)", async () => {
   const GONE = "111111111111111111";
   const HERE = "222222222222222222";
   seedData((x) => {

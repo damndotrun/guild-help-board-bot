@@ -1,7 +1,7 @@
 // The lfg: button, select and modal handlers (M4 spec §5.1): the channel
-// panel (Start my own search, Pick your roles…), the board (Join), the thread
+// panel (Start a search, Pick your roles…), the board (Join), the thread
 // (Accept, I'm here, Cancel search), the DM card (Cancel, Join, Cancel all,
-// I'm here, Start my own search) and the start modal's submit.
+// I'm here, Start a search) and the start modal's submit.
 // Pattern: run the synchronous action FIRST (it decides), then acknowledge
 // (reply / update / defer — inside the 3-second window), then await the
 // action's effects (REST) — also when the acknowledgement failed (ackThen).

@@ -169,7 +169,7 @@ unset to run exactly the help board. Each module keeps its own `<name>.json` in
 `DATA_DIR`; the help board keeps `data.json`.
 
 **Teammate finder (`lfg`).** Add it with `MODULES: "help,lfg"`. It runs the
-looking-for-game channel: members tap **Start my own search**, get a private
+looking-for-game channel: members tap **Start a search**, get a private
 thread (it auto-archives after 3 days) where requests line up, and pick a
 partner with **Accept**; both tap **I'm here** before the game counts.
 Requests and news live on one DM card per member; `/menu › Teammates` has the

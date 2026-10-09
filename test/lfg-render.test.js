@@ -70,14 +70,14 @@ test("board: too many open searches → as many Join rows as fit, then “+N mor
   assert.ok(count <= 40, String(count));
 });
 
-test("panel: grey box, Start my own search beside the text, a toggle role picker of the roles that still exist", () => {
+test("panel: grey box, Start a search beside the text, a toggle role picker of the roles that still exist", () => {
   const d = dataWith();
   const p = R.renderPanel(d.config, (id) => id !== "r-dps");
   valid(p);
   assert.deepEqual(accents(p), [R.COLORS.grey]);
   const [sec, picker] = p.components[0].components;
   assert.equal(sec.accessory.custom_id, "lfg:start");
-  assert.equal(sec.accessory.label, "Start my own search");
+  assert.equal(sec.accessory.label, "Start a search");
   assert.equal(textOf(p), "### Want a game?\n-# Start a search, or pick roles to get pinged.");
   const select = picker.components[0];
   assert.match(select.custom_id, /^lfg:roles:[0-9a-z]+$/);

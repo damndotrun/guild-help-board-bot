@@ -6,7 +6,7 @@ const DEFAULTS = Object.freeze({
   // channel panel + board
   panelTitle: "Want a game?",
   panelSub: "Start a search, or pick roles to get pinged.",
-  startButton: "Start my own search",
+  startButton: "Start a search", // short: "Start my own search" truncated on phones (live test round 2)
   rolesPlaceholder: "Pick your roles…",
   segStarted: "Just started",
   segFixed: "Fixed",

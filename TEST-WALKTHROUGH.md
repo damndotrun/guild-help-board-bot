@@ -343,7 +343,7 @@ B holds `💥 SUP`. Phone block last.
 
 **Channel**
 - [ ] The channel shows ONE bot message: the banner image on top, under it
-      the grey **Want a game?** panel with **Start my own search** and
+      the grey **Want a game?** panel with **Start a search** and
       **Pick your roles…**, under that the board ("No one is looking right
       now.") — stacked, no "(edited)" between them; a single "(edited)"
       under the whole message at most.
@@ -358,7 +358,7 @@ B holds `💥 SUP`. Phone block last.
       frozen list); **Notifications** opens from there.
 
 **A search, now**
-- [ ] **(A)** **Start my own search** → the modal (Looking for · Starts in ·
+- [ ] **(A)** **Start a search** → the modal (Looking for · Starts in ·
       Note) → `BASIC · SUP`, empty, "gg" → "Your search is live — your thread:
       #…". A private thread opened with A only: intro line + **Requests** (0).
 - [ ] Under the board a ping `@💥 SUP **A** is looking for **BASIC · SUP** ·
@@ -367,7 +367,7 @@ B holds `💥 SUP`. Phone block last.
       `now · gg`, **Join**.
 - [ ] **(B)** **Join** → "Request sent to **A** — you're #1 in line…" +
       **Cancel request**. B gets ONE DM card, silently (no sound): **Your
-      request** + Cancel, **Start my own search**.
+      request** + Cancel, **Start a search**.
 - [ ] **(A)** The thread: "<@A> **B** wants to join · 1 waiting"; the panel
       lists **1 · B** with **Accept**. The board: "1 interested".
 - [ ] **(B)** Join again → "You already asked… #1".
@@ -402,7 +402,7 @@ B holds `💥 SUP`. Phone block last.
 **Leaving**
 - [ ] **(B)** Cancel on the card → no answer line (the tap is only
       acknowledged); the card itself updates silently to its empty state ("You
-      have no open requests right now." + **Start my own search**) and is
+      have no open requests right now." + **Start a search**) and is
       deleted about 24 hours later; the thread's Removed box shows "B —
       cancelled".
 - [ ] **(A)** **Cancel search** (red) → "Search cancelled."; the thread gets

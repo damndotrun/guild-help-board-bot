@@ -44,7 +44,7 @@ function section(ctx) {
 function guide() {
   return [
     "### Teammates",
-    "Tap **Start my own search** in the looking-for-game channel (or **New search** here) to post a search — you get a private thread where requests line up.",
+    "Tap **Start a search** in the looking-for-game channel (or **New search** here) to post a search — you get a private thread where requests line up.",
     "Tap **Join** on someone's search to ask for a spot; your requests live on one DM card.",
     "When you're picked, both players tap **I'm here** — the game is set only then.",
     "**Pick your roles…** in the channel (or **My roles** here) decides which searches ping you.",
