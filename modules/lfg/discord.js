@@ -62,7 +62,12 @@ function missingPermissions(guild, channel, pingRoleIds = []) {
   const me = guild && guild.members && guild.members.me;
   const have = me && typeof channel.permissionsFor === "function" ? channel.permissionsFor(me) : null;
   if (!have) return Object.keys(NEEDED);
-  const missing = Object.entries(NEEDED).filter(([, bit]) => !have.has(bit)).map(([name]) => name);
+  // ManageRoles is a guild-level permission: a channel overwrite can neither
+  // grant nor deny it, so it is read from the bot's guild permissions.
+  const guildHas = (bit) => !!(me.permissions && me.permissions.has(bit));
+  const missing = Object.entries(NEEDED)
+    .filter(([, bit]) => !(bit === PermissionFlagsBits.ManageRoles ? guildHas(bit) : have.has(bit)))
+    .map(([name]) => name);
   const unmentionable = pingRoleIds.some((id) => {
     const role = guild.roles && guild.roles.cache.get(id);
     return role && role.mentionable === false;
@@ -101,7 +106,13 @@ async function openThread(ctx, config, listing) {
     invitable: false,
     autoArchiveDuration: 4320, // 3 days: a fixed game may be a day ahead
   });
-  await thread.members.add(listing.posterId);
+  try {
+    await thread.members.add(listing.posterId);
+  } catch (err) {
+    // an empty thread nobody can see would linger: take it down, then fail the search
+    await thread.delete().catch((delErr) => ctx.log.warn(`could not delete the half-opened thread ${thread.id}: ${delErr.message}`));
+    throw err;
+  }
   return thread;
 }
 
@@ -213,6 +224,15 @@ function deliverCard(ctx, userId, event = null) {
   return job;
 }
 
+// Delete a card message; already gone (10008) is fine, anything else is logged.
+async function deleteCardMessage(ctx, dm, userId, messageId) {
+  try {
+    await dm.messages.delete(messageId);
+  } catch (err) {
+    if (err.code !== UNKNOWN_MESSAGE) ctx.log.warn(`could not delete the old DM card of ${userId}: ${err.message}`);
+  }
+}
+
 async function deliverNow(ctx, userId, event) {
   const now = nowOf(ctx);
   const data = store.load(ctx);
@@ -232,11 +252,19 @@ async function deliverNow(ctx, userId, event) {
     return "blocked";
   }
   if (plan === "none") return "none";
-  const user = ctx.client ? await ctx.client.users.fetch(userId).catch(() => null) : null;
+  const user = ctx.client
+    ? await ctx.client.users.fetch(userId).catch((err) => {
+      ctx.log.warn(`could not fetch user ${userId} for the DM card: ${err.message}`);
+      return null;
+    })
+    : null;
   if (!user) return "nouser";
-  const dm = await user.createDM().catch(() => null);
+  const dm = await user.createDM().catch((err) => {
+    ctx.log.warn(`could not open the DM channel of ${userId}: ${err.message}`);
+    return null;
+  });
   if (plan === "delete") {
-    if (dm) await dm.messages.delete(card.messageId).catch(() => {});
+    if (dm) await deleteCardMessage(ctx, dm, userId, card.messageId);
     patch(ctx, (d) => { delete d.dmCards[userId]; }, [{ type: "dm", ts: now, userId, event: "deleted" }]);
     return "deleted";
   }
@@ -248,11 +276,19 @@ async function deliverNow(ctx, userId, event) {
   }
   let messageId = card && !card.blocked ? card.messageId : null;
   let outcome = plan === "replace" ? "replaced" : plan === "edit" ? "edited" : "sent";
+  // an existing card cannot be touched without the DM channel — and a new one
+  // beside it would make two (§5.2/7): already logged, state untouched, retry next time
+  if (!dm && messageId && (plan === "edit" || plan === "replace")) return "failed";
   if (plan === "edit") {
     try {
       await dm.messages.edit(messageId, { ...payload, flags: MessageFlags.IsComponentsV2 });
     } catch (err) {
-      if (err.code !== UNKNOWN_MESSAGE) ctx.log.warn(`could not edit the DM card of ${userId}: ${err.message}`);
+      if (err.code !== UNKNOWN_MESSAGE) {
+        // not "deleted by hand": the old card may well still be there — sending a
+        // new one now could leave two (§5.2/7). Leave the state, retry next time.
+        ctx.log.warn(`could not edit the DM card of ${userId}: ${err.message}`);
+        return "failed";
+      }
       messageId = null; // deleted by hand → a new card (§8.1)
       outcome = "sent";
     }
@@ -264,6 +300,8 @@ async function deliverNow(ctx, userId, event) {
       msg = await user.send({ ...payload, flags: MessageFlags.IsComponentsV2 | (silent ? MessageFlags.SuppressNotifications : 0) });
     } catch (err) {
       if (err.code === DM_CLOSED) {
+        // the old card (if any) must not outlive the block record
+        if (dm && messageId) await deleteCardMessage(ctx, dm, userId, messageId);
         patch(ctx, (d) => {
           d.dmCards[userId] = { blocked: true, since: now };
           if (toNotice) S.addNotice(d, userId, event, now);
@@ -273,7 +311,7 @@ async function deliverNow(ctx, userId, event) {
       ctx.log.warn(`could not send the DM card to ${userId}: ${err.message}`);
       return "failed";
     }
-    if (plan === "replace" && messageId && dm) await dm.messages.delete(messageId).catch(() => {});
+    if (plan === "replace" && messageId && dm) await deleteCardMessage(ctx, dm, userId, messageId);
     messageId = msg.id;
   }
   const notified = outcome !== "edited" && !!event;
@@ -301,7 +339,7 @@ async function dmNewSearch(ctx, listingId) {
   const guild = await getGuild(ctx, data.config);
   if (!guild || targets.size === 0) return 0;
   const { label } = S.labelOf(data.config, listing);
-  const link = data.config.guildId ? `https://discord.com/channels/${data.config.guildId}/${data.config.channelId}` : "";
+  const link = `https://discord.com/channels/${guild.id}/${data.config.channelId}`;
   const payload = {
     content: textOf(data.config, "newSearchDm", { poster: listing.posterName, label, when: listing.startAt ? `<t:${Math.floor(listing.startAt / 1000)}:R>` : "now", link }),
     components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Secondary, custom_id: `lfg:join:${listing.id}`, label: textOf(data.config, "joinButton") }] }],
@@ -311,7 +349,8 @@ async function dmNewSearch(ctx, listingId) {
   for (const userId of S.dmCandidates(data, listing)) {
     if (sent >= MAX_NEW_SEARCH_DMS) break;
     try {
-      const member = guild.members.cache.get(userId) || (await guild.members.fetch(userId));
+      // REST, not the cache: with only the Guilds intent cached roles go stale (§5.5)
+      const member = await guild.members.fetch({ user: userId, force: true });
       if (![...member.roles.cache.keys()].some((id) => targets.has(id))) continue;
       await member.send(payload);
       sent += 1;

@@ -29,6 +29,30 @@ test("missingPermissions: none, some by name, a hidden channel, an unmentionable
   assert.deepEqual(D.missingPermissions(fake.guild, null), ["ViewChannel"]);
 });
 
+test("missingPermissions: ManageRoles is read from the bot's guild permissions, not the channel's", () => {
+  const without = (bits) => ({ has: (b) => !bits.includes(b) });
+  const fake = fakeDiscord();
+  fake.channels.get("ch1").permissionsFor = () => without([PermissionFlagsBits.ManageRoles]);
+  assert.deepEqual(D.missingPermissions(fake.guild, fake.channels.get("ch1")), []);
+  fake.guild.members.me.permissions = without([PermissionFlagsBits.ManageRoles]);
+  assert.deepEqual(D.missingPermissions(fake.guild, fake.channels.get("ch1")), ["ManageRoles"]);
+});
+
+test("openThread: if the searcher cannot be added, the half-opened thread is deleted and the search fails", async () => {
+  const fake = fakeDiscord();
+  const ctx = fakeCtx(fake);
+  const ch = fake.channels.get("ch1");
+  const create = ch.threads.create;
+  ch.threads.create = async (opts) => {
+    const th = await create(opts);
+    th.members.add = async () => { throw new Error("Unknown Member"); };
+    return th;
+  };
+  await assert.rejects(D.openThread(ctx, dataWith().config, listing("L1", "u1")), /Unknown Member/);
+  const [created] = ops(fake, "thread");
+  assert.deepEqual(ops(fake, "threadDelete"), [{ op: "threadDelete", threadId: created.threadId }]);
+});
+
 test("openThread: a private, non-invitable thread named after the search, with the searcher added", async () => {
   const fake = fakeDiscord();
   const ctx = fakeCtx(fake);
@@ -166,4 +190,70 @@ test("dmNewSearch: opted-in members holding a ping role, never the poster or a b
   assert.match(dm.payload.content, /^\*\*Dani\*\* is looking for \*\*BASIC · SUP\*\* · now — https:\/\/discord\.com\/channels\/g1\/ch1$/);
   assert.equal(dm.payload.components[0].components[0].custom_id, "lfg:join:L1");
   assert.equal(store.load(ctx).listings[0].dmCount, 1);
+});
+
+// A DM channel whose messages.edit / messages.delete fail with the given error code.
+function breakDm(fake, userId, { edit, del } = {}) {
+  const u = fake.user(userId);
+  const open = u.createDM;
+  u.createDM = async () => {
+    const dm = await open();
+    if (edit) dm.messages.edit = async () => { throw Object.assign(new Error("boom"), { code: edit }); };
+    if (del) dm.messages.delete = async () => { throw Object.assign(new Error("boom"), { code: del }); };
+    return dm;
+  };
+}
+
+test("deliverCard: an edit that fails for any reason but Unknown Message changes nothing and sends no second card", async () => {
+  const fake = fakeDiscord();
+  const ctx = seeded(fake, oneRequest);
+  await D.deliverCard(ctx, "u1");
+  const before = store.load(ctx).dmCards.u1;
+  breakDm(fake, "u1", { edit: 500 });
+  ctx.clock = T0 + 5000;
+  assert.equal(await D.deliverCard(ctx, "u1"), "failed");
+  assert.deepEqual(store.load(ctx).dmCards.u1, before);
+  assert.equal(ops(fake, "dm").length, 1);
+  assert.equal(fake.messagesIn("dm-u1").length, 1);
+});
+
+test("deliverCard: a replace whose old-card delete fails is logged, and the new card still lands", async () => {
+  const fake = fakeDiscord();
+  const ctx = seeded(fake, oneRequest);
+  const warns = [];
+  ctx.log.warn = (...a) => warns.push(a.join(" "));
+  await D.deliverCard(ctx, "u1");
+  breakDm(fake, "u1", { del: 500 });
+  ctx.clock = T0 + 60_000;
+  const event = { kind: "full", listingId: "Z", aboutId: "p3", aboutName: "Dani", label: "DDPS · HACK", emoji: "🧬", startAt: null, at: T0 + 60_000 };
+  assert.equal(await D.deliverCard(ctx, "u1", event), "replaced");
+  assert.equal(warns.filter((w) => /could not delete the old DM card/.test(w)).length, 1);
+});
+
+test("deliverCard: DMs closing under an existing card delete that card before the block is recorded", async () => {
+  const closed = [];
+  const fake = fakeDiscord({ blockedDms: closed });
+  const ctx = seeded(fake, oneRequest);
+  await D.deliverCard(ctx, "u1");
+  const first = ops(fake, "dm")[0].messageId;
+  closed.push("u1");
+  ctx.clock = T0 + 60_000;
+  const event = { kind: "full", listingId: "Z", aboutId: "p3", aboutName: "Dani", label: "DDPS · HACK", emoji: "🧬", startAt: null, at: T0 + 60_000 };
+  assert.equal(await D.deliverCard(ctx, "u1", event), "blocked");
+  assert.deepEqual(ops(fake, "delete").map((o) => o.messageId), [first]);
+  assert.equal(fake.messagesIn("dm-u1").length, 0);
+  assert.deepEqual(store.load(ctx).dmCards.u1, { blocked: true, since: T0 + 60_000 });
+  assert.deepEqual(store.load(ctx).notices.u1.map((n) => n.outcome), ["full"]);
+});
+
+test("dmNewSearch: the role check follows REST, not the (stale) member cache", async () => {
+  const fake = fakeDiscord();
+  fake.member("u2", { roleIds: ["r-dps"], restRoleIds: ["r-sup"] }); // cache stale: now holds the ping role
+  fake.member("u3", { roleIds: ["r-sup"], restRoleIds: ["r-dps"] }); // cache stale: lost it
+  const ctx = seeded(fake, (x) => {
+    x.prefs = { u2: { dm: true }, u3: { dm: true } };
+    x.listings.push(listing("L1", "u1", { posterName: "Dani" }));
+  });
+  assert.equal(await D.dmNewSearch(ctx, "L1"), 1);
+  assert.deepEqual(ops(fake, "dm").map((o) => o.channelId), ["dm-u2"]);
 });

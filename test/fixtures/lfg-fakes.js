@@ -164,6 +164,10 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
         remove: async (userId) => ops.push({ op: "threadRemove", threadId: id, userId }),
       },
       setLocked: async (locked) => ops.push({ op: "lock", threadId: id, locked }),
+      delete: async () => {
+        channels.delete(id);
+        ops.push({ op: "threadDelete", threadId: id });
+      },
     });
   }
   const users = new Map();
@@ -183,11 +187,12 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
   }
   const roles = new Map();
   const members = new Map();
-  function member(id, { displayName = id.toUpperCase(), roleIds = [] } = {}) {
+  function member(id, { displayName = id.toUpperCase(), roleIds = [], restRoleIds = null } = {}) {
     const held = new Map(roleIds.map((r) => [r, { id: r }]));
     const m = {
       id,
       displayName,
+      restRoleIds,
       send: (payload) => user(id).send(payload),
       roles: {
         cache: held,
@@ -209,11 +214,18 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
   const guild = {
     id: "g1",
     members: {
-      me: { id: "bot" },
+      me: { id: "bot", permissions: perms || { has: () => true } },
       cache: members,
-      fetch: async (id) => {
-        if (!members.has(id)) throw Object.assign(new Error("Unknown Member"), { code: 10007 });
-        return members.get(id);
+      // fetch(id) → the cached object; fetch({ user, force: true }) → what REST
+      // says: a member created with `restRoleIds` shows those roles there.
+      fetch: async (arg) => {
+        const id = typeof arg === "string" ? arg : arg.user;
+        const m = members.get(id);
+        if (!m) throw Object.assign(new Error("Unknown Member"), { code: 10007 });
+        if (typeof arg === "object" && arg.force && m.restRoleIds) {
+          return { ...m, roles: { ...m.roles, cache: new Map(m.restRoleIds.map((r) => [r, { id: r }])) } };
+        }
+        return m;
       },
     },
     roles: { cache: roles, fetch: async () => roles },
