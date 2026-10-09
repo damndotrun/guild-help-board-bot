@@ -118,7 +118,7 @@ async function modal(interaction, ctx) {
     note: typed(f, "note"),
   });
   if (!r.ok) {
-    const buttons = r.code === "duplicate" ? [button(`lfg:cancel:${r.listingId}`, textOf(null, "cancelMySearch"), ButtonStyle.Danger)] : [];
+    const buttons = r.code === "duplicate" ? [button(`lfg:cancel:${r.listingId}`, textOf(store.load(ctx).config, "cancelMySearch"), ButtonStyle.Danger)] : [];
     return interaction.reply(answer(r.error, buttons));
   }
   // Defer, open the thread (afterCreate), answer with the link, then the
@@ -204,32 +204,48 @@ async function cancel(interaction, ctx, listingId) {
 // the action result — the same as menu.js.
 async function roles(interaction, ctx /* , tag — ignored */) {
   const guild = interaction.guild;
+  // The reply is deferred, so it must always be edited: a screen that cannot
+  // be built (or does not validate) becomes a plain line instead of leaving
+  // "thinking…" on screen (runEffects would only log the throw).
+  const FALLBACK = { content: "Something went wrong showing your roles. Open Menu › Teammates › My roles to check them.", components: [], allowedMentions: { parse: [] } };
   const change = async () => {
     try {
-      const member = await lfgMenu.memberOf(interaction, interaction.user.id);
-      const r = await A.setSubscriptions(ctx, actorOf(interaction, ctx), {
-        member,
-        picked: interaction.values,
-        mode: "toggle",
-        roleExists: (id) => !guild || guild.roles.cache.has(id),
-      });
-      const data = store.load(ctx);
-      const notice = r.ok ? lfgMenu.subscriptionNotice(guild, r) : { ok: false, text: r.error };
-      let held;
-      if (r.ok && member) {
-        held = new Set(member.roles.cache.keys());
-        for (const id of r.added) held.add(id);
-        for (const id of r.removed) held.delete(id);
+      let payload;
+      try {
+        const member = await lfgMenu.memberOf(interaction, interaction.user.id);
+        const r = await A.setSubscriptions(ctx, actorOf(interaction, ctx), {
+          member,
+          picked: interaction.values,
+          mode: "toggle",
+          roleExists: (id) => !guild || guild.roles.cache.has(id),
+        });
+        const data = store.load(ctx);
+        const notice = r.ok ? lfgMenu.subscriptionNotice(guild, r) : { ok: false, text: r.error };
+        let held;
+        if (r.ok && member) {
+          held = new Set(member.roles.cache.keys());
+          for (const id of r.added) held.add(id);
+          for (const id of r.removed) held.delete(id);
+        }
+        const screen = data.config
+          ? lfgMenu.rolesScreen(data, member, guild, notice, held)
+          : { crumbs: ["Menu", "Teammates"], notice, body: [], back: "menu:lfg:main" };
+        const news = newsFor(ctx, interaction);
+        if (news) screen.body = [text(news), ...screen.body];
+        const built = buildScreenPayload(screen);
+        const errors = screenErrors(screen, built);
+        if (errors.length) throw new Error(`invalid My roles screen: ${errors.join("; ")}`);
+        payload = { ...built, flags: MessageFlags.IsComponentsV2 };
+      } catch (err) {
+        ctx.log.error("[lfg] could not build the My roles screen:", err);
+        payload = FALLBACK;
       }
-      const screen = data.config
-        ? lfgMenu.rolesScreen(data, member, guild, notice, held)
-        : { crumbs: ["Menu", "Teammates"], notice, body: [], back: "menu:lfg:main" };
-      const news = newsFor(ctx, interaction);
-      if (news) screen.body = [text(news), ...screen.body];
-      const payload = buildScreenPayload(screen);
-      const errors = screenErrors(screen, payload);
-      if (errors.length) ctx.log.error(`[lfg] invalid My roles screen: ${errors.join("; ")}`);
-      await interaction.editReply({ ...payload, flags: MessageFlags.IsComponentsV2 });
+      try {
+        await interaction.editReply(payload);
+      } catch (err) {
+        ctx.log.error("could not answer the interaction:", err);
+        if (payload !== FALLBACK) await interaction.editReply(FALLBACK).catch(() => {});
+      }
     } finally {
       await C.resetPanel(ctx);
     }

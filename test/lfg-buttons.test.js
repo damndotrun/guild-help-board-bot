@@ -280,3 +280,45 @@ test("onReady: seed → permission check → channel sync, in that order", async
   }
   assert.deepEqual(order, ["seed", "check", ["sync", { checkTail: true }]]);
 });
+
+test("Pick your roles…: a failed defer still changes the roles and re-sends the panel", async () => {
+  seedData((x) => { x.config.layout = [{ type: "panel" }]; });
+  await C.sync(ctx);
+  const m = fake.member("u1", { roleIds: ["r-sup"] });
+  const i = btnTap("lfg:roles:x", DANI, { kind: "string", values: ["r-sup", "r-radar"], member: m });
+  i.deferReply = async () => { throw new Error("Unknown interaction"); };
+  await route(i);
+  assert.deepEqual(fake.ops.filter((o) => o.op === "roleAdd" || o.op === "roleRemove").map((o) => [o.op, o.roleId]), [["roleAdd", "r-radar"], ["roleRemove", "r-sup"]]);
+  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.messageIds[0]), "the panel was re-sent");
+});
+
+test("Pick your roles…: a screen that cannot be built still ends the deferred reply (plain fallback), and the panel is re-sent", async () => {
+  seedData((x) => { x.config.layout = [{ type: "panel" }]; });
+  await C.sync(ctx);
+  const lfgMenu = require("../modules/lfg/menu");
+  const orig = lfgMenu.rolesScreen;
+  lfgMenu.rolesScreen = () => { throw new Error("boom"); };
+  const m = fake.member("u1", { roleIds: [] });
+  const i = btnTap("lfg:roles:x", DANI, { kind: "string", values: ["r-sup"], member: m });
+  try {
+    await route(i);
+  } finally {
+    lfgMenu.rolesScreen = orig;
+  }
+  const [kind, payload] = last(i);
+  assert.equal(kind, "editReply");
+  assert.match(payload.content, /Something went wrong showing your roles/);
+  assert.equal(payload.flags, undefined);
+  assert.ok(fake.ops.some((o) => o.op === "roleAdd" && o.roleId === "r-sup"), "the change itself went through");
+  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.messageIds[0]), "the panel was re-sent");
+});
+
+test("modal submit: the duplicate-search Cancel button uses the configured label", async () => {
+  seedData((x) => {
+    x.config.texts = { cancelMySearch: "Drop it" };
+    x.listings.push(listing("MINE", "u1"));
+  });
+  const i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: "", note: "" } });
+  await route(i);
+  assert.deepEqual(buttonsOf(last(i)[1]).map((b) => [b.custom_id, b.label]), [["lfg:cancel:MINE", "Drop it"]]);
+});
