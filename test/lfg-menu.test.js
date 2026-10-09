@@ -113,6 +113,31 @@ test("New search opens the start modal — unless the member already has a searc
   assert.match(textIn(payload), /⚠\uFE0F You already have a search open\./);
 });
 
+test("a custom emoji the guild lost is left off the New search modal and the My roles list; a kept one is a proper { id, name }", async () => {
+  const GONE = "111111111111111111";
+  const HERE = "222222222222222222";
+  seedData((x) => {
+    x.config.categories[0].buttons[0].emoji = `<:sup:${GONE}>`;
+    x.config.categories[0].buttons[1].emoji = `<:dps:${HERE}>`;
+  });
+  fake.guild.emojis = { cache: new Map([[HERE, { id: HERE }]]) };
+  const i = menuTap("menu:lfg:new", MEMBER);
+  await menu.handle(i);
+  assert.equal(i.calls[0][0], "showModal");
+  const json = JSON.stringify(i.calls[0][1].toJSON());
+  assert.ok(!json.includes(GONE), "the gone emoji is not in the modal");
+  assert.ok(json.includes(HERE));
+  const m = fake.member("u1", { roleIds: [] });
+  const [, screen] = await run(menuTap("menu:lfg:roles", MEMBER, { member: m }));
+  let select;
+  walk(screen, (c) => { if (c.type === ComponentType.StringSelect) select = c; });
+  const byValue = Object.fromEntries(select.options.map((o) => [o.value, o]));
+  assert.equal(byValue["r-sup"].emoji, undefined);
+  assert.equal(byValue["r-sup"].label, "BASIC · SUP");
+  assert.deepEqual([byValue["r-dps"].emoji.id, byValue["r-dps"].emoji.name], [HERE, "dps"]); // not { name: "<:dps:…>" }
+  assert.equal(byValue["r-radar"].emoji.name, "🧬");
+});
+
 test("Browse: the open searches (not your own); picking one sends the request and runs its follow-up", async () => {
   seedData((x) => {
     x.listings.push(listing("A", "p1", { posterName: "Marci", note: "fast" }));

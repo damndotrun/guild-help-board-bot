@@ -121,7 +121,11 @@ tricky bits don't get re-broken.
       Because the panel rides in the board's message, a payload Discord
       refuses would freeze the board: a picker option's custom emoji that
       the guild no longer has is dropped (the option stays; unknown emoji
-      cache = present), and an edit refused with anything but 10008 is
+      cache = present) — the same `render.optionEmoji` + `D.hasEmojiIn`
+      guard covers every select with a configured emoji: the start modal's
+      Looking for (guild from the cache only — a modal cannot wait; a DM
+      card's Start has no `interaction.guild`) and `/menu` My roles — and an
+      edit refused with anything but 10008 is
       logged ONCE (re-armed by the next good edit), not thrown every tick.
       "Does not fit" is logged once the same way. An old message of ours is
       never left untracked: a delete that fails (not 10008) keeps its id in

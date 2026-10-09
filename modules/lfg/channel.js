@@ -67,8 +67,7 @@ function tailCheck(recent, mainId, pingId, botId) {
 }
 
 const hasRoleIn = (guild) => (id) => !guild || !guild.roles || guild.roles.cache.has(id);
-// A custom emoji still in the guild? An unknown cache counts as present.
-const hasEmojiIn = (guild) => (id) => !guild || !guild.emojis || !guild.emojis.cache || guild.emojis.cache.has(id);
+const hasEmojiIn = D.hasEmojiIn; // a custom emoji still in the guild? unknown cache = present
 
 // Every message id the store still points at: the one message, the old
 // per-block ids of a store from before the one-message build (migration), and

@@ -45,6 +45,18 @@ async function getGuild(ctx, config) {
   }
 }
 
+// The guild from the cache only — for a tap that must answer at once (a
+// modal cannot wait for a fetch); null when it is not cached.
+function cachedGuild(ctx, config) {
+  const id = (config && config.guildId) || process.env.GUILD_ID;
+  return (ctx.client && id && ctx.client.guilds.cache.get(id)) || null;
+}
+
+// Is this custom emoji still in the guild? A configured custom emoji the guild
+// lost makes Discord refuse the whole message / modal (50035 Invalid emoji),
+// so render.optionEmoji drops it. No guild / no emoji cache = present.
+const hasEmojiIn = (guild) => (id) => !guild || !guild.emojis || !guild.emojis.cache || guild.emojis.cache.has(id);
+
 async function getChannel(ctx, channelId) {
   if (!ctx.client || !channelId) return null;
   try {
@@ -425,6 +437,8 @@ module.exports = {
   nowOf,
   isObfuscated,
   getGuild,
+  cachedGuild,
+  hasEmojiIn,
   getChannel,
   missingPermissions,
   lookFor,

@@ -427,7 +427,8 @@ function favoriteLabel(config, fav) {
 
 // Favorites (only when the member has one — M5 creates them) · "or a custom
 // search" · Looking for · Starts in (minutes) · Note. ≤ 5 top-level parts.
-function startModal(data, userId) {
+// hasEmoji: a custom emoji the guild lost is left off its option (optionEmoji).
+function startModal(data, userId, hasEmoji = () => true) {
   const config = data.config;
   const favs = (Array.isArray(data.favorites[userId]) ? data.favorites[userId] : []).filter((f) => f && S.findButton(config, f.categoryId, f.buttonId)).slice(0, 25);
   const modal = new ModalBuilder().setCustomId("lfg:modal").setTitle("Start a search");
@@ -440,7 +441,7 @@ function startModal(data, userId) {
     );
     modal.addTextDisplayComponents(new TextDisplayBuilder().setContent("-# or a custom search"));
   }
-  const options = S.lookingForOptions(config).map((o) => ({ label: o.label, value: o.value, ...(o.emoji ? { emoji: parseEmoji(o.emoji) } : {}) }));
+  const options = S.lookingForOptions(config).map((o) => ({ label: o.label, value: o.value, ...optionEmoji(o.emoji, hasEmoji) }));
   modal.addLabelComponents(
     new LabelBuilder().setLabel("Looking for").setStringSelectMenuComponent(
       new StringSelectMenuBuilder().setCustomId("lookingfor").setPlaceholder("Pick one…").setRequired(favs.length === 0).addOptions(options)
@@ -464,6 +465,7 @@ module.exports = {
   defaultAvatar,
   threadUrl,
   renderTag,
+  optionEmoji,
   fitRows,
   renderBanner,
   renderEmptyBoard,

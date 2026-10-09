@@ -9,6 +9,7 @@
 const { ButtonStyle, ComponentType, MessageFlags } = require("discord.js");
 const A = require("./actions");
 const C = require("./channel");
+const D = require("./discord");
 const R = require("./render");
 const S = require("./state");
 const store = require("./store");
@@ -90,7 +91,9 @@ async function start(interaction, ctx) {
   if (S.isBusy(data, interaction.user.id)) return interaction.reply(answer(textOf(data.config, "busy")));
   const own = S.ownListing(data, interaction.user.id);
   if (own) return interaction.reply(answer(textOf(data.config, "hasSearch"), [button(`lfg:cancel:${own.id}`, textOf(data.config, "cancelMySearch"), ButtonStyle.Danger)]));
-  return interaction.showModal(R.startModal(data, interaction.user.id));
+  // the guild from the cache only (a DM card's Start has no interaction.guild); a modal cannot wait
+  const guild = interaction.guild || D.cachedGuild(ctx, data.config);
+  return interaction.showModal(R.startModal(data, interaction.user.id, D.hasEmojiIn(guild)));
 }
 
 // A select inside a modal Label; absent (no favorites) or empty → null.

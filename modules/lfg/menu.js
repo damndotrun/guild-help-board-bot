@@ -116,7 +116,7 @@ function newSearch({ ctx, viewer }) {
   // busy first, like the channel's Start button (a started own search is busy)
   if (S.isBusy(data, viewer.userId)) return mainScreen(ctx, viewer, err(textOf(data.config, "busy")));
   if (S.ownListing(data, viewer.userId)) return mainScreen(ctx, viewer, err(textOf(data.config, "hasSearch")));
-  return { modal: R.startModal(data, viewer.userId) };
+  return { modal: R.startModal(data, viewer.userId, D.hasEmojiIn(D.cachedGuild(ctx, data.config))) };
 }
 
 function minutesFrom(listing, now) {
@@ -154,7 +154,8 @@ function rolesScreen(data, member, guild, notice, heldIds) {
   const held = new Set(heldIds || (member ? [...member.roles.cache.keys()] : []));
   const options = S.subscribable(data.config)
     .filter((s) => !guild || guild.roles.cache.has(s.roleId))
-    .map((s) => ({ label: s.label, value: s.roleId, ...(s.emoji ? { emoji: { name: s.emoji } } : {}), default: held.has(s.roleId) }));
+    // optionEmoji: a custom emoji parsed properly ({ name: "<:x:id>" } is refused) and dropped when the guild lost it
+    .map((s) => ({ label: s.label, value: s.roleId, ...R.optionEmoji(s.emoji, D.hasEmojiIn(guild)), default: held.has(s.roleId) }));
   const body = options.length
     ? [row(select(`menu:lfg:roles:${R.renderTag()}`, "Pick the searches that ping you…", options, { min: 0, max: options.length }))]
     : [text("No roles to pick yet — ask an admin.")];

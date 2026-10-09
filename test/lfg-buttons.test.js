@@ -91,6 +91,32 @@ test("Start my own search: the modal; or a one-line answer (not set up / own sea
   assert.equal(last(i)[0], "showModal");
 });
 
+test("Start my own search: a custom emoji the guild lost is left off its Looking for option — from the channel and from a DM card (cached guild)", async () => {
+  const GONE = "111111111111111111";
+  const HERE = "222222222222222222";
+  seedData((x) => {
+    x.config.categories[0].buttons[0].emoji = `<:sup:${GONE}>`;
+    x.config.categories[0].buttons[1].emoji = `<:dps:${HERE}>`;
+  });
+  fake.guild.emojis = { cache: new Map([[HERE, { id: HERE }]]) };
+  const find = (node, id) => {
+    if (!node || typeof node !== "object") return null;
+    if (node.custom_id === id) return node;
+    for (const v of Object.values(node)) { const hit = find(v, id); if (hit) return hit; }
+    return null;
+  };
+  for (const opts of [{}, { dm: true, guild: null }]) {
+    const i = btnTap("lfg:start", ANN, opts);
+    await route(i);
+    assert.equal(last(i)[0], "showModal", JSON.stringify(opts));
+    const options = find(last(i)[1].toJSON(), "lookingfor").options;
+    const byValue = Object.fromEntries(options.map((o) => [o.value, o]));
+    assert.equal(byValue["basic/sup"].emoji, undefined, "the gone emoji is dropped");
+    assert.equal(byValue["basic/sup"].label, "BASIC · SUP", "the option stays");
+    assert.equal(byValue["basic/dps"].emoji.id, HERE);
+  }
+});
+
 test("modal submit: bad input → one ephemeral line, nothing saved; a good one → deferred, then the thread link", async () => {
   seedData();
   let i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: "2000", note: "" } });
