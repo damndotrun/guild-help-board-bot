@@ -237,7 +237,11 @@ const threadLog = (ctx, now, listingId, threadId, event, extra = {}) =>
 async function runEvent(ctx, data, ev, L, look, now, { panels, cards, refresh }) {
   switch (ev.type) {
     case "dropped": {
-      if (ev.outcome === "matched") break; // a played game's thread stays open (archived by its own timer)
+      if (ev.outcome === "matched") {
+        // a played game's thread stays open (archived by its own timer); its pending line timers tolerate 10008
+        transient.delete(ev.listing.id);
+        break;
+      }
       const gone = ev.listing;
       if (!gone.threadId) break;
       const line = closingLine(data.config, ev.outcome, ev.reason);
