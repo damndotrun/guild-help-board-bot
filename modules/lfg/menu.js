@@ -13,7 +13,7 @@ const { health } = require("./seed");
 const { textOf } = require("./texts");
 const { atLeast, LEVEL_LABEL } = require("../../core/perms");
 const { MENU_TEXT, HOME_ID } = require("../../core/menu");
-const { text, button, row, select, ok, err } = require("../../core/panel");
+const { text, button, row, select, ok, err, screenErrors } = require("../../core/panel");
 
 const MAIN_ID = "menu:lfg:main";
 // The lists (browse, roles, remove) carry a per-render tag in their custom_id
@@ -147,8 +147,10 @@ function browse({ interaction, ctx, viewer }) {
 }
 
 // My roles: the full list, the member's roles pre-selected; Save = the pick.
-function rolesScreen(data, member, guild, notice) {
-  const held = new Set(member ? [...member.roles.cache.keys()] : []);
+// `heldIds` (optional) overrides the member's cached roles: discord.js does not refresh the cache after a
+// single-role add/remove (no GuildMembers intent), so a re-render after Save passes the derived set.
+function rolesScreen(data, member, guild, notice, heldIds) {
+  const held = new Set(heldIds || (member ? [...member.roles.cache.keys()] : []));
   const options = S.subscribable(data.config)
     .filter((s) => !guild || guild.roles.cache.has(s.roleId))
     .map((s) => ({ label: s.label, value: s.roleId, ...(s.emoji ? { emoji: { name: s.emoji } } : {}), default: held.has(s.roleId) }));
@@ -185,10 +187,14 @@ async function roles({ interaction, ctx, viewer }) {
     roleExists: (id) => !guild || guild.roles.cache.has(id),
   });
   if (!r.ok) return rolesScreen(data, member, guild, err(r.error));
-  return rolesScreen(store.load(ctx), member, guild, subscriptionNotice(guild, r));
+  const held = new Set(member ? member.roles.cache.keys() : []);
+  for (const id of r.added) held.add(id);
+  for (const id of r.removed) held.delete(id);
+  return rolesScreen(store.load(ctx), member, guild, subscriptionNotice(guild, r), held);
 }
 
-function notifyScreen(data, viewer, member, notice) {
+// `gmOn` (optional) overrides the cached GM-PING state (see rolesScreen).
+function notifyScreen(data, viewer, member, notice, gmOn) {
   const prefs = { dm: false, requestDm: true, ...(data.prefs[viewer.userId] || {}) };
   const toggle = (on, arg) => button(`menu:lfg:notify:${arg}`, on ? "Turn off" : "Turn on");
   const body = [
@@ -197,7 +203,7 @@ function notifyScreen(data, viewer, member, notice) {
   ];
   const gm = data.config.gmPingRoleId;
   if (gm) {
-    const on = !!member && member.roles.cache.has(gm);
+    const on = gmOn !== undefined ? gmOn : !!member && member.roles.cache.has(gm);
     body.push(sectionRow(`**GM pings** · ${on ? "On" : "Off"}\n-# Guild-match calls ping the GM-PING role.`, toggle(on, "gm")));
   }
   return { crumbs: crumbs("Notifications"), notice, body, back: MAIN_ID };
@@ -217,7 +223,7 @@ async function notify({ interaction, ctx, viewer, arg }) {
     const member = await memberOf(interaction, viewer.userId);
     const on = !(member && member.roles.cache.has(data.config.gmPingRoleId));
     const r = await A.setGmPings(ctx, actor, { member, on });
-    return notifyScreen(store.load(ctx), viewer, member, r.ok ? ok(on ? "GM pings on." : "GM pings off.") : err(r.error));
+    return notifyScreen(store.load(ctx), viewer, member, r.ok ? ok(on ? "GM pings on." : "GM pings off.") : err(r.error), r.ok ? on : undefined);
   }
   return notifyScreen(data, viewer, await memberOf(interaction, viewer.userId));
 }
@@ -262,12 +268,30 @@ const SCREENS = {
 const OFFICER_ONLY = new Set(["remove"]);
 
 // News for the tapper goes on top of whatever screen comes back (never into
-// a modal — it would be lost; the next screen shows it).
+// a modal — it would be lost; the next screen shows it). The screen with the
+// news is built and validated first; the news is consumed (a store write)
+// only once that screen is known to be sendable, so a fallback to home never
+// eats it.
 function withNews(ctx, interaction, viewer, out) {
   if (!out || !Array.isArray(out.body)) return out;
-  const r = A.consumeNotices(ctx, actorOf(interaction, viewer));
-  if (r.notices.length === 0) return out;
-  return { ...out, body: [text(R.noticeText(store.load(ctx).config, r.notices)), ...out.body] };
+  const data = store.load(ctx);
+  const waiting = data.notices[viewer.userId];
+  if (!waiting) return out;
+  const fresh = S.takeNotices(structuredClone(data), viewer.userId, D.nowOf(ctx));
+  if (fresh.length === 0) {
+    A.consumeNotices(ctx, actorOf(interaction, viewer)); // only expired news: drop it
+    return out;
+  }
+  let withNotes;
+  try {
+    withNotes = { ...out, body: [text(R.noticeText(data.config, fresh)), ...out.body] };
+    if (screenErrors(withNotes).length) return out; // keep the news for the next screen
+  } catch (e) {
+    ctx.log.warn("[menu] could not add the waiting news to the screen:", e.message);
+    return out;
+  }
+  A.consumeNotices(ctx, actorOf(interaction, viewer));
+  return withNotes;
 }
 
 async function render(interaction, ctx, viewer, screen, arg) {

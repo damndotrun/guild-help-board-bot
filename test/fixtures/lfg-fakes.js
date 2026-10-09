@@ -187,7 +187,7 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
   }
   const roles = new Map();
   const members = new Map();
-  function member(id, { displayName = id.toUpperCase(), roleIds = [], restRoleIds = null } = {}) {
+  function member(id, { displayName = id.toUpperCase(), roleIds = [], restRoleIds = null, staleCache = false } = {}) {
     const held = new Map(roleIds.map((r) => [r, { id: r }]));
     const m = {
       id,
@@ -198,12 +198,12 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
         cache: held,
         add: async (r) => {
           if (roleFail.includes(r)) throw new Error("Missing Permissions");
-          held.set(r, { id: r });
+          if (!staleCache) held.set(r, { id: r });
           ops.push({ op: "roleAdd", userId: id, roleId: r });
         },
         remove: async (r) => {
           if (roleFail.includes(r)) throw new Error("Missing Permissions");
-          held.delete(r);
+          if (!staleCache) held.delete(r);
           ops.push({ op: "roleRemove", userId: id, roleId: r });
         },
       },

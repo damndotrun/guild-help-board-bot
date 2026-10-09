@@ -14,7 +14,7 @@ const { normalizeModule } = require("../core/loader");
 const { createCtxFor } = require("../core/runtime");
 const { createPerms } = require("../core/perms");
 const { createMenuModule, MENU_TEXT } = require("../core/menu");
-const { walk, screenErrors } = require("../core/panel");
+const { walk, screenErrors, buildScreenPayload } = require("../core/panel");
 const C = require("../modules/lfg/channel");
 const lfgMenu = require("../modules/lfg/menu");
 const seed = require("../modules/lfg/seed");
@@ -145,6 +145,42 @@ test("My roles: the member's roles pre-selected; Save adds and removes; a refuse
   assert.notEqual(again.custom_id, select.custom_id);
   assert.match(textIn(saved), /✅ Added: R-DPS · Removed: R-SUP/);
   assert.deepEqual([...m.roles.cache.keys()], ["r-dps"]);
+});
+
+test("My roles: after Save the list shows the change even though the member cache is stale (no GuildMembers intent)", async () => {
+  seedData();
+  const m = fake.member("u1", { roleIds: ["r-sup"], staleCache: true });
+  const [, screen] = await run(menuTap("menu:lfg:roles", MEMBER, { member: m }));
+  let select;
+  walk(screen, (c) => { if (c.type === ComponentType.StringSelect) select = c; });
+  const [, saved] = await run(menuTap(select.custom_id, MEMBER, { kind: "string", values: ["r-dps"], member: m }));
+  assert.deepEqual([...m.roles.cache.keys()], ["r-sup"]); // the fake cache really did not move
+  assert.ok(fake.ops.some((o) => o.op === "roleAdd" && o.roleId === "r-dps") && fake.ops.some((o) => o.op === "roleRemove" && o.roleId === "r-sup"));
+  let again;
+  walk(saved, (c) => { if (c.type === ComponentType.StringSelect) again = c; });
+  assert.deepEqual(again.options.map((o) => [o.value, !!o.default]), [["r-sup", false], ["r-dps", true], ["r-radar", false], ["r-hack", false]]);
+  assert.match(textIn(saved), /✅ Added: R-DPS · Removed: R-SUP/);
+});
+
+test("Notifications: the GM toggle shows the new state even though the member cache is stale", async () => {
+  seedData();
+  const m = fake.member("u1", { staleCache: true });
+  const [, on] = await run(menuTap("menu:lfg:notify:gm", MEMBER, { member: m }));
+  assert.equal(m.roles.cache.has("r-gm"), false);
+  assert.match(textIn(on), /✅ GM pings on\.[\s\S]*\*\*GM pings\*\* · On/);
+  const held = fake.member("u1", { roleIds: ["r-gm"], staleCache: true });
+  const [, off] = await run(menuTap("menu:lfg:notify:gm", MEMBER, { member: held }));
+  assert.match(textIn(off), /✅ GM pings off\.[\s\S]*\*\*GM pings\*\* · Off/);
+});
+
+test("news is not consumed when the screen with the news cannot be sent", async () => {
+  seedData((x) => { x.notices.u1 = [{ listingId: "Z", outcome: "full", ts: T0, name: "Marci", label: "X".repeat(4200) }]; });
+  const lfg = lfgMod();
+  const viewer = { userId: "u1", level: "member" };
+  const screen = await lfg.menu.render(menuTap("menu:lfg:main", MEMBER), ctx, viewer, "main", "");
+  assert.deepEqual(screenErrors(screen), []);
+  assert.equal(/📬/.test(textIn(buildScreenPayload(screen))), false);
+  assert.equal(store.load(ctx).notices.u1.length, 1); // still waiting for a screen that fits
 });
 
 test("Notifications: DM switches flip and save; GM pings flips the GM-PING role", async () => {
