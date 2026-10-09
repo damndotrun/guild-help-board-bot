@@ -50,9 +50,10 @@ function createListing(ctx, actor, args = {}) {
   const denied = gate(actor, "member", data.config);
   if (denied) return denied;
   const now = nowOf(ctx);
+  // busy first: a started own search is busy, and "Cancel my search" would only fail
+  if (S.isBusy(data, actor.userId)) return fail("busy", textOf(data.config, "busy"));
   const own = S.ownListing(data, actor.userId);
   if (own) return fail("duplicate", textOf(data.config, "hasSearch"), { listingId: own.id });
-  if (S.isBusy(data, actor.userId)) return fail("busy", textOf(data.config, "busy"));
   const input = S.resolveSearch(data, actor.userId, args, now);
   if (!input.ok) return fail("invalid", input.error);
   const listing = S.createListing(data, { posterId: actor.userId, posterName: actor.displayName, ...input }, now);
@@ -114,6 +115,8 @@ function checkIn(ctx, actor, { listingId } = {}) {
   if (!listing || !["fixed", "confirming", "started"].includes(listing.state)) return fail("closed", textOf(data.config, "notOpen"));
   if (actor.userId !== listing.posterId && actor.userId !== listing.joinerId) return fail("forbidden", textOf(data.config, "notInGame"));
   if (listing.state === "started") return { ok: true, result: "already", listing };
+  // the deadline passed but no tick has decided it yet: too late to confirm
+  if (listing.state === "confirming" && listing.checkIn && now >= listing.checkIn.deadline) return fail("closed", textOf(data.config, "notOpen"));
   const out = S.newOut();
   const result = S.confirmPresence(data, listing, actor.userId, now, out);
   if (result === "early") return fail("early", textOf(data.config, "hereTooEarly", { lead: S.times(data.config).reminderLeadMin }));

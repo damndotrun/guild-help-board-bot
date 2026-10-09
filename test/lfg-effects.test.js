@@ -117,7 +117,7 @@ test("joined: one notification line in the thread — the previous one is delete
 });
 
 test("nag: the searcher in the thread (previous nag deleted); the joiner by DM card, or in the thread when DMs are closed", async () => {
-  const { fake, ctx } = setup((x) => x.listings.push(confirming()));
+  const { fake, ctx } = setup((x) => x.listings.push(confirming({ welcomeMessageId: "w1" })));
   withThread(fake, "L1");
   await E.runEvents(ctx, [{ type: "nag", listingId: "L1", userId: "u1" }, { type: "nag", listingId: "L1", userId: "u2" }], { sync: false });
   let lines = opsOf(fake, "send").filter((o) => o.channelId === "th-L1");
@@ -289,6 +289,93 @@ test("tick: a search that never got a thread is dropped (thread_failed) without 
   assert.deepEqual(journal(ctx).filter((l) => l.type === "listing").map((l) => [l.outcome, l.reason]), [["cancelled", "thread_failed"]]);
   assert.equal(fake.ops.some((o) => o.payload && o.payload.content && o.payload.content.startsWith("<@&")), false);
   assert.equal(opsOf(fake, "dm").length, 0);
+});
+
+// ── final-review fixes ─────────────────────────────────────────────────────
+
+test("A1: an event whose renderer throws is logged and does not stop a later event, the panels or the cards", async () => {
+  const R = require("../modules/lfg/render");
+  const { fake, ctx } = setup((x) => {
+    x.listings.push(confirming({ welcomeMessageId: "w1" }));
+    x.listings.push(listing("L2", "u5", { requests: [request("u6")] }));
+  });
+  withThread(fake, "L1");
+  withThread(fake, "L2");
+  fake.messagesIn("th-L2").push({ id: "pm-L2", payload: {} });
+  const real = R.buildWelcome;
+  R.buildWelcome = () => { throw new Error("render boom"); };
+  try {
+    await E.runEvents(ctx, [
+      { type: "welcome", listingId: "L1" },
+      { type: "joined", listingId: "L2", userId: "u6" },
+      { type: "panel", listingId: "L2" },
+      { type: "cardRefresh", userId: "u6" },
+    ], { sync: false });
+  } finally {
+    R.buildWelcome = real;
+  }
+  assert.match(ctx.errors.join("\n"), /event welcome for L1 failed:.*render boom/);
+  assert.ok(opsOf(fake, "send").some((o) => o.channelId === "th-L2" && /wants to join/.test(o.payload.content)));
+  assert.ok(opsOf(fake, "edit").some((o) => o.messageId === "pm-L2"));
+  assert.ok(opsOf(fake, "dm").some((o) => o.channelId === "dm-u6"));
+});
+
+test("A2: checkInOpen for a listing no longer confirming (or without a checkIn) does nothing", async () => {
+  const { fake, ctx } = setup((x) => x.listings.push(listing("L1", "u1", { requests: [request("u2")] })));
+  withThread(fake, "L1");
+  await E.runEvents(ctx, [{ type: "checkInOpen", listingId: "L1" }], { sync: false });
+  assert.deepEqual(fake.ops, []);
+  assert.deepEqual(ctx.errors, []);
+});
+
+test("B1: the welcome failed to send → checkInOpen and a thread nag send it again and keep its id (once)", async () => {
+  const { fake, ctx } = setup((x) => x.listings.push(confirming({ startAt: T0 + 5 * MIN })));
+  withThread(fake, "L1");
+  await E.runEvents(ctx, [{ type: "checkInOpen", listingId: "L1" }], { sync: false });
+  const welcome = opsOf(fake, "send").find((o) => o.payload.components && /WAKEY-WAKEY/.test(JSON.stringify(o.payload)));
+  assert.ok(welcome, "the welcome was sent again");
+  assert.ok(JSON.stringify(welcome.payload).includes("lfg:here:L1"));
+  assert.equal(store.load(ctx).listings[0].welcomeMessageId, welcome.messageId);
+  // a searcher-side nag with the welcome missing again
+  const b = setup((x) => x.listings.push(confirming()));
+  withThread(b.fake, "L1");
+  await E.runEvents(b.ctx, [{ type: "nag", listingId: "L1", userId: "u1" }, { type: "nag", listingId: "L1", userId: "u1" }], { sync: false });
+  const sent = opsOf(b.fake, "send").filter((o) => /WAKEY-WAKEY/.test(JSON.stringify(o.payload)));
+  assert.equal(sent.length, 1);
+  assert.equal(store.load(b.ctx).listings[0].welcomeMessageId, sent[0].messageId);
+});
+
+test("B2: dropped → the request panel turns terminal (no Accept, no Cancel search) before the thread closes", async () => {
+  const { fake, ctx } = setup();
+  withThread(fake, "L1");
+  fake.messagesIn("th-L1").push({ id: "pm-L1", payload: {} });
+  const gone = listing("L1", "u1", { requests: [request("u2", T0, { status: "closed", reason: "expired" })] });
+  await E.runEvents(ctx, [{ type: "dropped", listing: gone, outcome: "expired", reason: null }], { sync: false });
+  assert.deepEqual(fake.ops.map((o) => o.op), ["edit", "send", "lock"]);
+  const panel = JSON.stringify(opsOf(fake, "edit")[0].payload);
+  assert.doesNotMatch(panel, /lfg:accept:|lfg:cancel:/);
+  assert.match(panel, /Search expired\./);
+});
+
+test("B3 + D1: reopened deletes the last nag line; the joiner's name is escaped (masked links too)", async () => {
+  const { fake, ctx } = setup((x) => x.listings.push(listing("L1", "u1", { requests: [request("u2", T0, { status: "withdrawn", userName: "[x](https://e.com)" })] })));
+  withThread(fake, "L1");
+  fake.messagesIn("th-L1").push({ id: "w1", payload: {} }, { id: "nag1", payload: {} });
+  await E.runEvents(ctx, [{ type: "reopened", listingId: "L1", joinerId: "u2", welcomeMessageId: "w1", nagMessageId: "nag1", threadId: "th-L1", reason: "self" }], { sync: false });
+  assert.deepEqual(opsOf(fake, "delete").map((o) => o.messageId), ["nag1"]);
+  assert.match(JSON.stringify(opsOf(fake, "edit")[0].payload), /\*\*\\\\\[x\]\(https:\/\/e\.com\)\*\* left/);
+});
+
+test("D6: afterCreate logs the new thread id before anything is saved", async () => {
+  const { fake, ctx } = setup();
+  const lines = [];
+  ctx.log.log = (...a) => lines.push(a.join(" "));
+  const d = store.load(ctx);
+  const L = S.createListing(d, { posterId: "u1", posterName: "Dani", categoryId: "basic", buttonId: "sup", note: "", startAt: null }, T0);
+  store.save(ctx, d);
+  const r = await E.afterCreate(ctx, L.id);
+  assert.ok(lines.some((l) => l.includes(`opened thread ${r.threadId} for search ${L.id}`)));
+  assert.ok(fake.ops.length > 0);
 });
 
 test("checkInOpen: the heads-up also mentions the joiner when their DM card can't reach them", async () => {

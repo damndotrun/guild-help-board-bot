@@ -322,3 +322,38 @@ test("modal submit: the duplicate-search Cancel button uses the configured label
   await route(i);
   assert.deepEqual(buttonsOf(last(i)[1]).map((b) => [b.custom_id, b.label]), [["lfg:cancel:MINE", "Drop it"]]);
 });
+
+test("Start / modal: a member whose own search has started gets the busy answer, not a Cancel that would fail (B6)", async () => {
+  seedData((x) => x.listings.push(listing("MINE", "u1", { state: "started", joinerId: "u2", startedAt: T0, requests: [request("u2", T0, { status: "accepted" })] })));
+  let i = btnTap("lfg:start", DANI);
+  await route(i);
+  assert.match(last(i)[1].content, /in a game right now/);
+  assert.deepEqual(buttonsOf(last(i)[1]), []);
+  i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: "", note: "" } });
+  await route(i);
+  assert.match(last(i)[1].content, /in a game right now/);
+  assert.deepEqual(buttonsOf(last(i)[1]), []);
+});
+
+test("I'm here after the deadline (no tick yet) is refused as not open; nothing is saved (B8)", async () => {
+  seedData((x) => x.listings.push(listing("A", "u1", {
+    state: "confirming", joinerId: "u2", acceptedAt: T0,
+    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} },
+    requests: [request("u2", T0, { status: "accepted" })],
+  })));
+  ctx.now = () => T0 + 5 * MIN;
+  const i = btnTap("lfg:here:A", MARCI, { dm: true });
+  await route(i);
+  assert.equal(last(i)[1].content, "That search isn't open anymore.");
+  assert.deepEqual(store.load(ctx).listings[0].checkIn.at, {});
+});
+
+test("Join answers escape the searcher's name, masked links too (D1)", async () => {
+  seedData((x) => x.listings.push(listing("A", "u1", { posterName: "[x](https://e.com)" })));
+  let i = btnTap("lfg:join:A", MARCI);
+  await route(i);
+  assert.match(i.calls.find(([k]) => k === "reply")[1].content, /^Request sent to \*\*\\\[x\]\(https:\/\/e\.com\)\*\*/);
+  i = btnTap("lfg:join:A", MARCI);
+  await route(i);
+  assert.match(last(i)[1].content, /^You already asked to join \*\*\\\[x\]\(https:\/\/e\.com\)\*\*/);
+});

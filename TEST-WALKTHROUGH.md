@@ -398,8 +398,11 @@ B holds `💥 SUP`. Phone block last.
       @A — your game starts in 5 minutes!" and B's card notifies again.
 
 **Leaving**
-- [ ] **(B)** Cancel on the card → "Request cancelled" (silent card edit); the
-      thread's Removed box shows "B — cancelled".
+- [ ] **(B)** Cancel on the card → no answer line (the tap is only
+      acknowledged); the card itself updates silently to its empty state ("You
+      have no open requests right now." + **Start my own search**) and is
+      deleted about 24 hours later; the thread's Removed box shows "B —
+      cancelled".
 - [ ] **(A)** **Cancel search** (red) → "Search cancelled."; the thread gets
       "Search cancelled." and is locked; B's card: "A's search was cancelled".
 - [ ] A now-search with no Accept → after 30 minutes: "Search expired.",
@@ -412,9 +415,11 @@ B holds `💥 SUP`. Phone block last.
 
 **Closed DMs (notices)**
 - [ ] **(B)** Discord → Privacy → turn off DMs from server members. Join A's
-      search → "…Your DMs are closed — check Menu › Teammates."; A cancels →
+      search → still "…Updates come in your DMs." (the bot only learns that the
+      DMs are closed when a DM to B fails). A cancels → that card DM fails, so
       B's next **/menu › Teammates** shows "📬 A's search was cancelled · …"
-      once.
+      once; from then on a Join answers "…Your DMs are closed — check Menu ›
+      Teammates."
 - [ ] **(B)** Notifications → **Request updates by DM** Off → same path,
       news only in the menu. Turn it back On.
 

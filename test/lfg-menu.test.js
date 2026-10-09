@@ -238,3 +238,18 @@ test("every Teammates screen passes the core screen validator", async () => {
     assert.deepEqual(screenErrors(screen), [], id);
   }
 });
+
+test("menu: posterName is escaped in the Browse / Remove answers and the request list (D1); New search answers busy first (B6)", async () => {
+  seedData((x) => {
+    x.listings.push(listing("A", "p1", { posterName: "[x](https://e.com)" }));
+    x.listings.push(listing("B", "p2", { posterName: "[y](https://e.com)" }));
+  });
+  const [, done] = await run(menuTap("menu:lfg:browse:t", MEMBER, { kind: "string", values: ["A"] }));
+  assert.match(textIn(done), /Request sent to \*\*\\\[x\]\(https:\/\/e\.com\)\*\*/);
+  assert.match(textIn(done), /BASIC · SUP · \\\[x\]\(https:\/\/e\.com\) · #1/);
+  const [, removed] = await run(menuTap("menu:lfg:remove:t", OFFICER, { kind: "string", values: ["B"] }));
+  assert.match(textIn(removed), /Removed \*\*\\\[y\]\(https:\/\/e\.com\)\*\*'s search\./);
+  seedData((x) => x.listings.push(listing("MINE", "u1", { state: "started", joinerId: "u2", startedAt: T0, requests: [request("u2", T0, { status: "accepted" })] })));
+  const [, busy] = await run(menuTap("menu:lfg:new", MEMBER));
+  assert.match(textIn(busy), /in a game right now/);
+});

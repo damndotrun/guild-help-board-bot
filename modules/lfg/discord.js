@@ -13,6 +13,7 @@ const { textOf } = require("./texts");
 // 2026-11-16): a channel the bot cannot view arrives named "___hidden___".
 const CHANNEL_OBFUSCATED = 1 << 17;
 const DM_CLOSED = 50007; // "Cannot send messages to this user"
+const DM_RATE_LIMITED = 40003; // "You are opening direct messages too fast"
 const UNKNOWN_MESSAGE = 10008;
 const MAX_NEW_SEARCH_DMS = 50;
 
@@ -230,24 +231,37 @@ function deliverCard(ctx, userId, event = null) {
 
 // A stale card (24 h; the tick already dropped its record) goes off the same
 // per-member queue, so it never overtakes or interleaves with a live card job.
-function deleteStaleCard(ctx, userId, messageId) {
+// Old cards a replace could not delete (staleIds) get their last try here.
+function deleteStaleCard(ctx, userId, messageId, staleIds = []) {
   return queueCardJob(ctx, userId, async () => {
-    if (!ctx.client || !messageId) return "none";
+    const ids = [...(Array.isArray(staleIds) ? staleIds : []), messageId].filter(Boolean);
+    if (!ctx.client || ids.length === 0) return "none";
     const user = await ctx.client.users.fetch(userId).catch(() => null);
     const dm = user && (await user.createDM().catch(() => null));
     if (!dm) return "nodm";
-    await deleteCardMessage(ctx, dm, userId, messageId);
+    for (const id of ids) await deleteCardMessage(ctx, dm, userId, id);
     return "deleted";
   });
 }
 
-// Delete a card message; already gone (10008) is fine, anything else is logged.
+// Delete a card message → true when it is gone (deleted, or already gone:
+// 10008); anything else is logged and false.
 async function deleteCardMessage(ctx, dm, userId, messageId) {
   try {
     await dm.messages.delete(messageId);
+    return true;
   } catch (err) {
-    if (err.code !== UNKNOWN_MESSAGE) ctx.log.warn(`could not delete the old DM card of ${userId}: ${err.message}`);
+    if (err.code === UNKNOWN_MESSAGE) return true;
+    ctx.log.warn(`could not delete the old DM card of ${userId}: ${err.message}`);
+    return false;
   }
+}
+
+// Retry the old cards a replace left behind; returns the ids still there.
+async function retryStale(ctx, dm, userId, staleIds) {
+  const left = [];
+  for (const id of staleIds) if (!(await deleteCardMessage(ctx, dm, userId, id))) left.push(id);
+  return left;
 }
 
 async function deliverNow(ctx, userId, event) {
@@ -280,11 +294,9 @@ async function deliverNow(ctx, userId, event) {
     ctx.log.warn(`could not open the DM channel of ${userId}: ${err.message}`);
     return null;
   });
-  if (plan === "delete") {
-    if (dm) await deleteCardMessage(ctx, dm, userId, card.messageId);
-    patch(ctx, (d) => { delete d.dmCards[userId]; }, [{ type: "dm", ts: now, userId, event: "deleted" }]);
-    return "deleted";
-  }
+  // old cards an earlier replace could not delete: retried first (§5.2/7)
+  const hadStale = card && !card.blocked && Array.isArray(card.staleIds) ? card.staleIds : [];
+  let stale = dm && hadStale.length ? await retryStale(ctx, dm, userId, hadStale) : hadStale;
   const guild = await getGuild(ctx, data.config);
   const payload = R.renderCard(data, userId, view, lookFor(ctx, guild));
   if (!payload) {
@@ -305,6 +317,11 @@ async function deliverNow(ctx, userId, event) {
         // new one now could leave two (§5.2/7). Leave the state, retry next time.
         ctx.log.warn(`could not edit the DM card of ${userId}: ${err.message}`);
         return "failed";
+      }
+      if (view.empty) {
+        // deleted by hand with nothing left to show: no new empty card, just forget it
+        patch(ctx, (d) => { delete d.dmCards[userId]; }, [{ type: "dm", ts: now, userId, event: "deleted" }]);
+        return "deleted";
       }
       messageId = null; // deleted by hand → a new card (§8.1)
       outcome = "sent";
@@ -328,17 +345,28 @@ async function deliverNow(ctx, userId, event) {
       ctx.log.warn(`could not send the DM card to ${userId}: ${err.message}`);
       return "failed";
     }
-    if (plan === "replace" && messageId && dm) await deleteCardMessage(ctx, dm, userId, messageId);
+    if (plan === "replace" && messageId && dm && !(await deleteCardMessage(ctx, dm, userId, messageId))) {
+      // the old card could not go: keep its id for a retry, and strip its
+      // buttons now so two live cards never coexist (§5.2/7)
+      stale = [...stale, messageId];
+      await dm.messages.edit(messageId, R.renderCardReplaced(data.config))
+        .catch((err) => ctx.log.warn(`could not retire the old DM card of ${userId}: ${err.message}`));
+    }
     messageId = msg.id;
   }
   const notified = outcome !== "edited" && !!event;
   patch(ctx, (d) => {
     const prev = d.dmCards[userId] && !d.dmCards[userId].blocked ? d.dmCards[userId] : {};
+    const activeAt = view.empty ? now : prev.activeAt;
     d.dmCards[userId] = {
       messageId,
       sentAt: outcome === "edited" ? prev.sentAt ?? now : now,
       lastEventAt: notified ? now : prev.lastEventAt ?? 0,
-      event: boxEvent || prev.event || null,
+      // the accepted view shows no box — and an old one must not come back after it (B4)
+      event: view.accepted ? null : boxEvent || prev.event || null,
+      // the empty state counts as activity: the 24 h until the prune start here (§3.6)
+      ...(activeAt ? { activeAt } : {}),
+      ...(stale.length ? { staleIds: stale } : {}),
     };
   }, [{ type: "dm", ts: now, userId, event: outcome }]);
   return outcome;
@@ -358,7 +386,7 @@ async function dmNewSearch(ctx, listingId) {
   const { label } = S.labelOf(data.config, listing);
   const link = `https://discord.com/channels/${guild.id}/${data.config.channelId}`;
   const payload = {
-    content: textOf(data.config, "newSearchDm", { poster: listing.posterName, label, when: listing.startAt ? `<t:${Math.floor(listing.startAt / 1000)}:R>` : "now", link }),
+    content: textOf(data.config, "newSearchDm", { poster: R.esc(listing.posterName), label, when: listing.startAt ? `<t:${Math.floor(listing.startAt / 1000)}:R>` : "now", link }),
     components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Secondary, custom_id: `lfg:join:${listing.id}`, label: textOf(data.config, "joinButton") }] }],
     allowedMentions: { parse: [] },
   };
@@ -371,8 +399,14 @@ async function dmNewSearch(ctx, listingId) {
       if (![...member.roles.cache.keys()].some((id) => targets.has(id))) continue;
       await member.send(payload);
       sent += 1;
-    } catch {
-      // left the server, or DMs closed — skip (§5.5)
+    } catch (err) {
+      // Discord's "opening DMs too fast" (40003): every further DM of this
+      // batch would hit it too — stop here, one log line
+      if (err && err.code === DM_RATE_LIMITED) {
+        ctx.log.warn(`new-search DMs for ${listingId} stopped after ${sent}: opening DMs too fast (40003)`);
+        break;
+      }
+      // left the server, or DMs closed (50007) — skip this member (§5.5)
     }
   }
   if (sent > 0) patch(ctx, (d) => { const l = S.findListing(d, listingId); if (l) l.dmCount += sent; });
@@ -382,6 +416,7 @@ async function dmNewSearch(ctx, listingId) {
 module.exports = {
   CHANNEL_OBFUSCATED,
   DM_CLOSED,
+  DM_RATE_LIMITED,
   UNKNOWN_MESSAGE,
   NEEDED,
   nowOf,

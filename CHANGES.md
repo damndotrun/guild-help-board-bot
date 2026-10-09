@@ -26,9 +26,10 @@ tricky bits don't get re-broken.
   lines, welcome/confirm, panel, DM cards, board; `afterCreate`; `tick`),
   `render.js` (pure V2 payloads, `fitRows`; the Just started / Fixed boxes and
   the accepted DM card are cut with "+N more"), `channel.js` (blocks, tail
-  check, ping — one writer; an empty or foreign-only history skips the tail
-  check instead of looping reposts; `repost` persists the block ids one by
-  one), `discord.js` (REST glue, `deliverCard` — one queue per member, and
+  check, ping — one writer; an EMPTY history (no Read Message History)
+  skips the tail check instead of looping reposts, a non-empty one without
+  our blocks means they are buried → repost; `repost` persists the block ids
+  one by one), `discord.js` (REST glue, `deliverCard` — one queue per member, and
   `deleteStaleCard` on the same queue; `openThread` deletes the thread again
   if adding a member fails; the DM card is replaced only on 10008 = deleted by
   hand — any other edit error leaves the state untouched; the new-search DM
@@ -67,10 +68,31 @@ tricky bits don't get re-broken.
   17. lfg: every re-rendered select gets a fresh `custom_id`
       (`render.renderTag()`, like help's `rolesRenderTag`) — an identical
       one freezes in the client.
-  18. lfg: every public/DM payload goes through `render.fitRows` →
-      `messageErrors(..., { prefixes: ["lfg:", "menu:"] })`; colours only on
+  18. lfg: the payloads with a variable-length list — the board, the request
+      panel and the DM card — go through `render.fitRows` →
+      `messageErrors(..., { prefixes: ["lfg:", "menu:"] })` and are cut with
+      "+N more". The fixed-size ones are NOT validated at run time (only by
+      the render tests): banner, start panel, ping, WAKEY welcome (its on-hold
+      name list is capped at 10 + "+N more", `MAX_ON_HOLD_NAMES`), the closed
+      welcome, Game on!, the "card replaced" line, the empty board, the
+      new-search DM, thread lines and closing lines. Colours only on
       container stripes; buttons Secondary except I'm here (Success) and
       Cancel search (Danger).
+  19. lfg: `runEvents` isolates every event — one that throws is logged
+      (`event <type> for <id> failed:`) and the rest of the batch, the panel
+      redraws, the DM cards and the board sync still run. Same per panel /
+      card in the loops after it.
+  20. lfg: a DM-card replace whose old-card delete fails (anything but 10008)
+      never forgets that card: its id goes to `dmCards[userId].staleIds`, the
+      old message is edited to one button-less line ("This card was replaced
+      by a newer one."), and the delete is retried at the next card job
+      (10008 = gone) and, finally, in the 24 h stale-card pass.
+  21. lfg: a DM card is deleted only by the tick, once its member has no
+      active request and 24 h passed since the last event — `max(sentAt,
+      lastEventAt, activeAt)`, where `activeAt` is when the card turned
+      empty (e.g. a self-withdraw of the last request). A refresh with
+      nothing left to show edits the card to its empty state. That delete
+      writes the same `dm` / `deleted` journal line.
 
 ## 2026-10-09 — `/config roles` select no longer freezes after a refusal
 
@@ -813,7 +835,7 @@ fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
    `Referrer-Policy: same-origin` — `no-referrer` makes browsers send
    `Origin: null` on form POSTs and the CSRF guard would refuse every one.
 
-10.–18. The `lfg` module's invariants are listed in the M4 entry at the top
+10.–21. The `lfg` module's invariants are listed in the M4 entry at the top
     of this file.
 
 ## Updating

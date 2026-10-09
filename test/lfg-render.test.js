@@ -251,7 +251,7 @@ test("card: accepted and confirming → You're in! + Confirm box with I'm here a
   ]);
 });
 
-test("card: fixed → wait text + thread link; started → Game on! (+ other requests cancelled); nothing left → null", () => {
+test("card: fixed → wait text + thread link; started → Game on! (+ other requests cancelled); nothing left → the empty state", () => {
   const d = dataWith((x) => x.listings.push(confirmingListing()));
   d.listings[0].state = "fixed";
   d.listings[0].startAt = T0 + 60 * MIN;
@@ -262,7 +262,51 @@ test("card: fixed → wait text + thread link; started → Game on! (+ other req
   d.listings[0].cancelledOthers = ["u2"];
   const s = cardFor(d, "u2");
   assert.match(textOf(s), /### ✓ Game on!\n-# 💥 BASIC · SUP — with \*\*Dani\*\*\n-# Your other requests were cancelled\./);
-  assert.equal(R.renderCard(d, "u5", S.cardView(d, "u5", T0)), null);
+  // B5: an emptied card is edited to its empty state (the tick deletes it 24 h later)
+  const view = S.cardView(d, "u5", T0);
+  assert.equal(view.empty, true);
+  const e = R.renderCard(d, "u5", view);
+  valid(e);
+  assert.deepEqual(accents(e), [R.COLORS.grey]);
+  assert.equal(textOf(e), "-# You have no open requests right now.");
+  assert.deepEqual(ids(e), ["lfg:start"]);
+});
+
+test("card replaced: one line, no buttons left (A3)", () => {
+  const p = R.renderCardReplaced(null);
+  valid(p);
+  assert.equal(p.flags, MessageFlags.IsComponentsV2);
+  assert.equal(textOf(p), "This card was replaced by a newer one.");
+  assert.deepEqual(all(p, ComponentType.Button), []);
+});
+
+test("request panel, closed (B2): grey, the closing line, no Accept and no Cancel search", () => {
+  const L = listing("L1", "u1", { requests: [request("u2", T0, { status: "closed", reason: "expired", userName: "Zed" }), request("u3", T0 + 1, { userName: "Ann" })] });
+  const p = R.renderRequestPanel(dataWith(), L, T0, undefined, { closedLine: "Search expired." });
+  valid(p);
+  assert.deepEqual(accents(p), [R.COLORS.grey, R.COLORS.grey]);
+  assert.deepEqual(ids(p), ["lfg:badge:requests", "lfg:badge:removed"]);
+  assert.match(textOf(p), /\*\*1 · Ann\*\*\n-# asked .*\n-# Search expired\./);
+  assert.doesNotMatch(textOf(p), /No requests yet/);
+});
+
+test("names are escaped incl. masked links (D1); the welcome's on-hold list stops at 10 names + “+N more” (D2)", () => {
+  assert.equal(R.esc("[x](https://e.com)"), "\\[x](https://e.com)");
+  assert.equal(R.esc("Z_ed*"), "Z\\_ed\\*");
+  const L = confirmingListing();
+  L.requests = [L.requests[0], ...Array.from({ length: 13 }, (_, i) => request(`h${i}`, T0 + 1 + i, { onHold: true, userName: i === 0 ? "[x](https://e.com)" : `Held ${i}` }))];
+  const p = R.buildWelcome(dataWith(), L);
+  valid(p);
+  const t = textOf(p);
+  assert.match(t, /On hold until you both confirm: \*\*\\\[x\]\(https:\/\/e\.com\)\*\*, \*\*Held 1\*\*/);
+  assert.match(t, /\*\*Held 9\*\*, \+3 more · ends/);
+  assert.doesNotMatch(t, /Held 10/);
+});
+
+test("start modal: favorites that are not a list are ignored (B10)", () => {
+  const d = dataWith((x) => { x.favorites.u1 = { id: "f1" }; });
+  const m = R.startModal(d, "u1").toJSON();
+  assert.deepEqual(m.components.map((c) => c.label), ["Looking for", "Starts in (minutes)", "Note (optional)"]);
 });
 
 // ── modal ──────────────────────────────────────────────────────────────────

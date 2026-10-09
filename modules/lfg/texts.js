@@ -71,6 +71,8 @@ const DEFAULTS = Object.freeze({
   confirmCardHint: "The game is set once you both tap I'm here. Your other requests stay on hold until then.",
   gameOnCard: "✓ Game on!",
   otherCancelled: "Your other requests were cancelled.",
+  cardEmpty: "-# You have no open requests right now.",
+  cardReplaced: "This card was replaced by a newer one.",
   event_full: "{name}'s game is full",
   event_full_sub: "someone else got the spot.",
   event_expired: "{name}'s search expired",
@@ -83,7 +85,6 @@ const DEFAULTS = Object.freeze({
   event_noConfirm_sub: "the spot went back to the queue.",
   // replies
   searchLive: "Your search is live — your thread: {link}",
-  searchLiveNoLink: "Your search is live.",
   threadFailed: "I couldn't open your search thread, so the search was cancelled. Try again in a minute.",
   requestSent: "Request sent to **{poster}** — you're #{n} in line. Updates come in your DMs.",
   requestSentNoDm: "Request sent to **{poster}** — you're #{n} in line. Your DMs are closed — check Menu › Teammates.",
@@ -93,11 +94,8 @@ const DEFAULTS = Object.freeze({
   requestsCancelled: "Cancelled {n} requests.",
   searchCancelled: "Search cancelled.",
   searchRemoved: "Removed **{poster}**'s search.",
-  hereNoted: "Got it — waiting for the other player.",
-  hereStarted: "Game on — good luck!",
   hereAlready: "You already tapped I'm here.",
   hereTooEarly: "Not yet — you'll be asked to confirm {lead} minutes before the start.",
-  accepted: "You accepted **{joiner}**.",
   // errors
   notSetUp: "Teammates isn't set up yet — ask an admin.",
   notOpen: "That search isn't open anymore.",

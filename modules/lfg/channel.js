@@ -125,11 +125,12 @@ function sync(ctx, { checkTail = false } = {}) {
         tailSkipLogged = true;
       }
       // Without Read Message History Discord does NOT throw — it returns an
-      // empty list. A history that holds none of our blocks is just as
-      // unreadable: treating it as "something is in the way" would repost every
-      // tick. A block that is truly gone surfaces as 10008 on the board edit.
-      if (recent && !recent.some((m) => ids.includes(m.id))) {
-        if (!tailSkipLogged) ctx.log.warn("tail check skipped: the channel history is empty or holds none of our blocks (Read Message History?)");
+      // empty list: treating that as "something is in the way" would repost
+      // every tick. Only an EMPTY window is skipped; a non-empty one without
+      // our ids means the blocks are buried under newer messages → repost
+      // (after it the blocks are the newest, so this cannot loop).
+      if (recent && recent.length === 0) {
+        if (!tailSkipLogged) ctx.log.warn("tail check skipped: the channel history came back empty (Read Message History?)");
         tailSkipLogged = true;
         recent = null;
       }

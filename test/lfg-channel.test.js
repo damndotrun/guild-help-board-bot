@@ -167,6 +167,16 @@ test("sync with checkTail: an EMPTY history (no Read Message History — Discord
   assert.equal(ctx.warnings.filter((w) => /tail check skipped/.test(w)).length, 1);
 });
 
+test("sync with checkTail: a NON-empty history without our blocks means they are buried → repost once, then calm (C1)", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  for (let i = 0; i < 10; i++) fake.messagesIn("ch1").push({ id: `chat${i}`, payload: {}, authorId: "u1" });
+  fake.ops.length = 0;
+  assert.equal(await C.sync(ctx, { checkTail: true }), "reposted");
+  assert.deepEqual(fake.ops.map((o) => o.op), ["delete", "delete", "delete", "send", "send", "send"]);
+  assert.equal(await C.sync(ctx, { checkTail: true }), "unchanged"); // the blocks are the newest now: no loop
+});
+
 test("repost: a send failing half-way leaves no orphan — the ids sent so far are stored and deleted by the next sync", async () => {
   const { fake, ctx } = setup();
   const ch = fake.channels.get("ch1");

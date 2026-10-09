@@ -154,19 +154,54 @@ test("deliverCard: closed DMs → blocked for 24 h and the news becomes a notice
   assert.equal(store.load(ctx2).notices.u1.length, 1);
 });
 
-test("deliverCard: nothing left to show deletes the card; a card deleted by hand is sent again", async () => {
+test("deliverCard: nothing left to show edits the card to its empty state (kept, activeAt set); a card deleted by hand is sent again", async () => {
   const fake = fakeDiscord();
   const ctx = seeded(fake, oneRequest);
   await D.deliverCard(ctx, "u1");
   const id = ops(fake, "dm")[0].messageId;
   fake.messagesIn("dm-u1").length = 0; // the member deleted it
   assert.equal(await D.deliverCard(ctx, "u1"), "sent");
-  assert.notEqual(store.load(ctx).dmCards.u1.messageId, id);
+  const second = store.load(ctx).dmCards.u1.messageId;
+  assert.notEqual(second, id);
   const d = store.load(ctx);
   d.listings = [];
   store.save(ctx, d);
+  ctx.clock = T0 + 5000;
+  // B5: the card stays, edited to the empty state; the 24 h prune deletes it later
+  assert.equal(await D.deliverCard(ctx, "u1"), "edited");
+  assert.equal(ops(fake, "delete").length, 0);
+  assert.match(JSON.stringify(ops(fake, "edit").at(-1).payload), /You have no open requests right now/);
+  const card = store.load(ctx).dmCards.u1;
+  assert.deepEqual([card.messageId, card.activeAt], [second, T0 + 5000]);
+  // emptied AND deleted by hand: no new empty card is sent, the record goes
+  fake.messagesIn("dm-u1").length = 0;
   assert.equal(await D.deliverCard(ctx, "u1"), "deleted");
   assert.equal(store.load(ctx).dmCards.u1, undefined);
+  assert.equal(ops(fake, "dm").length, 2);
+});
+
+test("deliverCard: a self-withdraw of the last request edits the card; the tick deletes it 24 h later (B5, D4)", async () => {
+  const A = require("../modules/lfg/actions");
+  const E = require("../modules/lfg/effects");
+  const fake = fakeDiscord();
+  fake.textChannel("th-A");
+  const ctx = seeded(fake, oneRequest);
+  await D.deliverCard(ctx, "u1");
+  const cardId = ops(fake, "dm")[0].messageId;
+  ctx.clock = T0 + 60_000;
+  const r = A.withdraw(ctx, { userId: "u1", displayName: "U1", level: "member" }, { listingId: "A" });
+  await r.effects();
+  assert.equal(fake.messagesIn("dm-u1").length, 1); // still there
+  assert.equal(store.load(ctx).dmCards.u1.activeAt, T0 + 60_000);
+  ctx.clock = T0 + 60_000 + 24 * 60 * 60_000 - 1;
+  await E.tick(ctx);
+  assert.equal(fake.messagesIn("dm-u1").length, 1);
+  ctx.clock = T0 + 60_000 + 24 * 60 * 60_000;
+  await E.tick(ctx);
+  assert.deepEqual(ops(fake, "delete").filter((o) => o.channelId === "dm-u1").map((o) => o.messageId), [cardId]);
+  assert.equal(store.load(ctx).dmCards.u1, undefined);
+  const lines = store.readLog(path.join(ctx.config.DATA_DIR, store.LOG_FILE)).filter((l) => l.type === "dm").map((l) => l.event);
+  assert.deepEqual(lines, ["sent", "edited", "deleted"]);
 });
 
 test("deliverCard: two events at once still leave exactly one card (per-member queue)", async () => {
@@ -217,17 +252,75 @@ test("deliverCard: an edit that fails for any reason but Unknown Message changes
   assert.equal(fake.messagesIn("dm-u1").length, 1);
 });
 
-test("deliverCard: a replace whose old-card delete fails is logged, and the new card still lands", async () => {
+test("deliverCard: a replace whose old-card delete fails is logged, the new card still lands, the old one loses its buttons and is kept for a retry (A3)", async () => {
   const fake = fakeDiscord();
   const ctx = seeded(fake, oneRequest);
   const warns = [];
   ctx.log.warn = (...a) => warns.push(a.join(" "));
   await D.deliverCard(ctx, "u1");
+  const first = ops(fake, "dm")[0].messageId;
+  const u1 = fake.user("u1");
+  const open = u1.createDM;
   breakDm(fake, "u1", { del: 500 });
   ctx.clock = T0 + 60_000;
   const event = { kind: "full", listingId: "Z", aboutId: "p3", aboutName: "Dani", label: "DDPS · HACK", emoji: "🧬", startAt: null, at: T0 + 60_000 };
   assert.equal(await D.deliverCard(ctx, "u1", event), "replaced");
   assert.equal(warns.filter((w) => /could not delete the old DM card/.test(w)).length, 1);
+  const retired = ops(fake, "edit").find((o) => o.messageId === first);
+  assert.match(JSON.stringify(retired.payload), /This card was replaced by a newer one\./);
+  assert.doesNotMatch(JSON.stringify(retired.payload), /custom_id/);
+  const card = store.load(ctx).dmCards.u1;
+  assert.notEqual(card.messageId, first);
+  assert.deepEqual(card.staleIds, [first]);
+  // the next card job retries the delete first; this time it works
+  u1.createDM = open;
+  ctx.clock = T0 + 70_000;
+  assert.equal(await D.deliverCard(ctx, "u1"), "edited");
+  assert.ok(ops(fake, "delete").some((o) => o.messageId === first));
+  assert.equal(store.load(ctx).dmCards.u1.staleIds, undefined);
+});
+
+test("deliverCard: a stale id already gone (10008) on the retry is dropped; one still failing is kept (A3)", async () => {
+  const fake = fakeDiscord();
+  const ctx = seeded(fake, (x) => { oneRequest(x); x.dmCards.u1 = { messageId: "card1", sentAt: T0, lastEventAt: 0, event: null, staleIds: ["gone1"] }; });
+  fake.messagesIn("dm-u1").push({ id: "card1", payload: {} });
+  assert.equal(await D.deliverCard(ctx, "u1"), "edited");
+  assert.equal(store.load(ctx).dmCards.u1.staleIds, undefined); // 10008 = gone
+  const d = store.load(ctx);
+  d.dmCards.u1.staleIds = ["stuck1"];
+  store.save(ctx, d);
+  breakDm(fake, "u1", { del: 500 });
+  assert.equal(await D.deliverCard(ctx, "u1"), "edited");
+  assert.deepEqual(store.load(ctx).dmCards.u1.staleIds, ["stuck1"]);
+});
+
+test("deleteStaleCard: the 24 h pass also takes the left-behind old cards (A3)", async () => {
+  const fake = fakeDiscord();
+  const ctx = seeded(fake);
+  for (const id of ["c1", "old1"]) fake.messagesIn("dm-u1").push({ id, payload: {} });
+  assert.equal(await D.deleteStaleCard(ctx, "u1", "c1", ["old1", "gone"]), "deleted");
+  assert.deepEqual(ops(fake, "delete").map((o) => o.messageId).sort(), ["c1", "old1"]);
+  assert.equal(fake.messagesIn("dm-u1").length, 0);
+});
+
+test("deliverCard: rendering the accepted state clears an old bad-news box, so it cannot come back (B4)", async () => {
+  const fake = fakeDiscord();
+  const box = { kind: "full", listingId: "Z", aboutId: "p3", aboutName: "Dani", label: "DDPS · HACK", emoji: "🧬", startAt: null, at: T0 };
+  const ctx = seeded(fake, (x) => {
+    x.listings.push(listing("B", "p2", { posterName: "Bob", state: "confirming", joinerId: "u1", acceptedAt: T0, checkIn: { openedAt: T0, deadline: T0 + 5 * 60_000, nagMessageId: null, at: {}, nags: {} }, requests: [request("u1", T0, { status: "accepted" })] }));
+    x.dmCards.u1 = { messageId: "card1", sentAt: T0, lastEventAt: T0, event: box };
+  });
+  fake.messagesIn("dm-u1").push({ id: "card1", payload: {} });
+  assert.equal(await D.deliverCard(ctx, "u1"), "edited");
+  assert.equal(store.load(ctx).dmCards.u1.event, null);
+  // the game falls through (B reopens): the old "full" box does not resurface
+  const d = store.load(ctx);
+  d.listings[0].state = "open";
+  d.listings[0].joinerId = null;
+  d.listings[0].requests[0].status = "pending";
+  store.save(ctx, d);
+  await D.deliverCard(ctx, "u1");
+  assert.doesNotMatch(JSON.stringify(ops(fake, "edit").at(-1).payload), /game is full/);
 });
 
 test("deliverCard: DMs closing under an existing card delete that card before the block is recorded", async () => {
@@ -244,6 +337,42 @@ test("deliverCard: DMs closing under an existing card delete that card before th
   assert.equal(fake.messagesIn("dm-u1").length, 0);
   assert.deepEqual(store.load(ctx).dmCards.u1, { blocked: true, since: T0 + 60_000 });
   assert.deepEqual(store.load(ctx).notices.u1.map((n) => n.outcome), ["full"]);
+});
+
+test("dmNewSearch: the poster's name is escaped, masked links too (D1)", async () => {
+  const fake = fakeDiscord();
+  fake.member("u2", { roleIds: ["r-sup"] });
+  const ctx = seeded(fake, (x) => {
+    x.prefs = { u2: { dm: true } };
+    x.listings.push(listing("L1", "u1", { posterName: "[x](https://e.com)" }));
+  });
+  assert.equal(await D.dmNewSearch(ctx, "L1"), 1);
+  assert.match(ops(fake, "dm")[0].payload.content, /^\*\*\\\[x\]\(https:\/\/e\.com\)\*\* is looking for/);
+});
+
+test("dmNewSearch: 40003 (opening DMs too fast) stops the batch with one log line; 50007 only skips that member (D5)", async () => {
+  const fake = fakeDiscord({ blockedDms: ["u2"] });
+  for (const id of ["u2", "u3", "u4", "u5"]) fake.member(id, { roleIds: ["r-sup"] });
+  const ctx = seeded(fake, (x) => {
+    x.prefs = { u2: { dm: true }, u3: { dm: true }, u4: { dm: true }, u5: { dm: true } };
+    x.listings.push(listing("L1", "u1", { posterName: "Dani" }));
+  });
+  const warns = [];
+  ctx.log.warn = (...a) => warns.push(a.join(" "));
+  const tried = [];
+  for (const id of ["u3", "u4", "u5"]) {
+    const u = fake.user(id);
+    const real = u.send;
+    u.send = async (p) => {
+      tried.push(id);
+      if (id === "u4") throw Object.assign(new Error("You are opening direct messages too fast"), { code: 40003 });
+      return real(p);
+    };
+  }
+  assert.equal(await D.dmNewSearch(ctx, "L1"), 1);
+  assert.deepEqual(tried, ["u3", "u4"]); // u5 never tried
+  assert.deepEqual(ops(fake, "dm").map((o) => o.channelId), ["dm-u3"]);
+  assert.equal(warns.filter((w) => /40003/.test(w)).length, 1);
 });
 
 test("dmNewSearch: the role check follows REST, not the (stale) member cache", async () => {

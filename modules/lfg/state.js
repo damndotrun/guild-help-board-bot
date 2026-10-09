@@ -10,10 +10,10 @@
 //     { type: "nag", listingId, userId }               a reminder is due
 //     { type: "welcome", listingId }                   redraw the welcome / confirm box
 //     { type: "started", listingId }                   both tapped I'm here
-//     { type: "reopened", listingId, joinerId, welcomeMessageId, threadId, reason }
+//     { type: "reopened", listingId, joinerId, welcomeMessageId, nagMessageId, threadId, reason }
 //     { type: "card", userId, event }                  an important DM-card event (notifies)
 //     { type: "cardRefresh", userId }                  a silent DM-card refresh
-//     { type: "cardDelete", userId, messageId }        the card is stale (24 h)
+//     { type: "cardDelete", userId, messageId, staleIds? }  the card is stale (24 h)
 // Listing states: open → (accept) fixed | confirming → (2× I'm here) started.
 const crypto = require("crypto");
 const { hasUnprintable, PLAIN_TEXT_ERROR } = require("../../core/text");
@@ -103,7 +103,10 @@ function shapeListing(l) {
     dmCount: 0,
     cancelledOthers: [],
   };
-  for (const [k, v] of Object.entries(defaults)) if (l[k] === undefined) l[k] = v;
+  // `== null`: a hand-edited null is as missing as an absent field
+  for (const [k, v] of Object.entries(defaults)) if (l[k] == null) l[k] = v;
+  if (typeof l.note !== "string") l.note = String(l.note);
+  if (!Array.isArray(l.cancelledOthers)) l.cancelledOthers = [];
   l.requests = Array.isArray(l.requests) ? l.requests.filter(isObj) : [];
   if (typeof l.expiresAt !== "number") l.expiresAt = l.startAt ?? (l.createdAt ?? 0) + DEFAULT_TIMES.nowTtlMin * MIN;
   repairGame(l);
@@ -115,6 +118,8 @@ function shapeListing(l) {
 // without a checkIn gets one whose deadline is already past (the next tick
 // decides it as a missed check-in).
 function repairGame(l) {
+  // a checkIn whose deadline is not a number is dropped: the state's default applies
+  if (l.checkIn != null && (!isObj(l.checkIn) || !Number.isFinite(l.checkIn.deadline))) l.checkIn = null;
   if (IN_GAME.has(l.state) && !l.joinerId) {
     l.state = "open";
     l.checkIn = null;
@@ -210,7 +215,8 @@ function resolveSearch(data, userId, input, now) {
   const config = data.config;
   const fail = (key) => ({ ok: false, error: textOf(config, key) });
   if (input.favoriteId) {
-    const fav = (data.favorites[userId] || []).find((f) => f && f.id === input.favoriteId);
+    const favs = Array.isArray(data.favorites[userId]) ? data.favorites[userId] : [];
+    const fav = favs.find((f) => f && f.id === input.favoriteId);
     if (!fav || !findButton(config, fav.categoryId, fav.buttonId)) return fail("favoriteStale");
     const minutes = Number.isInteger(fav.minutes) && fav.minutes > 0 && fav.minutes <= MAX_MINUTES ? fav.minutes : 0;
     const note = String(fav.note ?? "").trim();
@@ -248,10 +254,10 @@ const startKey = (l) => l.startAt ?? l.createdAt;
 
 // Board / Browse order: soonest first.
 // With `now`, a search whose time ran out but that no tick has dropped yet
-// is not joinable any more either.
+// is not joinable any more either; nor is one whose thread is still opening.
 function joinable(data, now = null) {
   return data.listings
-    .filter((l) => l.state === "open" && (now === null || now < l.expiresAt))
+    .filter((l) => l.state === "open" && !!l.threadId && (now === null || now < l.expiresAt))
     .sort((a, b) => startKey(a) - startKey(b));
 }
 
@@ -361,7 +367,8 @@ function reopenListing(data, listing, reason, now, out) {
   const r = listing.requests.find((x) => x.userId === joinerId && x.status === "accepted");
   const nags = listing.checkIn ? listing.checkIn.nags[joinerId] || 0 : 0;
   if (r) closeRequest(listing, r, reason === "no_confirm" ? "closed" : "withdrawn", reason, now, out, { nags });
-  out.events.push({ type: "reopened", listingId: listing.id, joinerId, welcomeMessageId: listing.welcomeMessageId, threadId: listing.threadId, reason });
+  const nagMessageId = listing.checkIn ? listing.checkIn.nagMessageId || null : null;
+  out.events.push({ type: "reopened", listingId: listing.id, joinerId, welcomeMessageId: listing.welcomeMessageId, nagMessageId, threadId: listing.threadId, reason });
   listing.state = "open";
   listing.joinerId = null;
   listing.acceptedAt = null;
@@ -532,10 +539,14 @@ function advance(data, now) {
     }
   }
   pruneNotices(data, now);
+  // §3.6: a card goes once its member has no pending request and 24 h passed
+  // since the last event (activeAt: the card turned empty, e.g. a self-withdraw)
   for (const [userId, card] of Object.entries(data.dmCards)) {
     if (!card || card.blocked || hasActivity(data, userId)) continue;
-    if (now - Math.max(card.sentAt || 0, card.lastEventAt || 0) >= CARD_TTL_MS) {
-      out.events.push({ type: "cardDelete", userId, messageId: card.messageId });
+    if (now - Math.max(card.sentAt || 0, card.lastEventAt || 0, card.activeAt || 0) >= CARD_TTL_MS) {
+      const staleIds = Array.isArray(card.staleIds) ? card.staleIds : [];
+      out.events.push({ type: "cardDelete", userId, messageId: card.messageId, ...(staleIds.length ? { staleIds } : {}) });
+      out.log.push({ type: "dm", ts: now, userId, event: "deleted" });
       delete data.dmCards[userId];
     }
   }
@@ -552,6 +563,17 @@ const hasActivity = (data, userId) => data.listings.some((l) => activeRequest(l,
 // I'm here, then the soonest fixed one, then a started one.
 const GAME_RANK = { confirming: 0, fixed: 1, started: 2 };
 
+// A bad-news box belongs to its listing (event.listingId): it shows for 24 h,
+// and no longer once the member is back on that listing (asked again after a
+// reopen, or picked there) — then the news is out of date. The card clears it
+// for good when it renders the accepted ("You're in") state (discord.js).
+function boxStillNews(data, userId, event, now) {
+  if (!isObj(event) || !BOX_KINDS.has(event.kind) || !(now - event.at < CARD_TTL_MS)) return false;
+  if (!event.listingId) return true;
+  const L = data.listings.find((l) => l.id === event.listingId);
+  return !(L && activeRequest(L, userId));
+}
+
 function cardView(data, userId, now) {
   const games = data.listings
     .filter((l) => l.joinerId === userId && IN_GAME.has(l.state))
@@ -559,7 +581,7 @@ function cardView(data, userId, now) {
   const accepted = games[0] || null;
   const otherAccepted = games.slice(1);
   const card = data.dmCards[userId];
-  const event = card && card.event && BOX_KINDS.has(card.event.kind) && now - card.event.at < CARD_TTL_MS ? card.event : null;
+  const event = card && boxStillNews(data, userId, card.event, now) ? card.event : null;
   const requests = data.listings
     .map((listing) => ({ listing, request: listing.requests.find((r) => r.userId === userId && r.status === "pending") }))
     .filter((x) => x.request)
@@ -569,11 +591,13 @@ function cardView(data, userId, now) {
   return { accepted, otherAccepted, event, requests, stillOpen, otherCancelled, empty: !accepted && requests.length === 0 && !event };
 }
 
-// send | sendSilent | replace | edit | delete | none | blocked
+// send | sendSilent | replace | edit | none | blocked. An existing card with
+// nothing left to show is edited to its empty state, never deleted here: it
+// goes 24 h later with the tick's prune (§3.6).
 function cardPlan(card, { important, empty, now }) {
   if (card && card.blocked && now - (card.since || 0) < BLOCK_RETRY_MS) return "blocked";
   const messageId = card && !card.blocked ? card.messageId : null;
-  if (empty) return messageId ? "delete" : "none";
+  if (empty) return messageId ? "edit" : "none";
   if (!messageId) return important ? "send" : "sendSilent";
   if (important && now - (card.lastEventAt || 0) >= COALESCE_MS) return "replace";
   return "edit";

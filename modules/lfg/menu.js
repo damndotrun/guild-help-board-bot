@@ -76,7 +76,7 @@ function mainScreen(ctx, viewer, notice) {
       const { label, emoji } = S.labelOf(config, l);
       const r = S.activeRequest(l, viewer.userId);
       const where = r.status === "accepted" ? "you're in" : r.onHold ? "on hold" : `#${S.queuePosition(l, viewer.userId)}`;
-      body.push(sectionRow(`${emoji} ${label} · ${l.posterName} · ${where}`, button(`menu:lfg:withdraw:${l.id}`, textOf(config, "cancelRequest"))));
+      body.push(sectionRow(`${emoji} ${label} · ${R.esc(l.posterName)} · ${where}`, button(`menu:lfg:withdraw:${l.id}`, textOf(config, "cancelRequest"))));
     }
     if (mine.length > MAX_LISTED) body.push(text(`-# +${mine.length - MAX_LISTED} more on your DM card`));
   }
@@ -113,8 +113,9 @@ function committed(ctx, viewer, notice, after) {
 function newSearch({ ctx, viewer }) {
   const data = store.load(ctx);
   if (!data.config) return mainScreen(ctx, viewer, err(textOf(null, "notSetUp")));
-  if (S.ownListing(data, viewer.userId)) return mainScreen(ctx, viewer, err(textOf(data.config, "hasSearch")));
+  // busy first, like the channel's Start button (a started own search is busy)
   if (S.isBusy(data, viewer.userId)) return mainScreen(ctx, viewer, err(textOf(data.config, "busy")));
+  if (S.ownListing(data, viewer.userId)) return mainScreen(ctx, viewer, err(textOf(data.config, "hasSearch")));
   return { modal: R.startModal(data, viewer.userId) };
 }
 
@@ -140,7 +141,7 @@ function browse({ interaction, ctx, viewer }) {
   if (!interaction.isStringSelectMenu()) return browseScreen(ctx, viewer);
   const r = A.join(ctx, actorOf(interaction, viewer), { listingId: interaction.values[0] });
   if (!r.ok) return browseScreen(ctx, viewer, err(r.error));
-  const poster = r.listing.posterName;
+  const poster = R.esc(r.listing.posterName);
   if (r.already) return mainScreen(ctx, viewer, ok(textOf(store.load(ctx).config, "alreadyRequested", { poster, n: r.position })));
   const key = r.dmOk ? "requestSent" : "requestSentNoDm";
   return committed(ctx, viewer, ok(textOf(store.load(ctx).config, key, { poster, n: r.position })), r.effects);
@@ -240,7 +241,7 @@ function remove({ interaction, ctx, viewer }) {
   if (!interaction.isStringSelectMenu()) return removeScreen(ctx);
   const r = A.removeListing(ctx, actorOf(interaction, viewer), { listingId: interaction.values[0] });
   if (!r.ok) return removeScreen(ctx, err(r.error));
-  return committed(ctx, viewer, ok(textOf(store.load(ctx).config, "searchRemoved", { poster: r.listing.posterName })), r.effects);
+  return committed(ctx, viewer, ok(textOf(store.load(ctx).config, "searchRemoved", { poster: R.esc(r.listing.posterName) })), r.effects);
 }
 
 function cancel({ interaction, ctx, viewer, arg }) {

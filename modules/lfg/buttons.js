@@ -86,9 +86,10 @@ async function ackWrite(interaction, line) {
 async function start(interaction, ctx) {
   const data = store.load(ctx);
   if (!data.config) return interaction.reply(answer(textOf(null, "notSetUp")));
+  // busy first: a started own search is busy, and its Cancel would only fail
+  if (S.isBusy(data, interaction.user.id)) return interaction.reply(answer(textOf(data.config, "busy")));
   const own = S.ownListing(data, interaction.user.id);
   if (own) return interaction.reply(answer(textOf(data.config, "hasSearch"), [button(`lfg:cancel:${own.id}`, textOf(data.config, "cancelMySearch"), ButtonStyle.Danger)]));
-  if (S.isBusy(data, interaction.user.id)) return interaction.reply(answer(textOf(data.config, "busy")));
   return interaction.showModal(R.startModal(data, interaction.user.id));
 }
 
@@ -149,7 +150,7 @@ async function join(interaction, ctx, listingId) {
   const config = store.load(ctx).config;
   const news = newsFor(ctx, interaction);
   if (!r.ok) return interaction.reply(answer(withNews(news, r.error)));
-  const poster = r.listing.posterName;
+  const poster = R.esc(r.listing.posterName);
   if (r.already) {
     const line = r.status === "accepted" ? textOf(config, "alreadyAccepted", { poster }) : textOf(config, "alreadyRequested", { poster, n: r.position });
     return interaction.reply(answer(withNews(news, line), r.status === "pending" ? [button(`lfg:withdraw:${listingId}`, textOf(config, "cancelRequest"))] : []));

@@ -38,7 +38,9 @@ const thumb = (url) => ({ type: ComponentType.Thumbnail, media: { url } });
 const badge = (segment, label) => btn(`lfg:badge:${segment}`, String(label), ButtonStyle.Secondary, { disabled: true });
 const header = (title, segment, count) => section([`### ${title}`], badge(segment, count));
 const when = (ts) => (ts ? `<t:${Math.floor(ts / 1000)}:R>` : "now");
-const esc = (s) => escapeMarkdown(String(s ?? ""));
+// Every user / display name that goes into message text: markdown AND a
+// masked link ("[x](https://…)") are escaped.
+const esc = (s) => escapeMarkdown(String(s ?? ""), { maskedLink: true });
 const v2 = (components, extra = {}) => ({ flags: V2, components, ...extra });
 
 // Discord's default avatar for a user id (new username system: (id >> 22) % 6).
@@ -197,8 +199,11 @@ const reasonText = (config, reason) => textOf(config, REASON_KEY[reason] || "rea
 
 // The request panel (§3.3/1): Requests (in arrival order, Accept while the
 // search is open), Removed (with the reason), and Cancel search at the bottom.
-function renderRequestPanel(data, listing, now, look = PLAIN_LOOK) {
+// `closedLine`: the search has left the list — the terminal panel, grey, with
+// that line and no Accept or Cancel search left to tap.
+function renderRequestPanel(data, listing, now, look = PLAIN_LOOK, { closedLine = null } = {}) {
   const config = data.config;
+  const closed = closedLine !== null;
   const rows = S.activeRequests(listing).sort((a, b) => a.createdAt - b.createdAt);
   const removed = listing.requests.filter((r) => r.status === "closed" || r.status === "withdrawn");
   return fitRows(rows.length, (n) => {
@@ -208,20 +213,23 @@ function renderRequestPanel(data, listing, now, look = PLAIN_LOOK) {
       if (r.status === "accepted") {
         const sub = listing.state === "started" ? "in the game" : listing.state === "fixed" ? `accepted — starts ${when(listing.startAt)}` : "accepted — confirming";
         inner.push(td(`${who}\n-# ${sub}`));
-      } else if (listing.state === "open") {
+      } else if (listing.state === "open" && !closed) {
         inner.push(section([who, `-# asked ${when(r.createdAt)}`], btn(`lfg:accept:${listing.id}:${r.userId}`, textOf(config, "acceptButton"))));
+      } else if (listing.state === "open") {
+        inner.push(td(`${who}\n-# asked ${when(r.createdAt)}`));
       } else {
         inner.push(td(`${who}\n-# on hold`));
       }
     });
-    if (rows.length === 0) inner.push(td(textOf(config, "panelEmpty")));
+    if (rows.length === 0 && !closed) inner.push(td(textOf(config, "panelEmpty")));
     if (n < rows.length) inner.push(td(textOf(config, "moreRequests", { n: rows.length - n })));
-    const parts = [box(COLORS.teal, inner)];
+    if (closed) inner.push(td(`-# ${closedLine}`));
+    const parts = [box(closed ? COLORS.grey : COLORS.teal, inner)];
     if (removed.length) {
       const lines = removed.slice(-10).map((r) => `${nameOf(look, r.userId, r.userName)} — ${reasonText(config, r.reason)}`);
       parts.push(box(COLORS.grey, [header(textOf(config, "removedTitle"), "removed", removed.length), td(lines.join("\n"))]));
     }
-    if (listing.state !== "started") parts.push(row(btn(`lfg:cancel:${listing.id}`, textOf(config, "cancelSearch"), ButtonStyle.Danger)));
+    if (listing.state !== "started" && !closed) parts.push(row(btn(`lfg:cancel:${listing.id}`, textOf(config, "cancelSearch"), ButtonStyle.Danger)));
     return v2(parts);
   });
 }
@@ -236,13 +244,19 @@ function confirmStatus(listing, look) {
 
 const confirmedCount = (listing) => Object.keys((listing.checkIn && listing.checkIn.at) || {}).length;
 
+// The welcome's on-hold line names at most this many, then "+N more" — the
+// welcome is a fixed-size payload that is not cut by fitRows.
+const MAX_ON_HOLD_NAMES = 10;
+
 // The confirm box, shared by the thread welcome and the DM card (§3.4).
 function confirmBox(config, listing, look, { card }) {
   const t = S.times(config);
   const title = header(textOf(config, "confirmTitle"), "confirm", `${listing.state === "started" ? 2 : confirmedCount(listing)} / 2`);
   if (listing.state === "started") return [box(COLORS.teal, [title, td(textOf(config, "confirmDone"))])];
   if (listing.state === "fixed") return [box(COLORS.amber, [title, td(textOf(config, "confirmWaitTimed", { lead: t.reminderLeadMin, when: when(listing.startAt) }))])];
-  const onHold = S.pendingRequests(listing).map((r) => `**${nameOf(look, r.userId, r.userName)}**`);
+  const pending = S.pendingRequests(listing);
+  const onHold = pending.slice(0, MAX_ON_HOLD_NAMES).map((r) => `**${nameOf(look, r.userId, r.userName)}**`);
+  if (pending.length > MAX_ON_HOLD_NAMES) onHold.push(`+${pending.length - MAX_ON_HOLD_NAMES} more`);
   const lines = [confirmStatus(listing, look)];
   if (card) lines.push(`-# ${textOf(config, "confirmCardHint")}`);
   else if (onHold.length) lines.push(textOf(config, "confirmOnHold", { names: onHold.join(", "), when: when(listing.checkIn.deadline) }));
@@ -318,10 +332,11 @@ function acceptedParts(data, view, look, shownOthers = Infinity) {
   return parts;
 }
 
-// The card's message payload for cardView(); null when nothing is left to show.
+// The card's message payload for cardView(); null only when not even the
+// smallest version fits. With nothing left to show it is the empty state (the
+// tick deletes it 24 h later, §3.6).
 function renderCard(data, userId, view, look = PLAIN_LOOK) {
   const config = data.config;
-  if (view.empty) return null;
   if (view.accepted) {
     return fitRows((view.otherAccepted || []).length, (n) => v2(acceptedParts(data, view, look, n), { allowedMentions: { parse: [] } }));
   }
@@ -339,6 +354,7 @@ function renderCard(data, userId, view, look = PLAIN_LOOK) {
       if (n < total) inner.push(td(`-# +${total - n} more`));
       parts.push(box(COLORS.slate, inner));
     }
+    if (total === 0 && !view.event) parts.push(box(COLORS.grey, [td(textOf(config, "cardEmpty"))]));
     if (view.stillOpen.length) {
       parts.push(box(COLORS.teal, [header(textOf(config, "stillOpen"), "open", view.stillOpen.length), ...view.stillOpen.map((l) => joinRow(config, l, look))]));
     }
@@ -348,6 +364,10 @@ function renderCard(data, userId, view, look = PLAIN_LOOK) {
     return v2(parts, { allowedMentions: { parse: [] } });
   });
 }
+
+// What an old card becomes when a replace could not delete it: one line, no
+// buttons left to tap (the old id is retried later — dmCards[].staleIds).
+const renderCardReplaced = (config) => v2([td(textOf(config, "cardReplaced"))], { allowedMentions: { parse: [] } });
 
 // News kept for a member whose DMs are closed or off (§3.6), one line each.
 function noticeText(config, notices) {
@@ -369,7 +389,7 @@ function favoriteLabel(config, fav) {
 // search" · Looking for · Starts in (minutes) · Note. ≤ 5 top-level parts.
 function startModal(data, userId) {
   const config = data.config;
-  const favs = (data.favorites[userId] || []).filter((f) => f && S.findButton(config, f.categoryId, f.buttonId)).slice(0, 25);
+  const favs = (Array.isArray(data.favorites[userId]) ? data.favorites[userId] : []).filter((f) => f && S.findButton(config, f.categoryId, f.buttonId)).slice(0, 25);
   const modal = new ModalBuilder().setCustomId("lfg:modal").setTitle("Start a search");
   if (favs.length > 0) {
     modal.addLabelComponents(
@@ -399,6 +419,8 @@ module.exports = {
   COLORS,
   PREFIXES,
   PLAIN_LOOK,
+  MAX_ON_HOLD_NAMES,
+  esc,
   defaultAvatar,
   threadUrl,
   renderTag,
@@ -414,6 +436,7 @@ module.exports = {
   renderGameOn,
   threadLine,
   renderCard,
+  renderCardReplaced,
   noticeText,
   startModal,
 };

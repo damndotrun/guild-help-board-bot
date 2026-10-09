@@ -110,6 +110,10 @@ test("createListing: a now-search lapses after nowTtlMin, a timed one at its sta
   assert.match(now.id, /^[0-9a-f]{10}$/);
   assert.notEqual(now.id, timed.id);
   assert.equal(S.ownListing(d, "u2"), timed);
+  // B7: a search whose thread is still opening is neither shown nor counted
+  assert.deepEqual(S.joinable(d), []);
+  now.threadId = "th-a";
+  timed.threadId = "th-b";
   assert.deepEqual(S.joinable(d).map((l) => l.posterId), ["u1", "u2"]);
 });
 
@@ -222,7 +226,7 @@ test("deadline: the joiner didn't confirm → the search reopens with its line; 
     startAt: T0 + 3 * MIN,
     expiresAt: T0 + 3 * MIN,
     welcomeMessageId: "wm1",
-    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: { u1: T0 }, nags: { u2: 4 } },
+    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: "nag1", at: { u1: T0 }, nags: { u2: 4 } },
   })));
   assert.deepEqual(S.advance(d, T0 + 5 * MIN - 1).events.filter((e) => e.type !== "nag" && e.type !== "card"), []);
   const r = S.advance(d, T0 + 5 * MIN);
@@ -230,7 +234,8 @@ test("deadline: the joiner didn't confirm → the search reopens with its line; 
   assert.deepEqual([L.state, L.joinerId, L.checkIn, L.startAt, L.expiresAt, L.welcomeMessageId], ["open", null, null, null, T0 + 35 * MIN, null]);
   assert.deepEqual([L.requests[0].status, L.requests[0].reason, L.requests[1].onHold], ["closed", "no_confirm", false]);
   assert.deepEqual(r.log.find((l) => l.event === "closed"), { type: "request", ts: T0 + 5 * MIN, listingId: "L1", userId: "u2", event: "closed", reason: "no_confirm", nags: 4 });
-  assert.deepEqual(r.events.find((e) => e.type === "reopened"), { type: "reopened", listingId: "L1", joinerId: "u2", welcomeMessageId: "wm1", threadId: "th-L1", reason: "no_confirm" });
+  // B3: the last nag line travels with the event, so the handler can delete it
+  assert.deepEqual(r.events.find((e) => e.type === "reopened"), { type: "reopened", listingId: "L1", joinerId: "u2", welcomeMessageId: "wm1", nagMessageId: "nag1", threadId: "th-L1", reason: "no_confirm" });
   assert.deepEqual(r.events.filter((e) => e.type === "card").map((e) => [e.userId, e.event.kind]), [["u2", "noConfirm"]]);
 });
 
@@ -316,6 +321,30 @@ test("shape: a game without a joiner reopens; confirming without a checkIn gets 
   assert.equal(S.findListing(d, "B"), null); // decided as a missed check-in
 });
 
+test("shape: null note / cancelledOthers get their defaults; a non-number deadline drops the checkIn (B9)", () => {
+  const d = S.shape({ listings: [
+    { id: "A", posterId: "u1", createdAt: T0, threadId: "t", note: null, cancelledOthers: null, dmCount: null, state: null },
+    { id: "B", posterId: "u2", createdAt: T0, threadId: "t", state: "confirming", joinerId: "u3", acceptedAt: T0, checkIn: { openedAt: T0, deadline: "soon", at: {}, nags: {} }, requests: [request("u3", T0, { status: "accepted" })] },
+    { id: "C", posterId: "u4", createdAt: T0, threadId: "t", state: "fixed", joinerId: "u5", startAt: T0 + 60 * MIN, checkIn: { deadline: null } },
+  ] });
+  const [A, B, C] = d.listings;
+  assert.deepEqual([A.note, A.cancelledOthers, A.dmCount, A.state], ["", [], 0, "open"]);
+  // confirming: the broken checkIn is replaced by the repair one (deadline already past)
+  assert.deepEqual(B.checkIn, { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} });
+  assert.equal(C.checkIn, null); // fixed: no checkIn until the window opens
+  d.config = dataWith().config;
+  const out = S.newOut();
+  assert.doesNotThrow(() => S.dropListing(d, A, { outcome: "cancelled", reason: "self" }, T0, out));
+  assert.equal(out.log.find((l) => l.type === "listing").noteLength, 0);
+  assert.doesNotThrow(() => S.advance(d, T0 + 10 * MIN));
+});
+
+test("favorites that are not a list are ignored, not thrown on (B10)", () => {
+  const d = dataWith((x) => { x.favorites.u1 = "junk"; x.favorites.u2 = { id: "f1" }; });
+  assert.deepEqual(S.resolveSearch(d, "u1", { favoriteId: "f1" }, T0), { ok: false, error: DEFAULTS.favoriteStale });
+  assert.deepEqual(S.resolveSearch(d, "u2", { favoriteId: "f1" }, T0), { ok: false, error: DEFAULTS.favoriteStale });
+});
+
 test("dropListing: an officer removal records who; requesters get a cancelled event", () => {
   const d = dataWith((x) => x.listings.push(listing("L1", "u1", { requests: [request("u2")] })));
   const out = S.newOut();
@@ -390,7 +419,7 @@ test("cardView: requests with place and on-hold, the accepted game, bad-news eve
   assert.deepEqual([a.accepted.id, a.stillOpen, a.empty], ["B", [], false]);
 });
 
-test("cardPlan: first card silent, important news replaces (30 s coalescing), blocked waits 24 h, empty deletes", () => {
+test("cardPlan: first card silent, important news replaces (30 s coalescing), blocked waits 24 h, empty edits (never deletes)", () => {
   const now = T0 + 10 * MIN;
   const cases = [
     [undefined, { important: false }, "sendSilent"],
@@ -398,7 +427,7 @@ test("cardPlan: first card silent, important news replaces (30 s coalescing), bl
     [{ messageId: "m", lastEventAt: now - 30_000 }, { important: true }, "replace"],
     [{ messageId: "m", lastEventAt: now - 29_999 }, { important: true }, "edit"],
     [{ messageId: "m", lastEventAt: 0 }, { important: false }, "edit"],
-    [{ messageId: "m" }, { empty: true }, "delete"],
+    [{ messageId: "m" }, { empty: true }, "edit"], // B5: only the 24 h prune deletes a card
     [undefined, { empty: true }, "none"],
     [{ blocked: true, since: now - 1000 }, { important: true }, "blocked"],
     [{ blocked: true, since: now - 24 * 60 * MIN }, { important: true }, "send"],
@@ -427,6 +456,35 @@ test("advance: a DM card with nothing left to show goes after 24 h; an active on
   const r = S.advance(d, T0 + 24 * 60 * MIN);
   assert.deepEqual(r.events, [{ type: "cardDelete", userId: "u1", messageId: "m1" }]);
   assert.deepEqual(Object.keys(d.dmCards).sort(), ["u2", "u3"]);
+  // D4: the same dm/deleted journal line a card delete always writes
+  assert.deepEqual(r.log, [{ type: "dm", ts: T0 + 24 * 60 * MIN, userId: "u1", event: "deleted" }]);
+});
+
+test("advance: an emptied card lives 24 h from when it emptied (activeAt); its staleIds ride along on cardDelete (B5, A3)", () => {
+  const d = dataWith((x) => {
+    x.dmCards.u1 = { messageId: "m1", sentAt: T0, lastEventAt: T0, activeAt: T0 + 10 * 60 * MIN, staleIds: ["old1"] };
+  });
+  assert.deepEqual(S.advance(d, T0 + 34 * 60 * MIN - 1).events, []); // 24 h since the self-withdraw, not since the send
+  const r = S.advance(d, T0 + 34 * 60 * MIN);
+  assert.deepEqual(r.events, [{ type: "cardDelete", userId: "u1", messageId: "m1", staleIds: ["old1"] }]);
+  assert.equal(d.dmCards.u1, undefined);
+});
+
+test("cardView: a bad-news box is about its listing — gone once the member is back on that listing (B4)", () => {
+  const box = { kind: "noConfirm", listingId: "L1", at: T0, aboutName: "P", label: "BASIC · SUP", emoji: "💥" };
+  const d = dataWith((x) => {
+    x.listings.push(listing("L1", "p1"));
+    x.dmCards.u1 = { messageId: "m1", sentAt: T0, lastEventAt: T0, event: box };
+  });
+  assert.equal(S.cardView(d, "u1", T0 + 1).event.kind, "noConfirm");
+  // the search reopened and the member asked again: "you didn't confirm" is out of date
+  d.listings[0].requests.push(request("u1", T0 + 1));
+  const v = S.cardView(d, "u1", T0 + 2);
+  assert.equal(v.event, null);
+  assert.equal(v.requests.length, 1);
+  // a box whose listing is gone still shows for its 24 h
+  d.listings = [];
+  assert.equal(S.cardView(d, "u1", T0 + 3).event.kind, "noConfirm");
 });
 
 test("cardView: picked by two searchers → the card is about the one to confirm now; the other is listed", () => {
