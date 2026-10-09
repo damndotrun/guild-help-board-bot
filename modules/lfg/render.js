@@ -119,6 +119,26 @@ function pairLine(config, listing, look) {
 
 const joinerName = (listing) => (listing.requests.find((r) => r.userId === listing.joinerId) || {}).userName;
 
+// Just started / Fixed are one Text Display each (≤ 4000 chars for the whole
+// message): entries are cut to this budget with a "+N more" line, so the box
+// can never make the board unrenderable. Two boxes plus the Join rows' share
+// stay well inside the limit.
+const PAIR_BOX_CHARS = 1500;
+function pairBox(config, color, titleKey, segment, listings, look) {
+  const lines = [];
+  let used = 0;
+  for (const l of listings) {
+    const line = pairLine(config, l, look);
+    if (used + line.length + 1 > PAIR_BOX_CHARS) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  const inner = [header(textOf(config, titleKey), segment, listings.length)];
+  if (lines.length) inner.push(td(lines.join("\n")));
+  if (lines.length < listings.length) inner.push(td(`-# +${listings.length - lines.length} more`));
+  return box(color, inner);
+}
+
 // "No one is looking right now." — also the stand-in for a board that cannot
 // be rendered (channel.repost), so a block id is always stored.
 const renderEmptyBoard = (config) => v2([box(COLORS.grey, [td(textOf(config, "boardEmpty"))])]);
@@ -137,8 +157,8 @@ function renderBoard(data, now, look = PLAIN_LOOK) {
   return fitRows(priority.length, (n) => {
     const shown = new Set(priority.slice(0, n));
     const parts = [];
-    if (started.length) parts.push(box(COLORS.grey, [header(textOf(config, "segStarted"), "started", started.length), td(started.map((l) => pairLine(config, l, look)).join("\n"))]));
-    if (fixed.length) parts.push(box(COLORS.slate, [header(textOf(config, "segFixed"), "fixed", fixed.length), td(fixed.map((l) => pairLine(config, l, look)).join("\n"))]));
+    if (started.length) parts.push(pairBox(config, COLORS.grey, "segStarted", "started", started, look));
+    if (fixed.length) parts.push(pairBox(config, COLORS.slate, "segFixed", "fixed", fixed, look));
     for (const [rows, segment, title, color] of [[timedRows, "timed", "segTimed", COLORS.amber], [nowRows, "now", "segNow", COLORS.teal]]) {
       if (!rows.length) continue;
       const visible = rows.filter((l) => shown.has(l));
@@ -271,7 +291,7 @@ function eventBox(config, event, look) {
   return box(COLORS.red, [section([`### ${title}`, `-# ${event.emoji} ${event.label} · ${when(event.startAt)} — ${sub}`], thumb(look.avatarOf(event.aboutId)))]);
 }
 
-function acceptedParts(data, view, look) {
+function acceptedParts(data, view, look, shownOthers = Infinity) {
   const config = data.config;
   const L = view.accepted;
   const { label, emoji } = S.labelOf(config, L);
@@ -288,10 +308,11 @@ function acceptedParts(data, view, look) {
   parts.push(...confirmBox(config, L, look, { card: true }));
   if (L.state === "fixed" && url) parts.push(row(linkBtn(url, textOf(config, "openThread"))));
   if (view.otherAccepted && view.otherAccepted.length) {
-    const rows = view.otherAccepted.map((o) => {
+    const rows = view.otherAccepted.slice(0, shownOthers).map((o) => {
       const other = S.labelOf(config, o);
       return section([`${other.emoji} **${other.label}** · **${nameOf(look, o.posterId, o.posterName)}**`, textOf(config, "acceptedRow", { when: when(o.startAt) })], btn(`lfg:withdraw:${o.id}`, textOf(config, "cancelButton")));
     });
+    if (rows.length < view.otherAccepted.length) rows.push(td(`-# +${view.otherAccepted.length - rows.length} more`));
     parts.push(box(COLORS.slate, [header(textOf(config, "alsoAccepted"), "accepted", view.otherAccepted.length), ...rows]));
   }
   return parts;
@@ -301,7 +322,9 @@ function acceptedParts(data, view, look) {
 function renderCard(data, userId, view, look = PLAIN_LOOK) {
   const config = data.config;
   if (view.empty) return null;
-  if (view.accepted) return v2(acceptedParts(data, view, look), { allowedMentions: { parse: [] } });
+  if (view.accepted) {
+    return fitRows((view.otherAccepted || []).length, (n) => v2(acceptedParts(data, view, look, n), { allowedMentions: { parse: [] } }));
+  }
   const total = view.requests.length;
   return fitRows(total, (n) => {
     const parts = [];

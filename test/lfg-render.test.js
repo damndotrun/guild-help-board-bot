@@ -309,3 +309,36 @@ test("card: picked by two → the confirming game's Confirm box and I'm here; th
   assert.match(textOf(p), new RegExp(`### Also picked you\\n💥 \\*\\*BASIC · SUP\\*\\* · \\*\\*Ann\\*\\*\\n-# accepted — starts ${ts(T0 + 90 * MIN)}`));
   assert.ok(ids(p).includes("lfg:withdraw:A"));
 });
+
+test("card: ten accepted games → the Also-picked-you list is cut to fit with “+N more”", () => {
+  const d = dataWith((x) => {
+    for (let i = 0; i < 10; i++) {
+      x.listings.push(listing(`G${i}`, `p${i}`, { posterName: `Poster ${i}`, state: "fixed", joinerId: "u1", acceptedAt: T0 + i, startAt: T0 + (60 + i) * MIN, expiresAt: T0 + (60 + i) * MIN, threadId: `th${i}`, requests: [request("u1", T0, { status: "accepted" })] }));
+    }
+  });
+  const view = S.cardView(d, "u1", T0);
+  assert.equal(view.otherAccepted.length, 9);
+  const p = cardFor(d, "u1");
+  const withdraws = ids(p).filter((id) => id.startsWith("lfg:withdraw:")).length;
+  assert.ok(withdraws >= 1 && withdraws < 9, String(withdraws));
+  assert.ok(textOf(p).includes(`-# +${9 - withdraws} more`));
+  assert.ok(ids(p).includes("lfg:badge:accepted"));
+});
+
+test("board: 40 fixed + 40 started entries → each box is cut with “+N more”, the board stays valid", () => {
+  const d = dataWith((x) => {
+    for (let i = 0; i < 40; i++) {
+      x.listings.push(listing(`F${i}`, `f${i}`, { posterName: `Fixed poster ${i}`, state: "fixed", joinerId: `fj${i}`, startAt: T0 + (60 + i) * MIN, requests: [request(`fj${i}`, T0, { status: "accepted", userName: `Fixed joiner ${i}` })] }));
+      x.listings.push(listing(`S${i}`, `s${i}`, { posterName: `Started poster ${i}`, state: "started", joinerId: `sj${i}`, startedAt: T0 - i, requests: [request(`sj${i}`, T0, { status: "accepted", userName: `Started joiner ${i}` })] }));
+    }
+    x.listings.push(listing("OPEN", "o1"));
+  });
+  const p = R.renderBoard(d, T0);
+  valid(p);
+  const t = textOf(p);
+  assert.match(t, /-# \+\d+ more\n/);
+  assert.equal(t.match(/-# \+\d+ more/g).length >= 2, true);
+  assert.deepEqual(ids(p).filter((id) => id.startsWith("lfg:badge:") && id !== "lfg:badge:now"), ["lfg:badge:started", "lfg:badge:fixed"]);
+  assert.deepEqual(all(p, ComponentType.Button).filter((b) => b.custom_id === "lfg:badge:started" || b.custom_id === "lfg:badge:fixed").map((b) => b.label), ["40", "40"]);
+  assert.ok(ids(p).includes("lfg:join:OPEN")); // the open search is still joinable
+});
