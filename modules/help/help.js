@@ -1174,14 +1174,26 @@ function rolesRemoveSelectOptions(managerRoleIds, nameOf) {
   }));
 }
 
+// Per-render suffix for the panel's select custom_ids (`roles:add:<tag>`).
+// Live bug 2026-10-08: when a refused pick re-rendered the panel with the very
+// same select (same custom_id), the Discord client kept that select in its
+// loading state for ~15 s and swallowed the next pick. A new custom_id makes
+// the client treat it as a fresh select. The handlers route on the part after
+// "roles:", so old panels (bare `roles:add`) still work.
+let rolesRenderSeq = 0;
+function rolesRenderTag() {
+  rolesRenderSeq = (rolesRenderSeq + 1) % 1296;
+  return Date.now().toString(36) + rolesRenderSeq.toString(36);
+}
+
 // nameOf(id) resolves a role id to its current name (e.g. via the guild's
 // role cache) — kept separate from rolesRemoveSelectOptions so that helper
 // stays pure and unit-testable without discord.js.
-function rolesPanelComponents(data, nameOf) {
+function rolesPanelComponents(data, nameOf, tag = rolesRenderTag()) {
   const rows = [
     new ActionRowBuilder().addComponents(
       new RoleSelectMenuBuilder()
-        .setCustomId("roles:add")
+        .setCustomId(`roles:add:${tag}`)
         .setPlaceholder("Add a manager role…")
         .setMinValues(1)
         .setMaxValues(1)
@@ -1193,7 +1205,7 @@ function rolesPanelComponents(data, nameOf) {
     rows.push(
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId("roles:remove")
+          .setCustomId(`roles:remove:${tag}`)
           .setPlaceholder("Remove a manager role…")
           .setMinValues(1)
           .setMaxValues(1)
@@ -1205,7 +1217,7 @@ function rolesPanelComponents(data, nameOf) {
   rows.push(
     new ActionRowBuilder().addComponents(
       new RoleSelectMenuBuilder()
-        .setCustomId("roles:notify")
+        .setCustomId(`roles:notify:${tag}`)
         .setPlaceholder("Set the request-ping role…")
         .setMinValues(1)
         .setMaxValues(1)
@@ -2376,15 +2388,18 @@ async function dispatch(interaction) {
       await handleButton(interaction);
       return;
     }
-    if (interaction.isRoleSelectMenu() && interaction.customId === "roles:add") {
+    // The roles-panel selects carry a per-render tag (`roles:add:<tag>`, see
+    // rolesRenderTag); route on the action part only.
+    const rolesSelect = interaction.customId?.startsWith("roles:") ? interaction.customId.split(":")[1] : null;
+    if (interaction.isRoleSelectMenu() && rolesSelect === "add") {
       await handleRolesAddSelect(interaction);
       return;
     }
-    if (interaction.isRoleSelectMenu() && interaction.customId === "roles:notify") {
+    if (interaction.isRoleSelectMenu() && rolesSelect === "notify") {
       await handleRolesNotifySelect(interaction);
       return;
     }
-    if (interaction.isStringSelectMenu() && interaction.customId === "roles:remove") {
+    if (interaction.isStringSelectMenu() && rolesSelect === "remove") {
       await handleRolesRemoveSelect(interaction);
       return;
     }

@@ -862,6 +862,46 @@ test("the /config roles panel via dispatch goes through the actions (guards unch
   assert.equal(contentOf(officerTry), "Manage Server only.");
 });
 
+// Live bug (2026-10-08): after a refused pick the panel came back with the very
+// same select (same custom_id), the Discord client kept that select "loading"
+// for ~15 s and swallowed the next valid pick. Every re-render must hand the
+// client NEW select custom_ids — and those must still route to the handlers.
+test("the /config roles panel re-renders its selects with fresh customIds that still route (a refusal must not freeze the select)", async () => {
+  const boss = { manageGuild: true };
+  seed();
+  const selectIds = (i) => {
+    const json = JSON.stringify(i.calls[0][1].components);
+    const id = (kind) => (json.match(new RegExp(`"custom_id":"(roles:${kind}(?::[^"]*)?)"`)) || [])[1];
+    return { add: id("add"), remove: id("remove"), notify: id("notify") };
+  };
+  const refused = component("role", "roles:add", OWNER, { values: ["b1"], rights: boss });
+  refused.guild.roles.cache.set("b1", { managed: true, name: "Bot" });
+  await help.dispatch(refused);
+  assert.equal(contentOf(refused), "You can't add @everyone or a bot-managed role as a manager role.");
+  const first = selectIds(refused);
+  assert.notEqual(first.add, "roles:add", "the refusal re-render must not reuse the clicked select's custom_id");
+  assert.notEqual(first.notify, "roles:notify");
+
+  const next = component("role", first.add, OWNER, { values: ["r1"], rights: boss });
+  await help.dispatch(next);
+  assert.deepEqual(help.loadData().managerRoleIds, ["r1"], "the pick right after a refusal goes through");
+  const second = selectIds(next);
+  assert.notEqual(second.add, first.add, "each render gets its own custom_id");
+
+  // Re-picking an existing manager role changes nothing in the data — the
+  // re-render must still be a new select for the client.
+  const again = component("role", second.add, OWNER, { values: ["r1"], rights: boss });
+  await help.dispatch(again);
+  assert.notEqual(selectIds(again).add, second.add);
+
+  const notify = component("role", second.notify, OWNER, { values: ["r2"], rights: boss });
+  await help.dispatch(notify);
+  assert.equal(help.loadData().notifyRoleId, "r2");
+  const remove = component("string", selectIds(notify).remove, OWNER, { values: ["r1"], rights: boss });
+  await help.dispatch(remove);
+  assert.deepEqual(help.loadData().managerRoleIds, []);
+});
+
 test("/config notify and the notify panel refuse @everyone and bot-managed roles", async () => {
   const boss = { manageGuild: true };
   seed();
