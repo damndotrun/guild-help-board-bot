@@ -540,6 +540,24 @@ test("E: a started game's thread is queued to archive archiveAfterMin after the 
   assert.deepEqual(S.shape({}).archives, []);
 });
 
+test("E (A1): an officer removing a STARTED game drops its queued archive (the terminal path archives now — no second archive 15 min later); other listings' entries stay", () => {
+  const d = dataWith((x) => {
+    x.listings.push(confirming({ state: "started", startedAt: T0, checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: { u1: T0, u2: T0 }, nags: {} } }));
+    x.archives.push({ listingId: "L1", threadId: "th-L1", at: T0 + 15 * MIN }, { listingId: "OTHER", threadId: "th-O", at: T0 + 15 * MIN });
+  });
+  const out = S.newOut();
+  S.dropListing(d, d.listings[0], { outcome: "removed", removedBy: "off" }, T0 + MIN, out);
+  assert.deepEqual(d.archives.map((a) => a.listingId), ["OTHER"]);
+  assert.equal(S.advance(d, T0 + 15 * MIN).events.filter((e) => e.type === "archive" && e.listingId === "L1").length, 0);
+  // a played game leaving the board ("matched") keeps its entry
+  const m = dataWith((x) => {
+    x.listings.push(confirming({ state: "started", startedAt: T0, checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: { u1: T0, u2: T0 }, nags: {} } }));
+    x.archives.push({ listingId: "L1", threadId: "th-L1", at: T0 + 15 * MIN });
+  });
+  S.dropListing(m, m.listings[0], { outcome: "matched" }, T0 + 5 * MIN, S.newOut());
+  assert.equal(m.archives.length, 1);
+});
+
 test("D: a reopen leaves a notice for the thread message; the next Accept clears it; a legacy welcome id is kept only while set", () => {
   const d = dataWith((x) => x.listings.push(confirming()));
   const L = d.listings[0];

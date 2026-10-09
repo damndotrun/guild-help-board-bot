@@ -439,6 +439,10 @@ function dropListing(data, listing, { outcome, reason = null, removedBy = null }
     if (kind) out.events.push({ type: "card", userId: r.userId, event: cardEvent(data.config, listing, kind, listing.posterId, listing.posterName, now) });
   }
   data.listings = data.listings.filter((l) => l !== listing);
+  // a terminal drop (e.g. an officer removing a started game) locks and
+  // archives the thread now — its queued played-game archive must not run a
+  // second time later (50083 on an archived thread). "matched" keeps it.
+  if (outcome !== "matched") data.archives = data.archives.filter((a) => a.listingId !== listing.id);
   const ci = listing.checkIn;
   out.log.push({
     type: "listing",

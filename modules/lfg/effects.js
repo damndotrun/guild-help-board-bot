@@ -37,16 +37,49 @@ const transientMs = (config) => Math.max(0, Number(S.times(config).transientSec)
 
 // ── transient thread lines ─────────────────────────────────────────────────
 
+// In-process registry of the transient lines per listing (A2, Fable review):
+// `pending` = sends still in flight, `ids` = lines sent and not deleted yet.
+// A line whose send was in flight when the search was dropped is NOT in the
+// dropped event's listing (that snapshot was saved before the send returned)
+// and its record patch finds no listing — so the `dropped` handler awaits the
+// in-flight sends and deletes the registry's ids too, before the thread is
+// locked and archived (a delete in an archived thread would fail).
+const transient = new Map();
+const entryOf = (listingId) => {
+  if (!transient.has(listingId)) transient.set(listingId, { pending: new Set(), ids: new Map() });
+  return transient.get(listingId);
+};
+function forgetLine(listingId, messageId) {
+  const e = transient.get(listingId);
+  if (!e) return;
+  e.ids.delete(messageId);
+  if (e.ids.size === 0 && e.pending.size === 0) transient.delete(listingId);
+}
+
 // Delete one recorded line; once it is gone (deleted or 10008) its record goes
 // too (re-load, patch by listing id, save). A failed delete keeps the record
 // for the next try (timer or tick).
 async function dropLine(ctx, listingId, threadId, messageId) {
   if (!(await D.remove(ctx, threadId, messageId))) return false;
+  forgetLine(listingId, messageId);
   patch(ctx, (d) => {
     const l = S.findListing(d, listingId);
     if (l) l.lines = l.lines.filter((x) => x.id !== messageId);
   });
   return true;
+}
+
+// The dropped handler's sweep: wait for the listing's in-flight sends, then
+// delete every line it knows of — the event's snapshot plus the registry.
+async function dropAllLines(ctx, gone) {
+  const e = transient.get(gone.id);
+  if (e && e.pending.size) await Promise.allSettled([...e.pending]);
+  const ids = new Set([...(gone.lines || []).map((x) => x.id), ...(e ? e.ids.keys() : [])]);
+  for (const id of ids) {
+    await D.remove(ctx, gone.threadId, id);
+    forgetLine(gone.id, id);
+  }
+  transient.delete(gone.id);
 }
 
 // Delete the listing's recorded lines of these kinds now (a nag replacing the
@@ -57,10 +90,26 @@ async function dropLines(ctx, listingId, kinds) {
   for (const line of L.lines.filter((x) => kinds.includes(x.kind))) await dropLine(ctx, L.id, L.threadId, line.id);
 }
 
-// Send a ping line into the thread, record it, and delete it transientSec later.
-async function sendTransient(ctx, L, kind, payload) {
+// Send a ping line into the thread, record it, and delete it transientSec
+// later. A search already gone from the store gets no new line (its thread is
+// being closed); the check and the registration are synchronous, so a drop
+// saved after them finds this send in the registry (dropAllLines).
+function sendTransient(ctx, L, kind, payload) {
+  if (!S.findListing(store.load(ctx), L.id)) return Promise.resolve(null);
+  const e = entryOf(L.id);
+  const job = sendTransientNow(ctx, L, kind, payload);
+  e.pending.add(job);
+  job.finally(() => {
+    e.pending.delete(job);
+    if (e.ids.size === 0 && e.pending.size === 0 && transient.get(L.id) === e) transient.delete(L.id);
+  }).catch(() => {});
+  return job;
+}
+
+async function sendTransientNow(ctx, L, kind, payload) {
   const msg = await D.send(ctx, L.threadId, payload);
   if (!msg) return null;
+  entryOf(L.id).ids.set(msg.id, L.threadId);
   const ms = transientMs(store.load(ctx).config);
   patch(ctx, (d) => {
     const l = S.findListing(d, L.id);
@@ -192,8 +241,9 @@ async function runEvent(ctx, data, ev, L, look, now, { panels, cards, refresh })
       const gone = ev.listing;
       if (!gone.threadId) break;
       const line = closingLine(data.config, ev.outcome, ev.reason);
-      // its ping lines go first (a locked, archived thread keeps no "tap I'm here")
-      for (const x of gone.lines || []) await D.remove(ctx, gone.threadId, x.id);
+      // its ping lines go first (a locked, archived thread keeps no "tap I'm
+      // here") — incl. one whose send was still in flight at the drop (A2)
+      await dropAllLines(ctx, gone);
       if (gone.welcomeMessageId) await D.remove(ctx, gone.threadId, gone.welcomeMessageId);
       // the thread message goes terminal: no Accept, no Cancel search, no I'm
       // here left to tap, the closing line inside it; a thread without a panel
@@ -317,8 +367,9 @@ async function afterCreate(ctx, listingId) {
 // The 30-second job (§5.4). Re-entrancy guard: a tick that finds the previous
 // one still running is skipped. Idempotent — lfg.json is the truth. Besides
 // advance(): a listing still carrying the old separate welcome message gets a
-// panel redraw (which deletes it — the one-message migration), and the ping
-// lines whose time is up are deleted (a restart's leftovers).
+// panel redraw (which deletes it — the one-message migration; one without a
+// panel message has nothing to redraw: its welcome is deleted directly, A3),
+// and the ping lines whose time is up are deleted (a restart's leftovers).
 let ticking = false;
 async function tick(ctx) {
   if (ticking) return "skipped";
@@ -330,8 +381,20 @@ async function tick(ctx) {
     const before = JSON.stringify(data);
     const { events, log } = S.advance(data, now);
     if (JSON.stringify(data) !== before) store.commit(ctx, data, { log });
-    for (const l of data.listings) if (l.welcomeMessageId) events.push({ type: "panel", listingId: l.id });
+    const panelless = [];
+    for (const l of data.listings) {
+      if (!l.welcomeMessageId) continue;
+      if (l.panelMessageId) events.push({ type: "panel", listingId: l.id });
+      else panelless.push(l);
+    }
     await runEvents(ctx, events, { sync: false });
+    for (const l of panelless) {
+      try {
+        await dropLegacyWelcome(ctx, l);
+      } catch (err) {
+        ctx.log.error(`could not delete the old welcome of ${l.id}:`, err);
+      }
+    }
     await sweepLines(ctx, now);
     await C.expirePing(ctx);
     await C.sync(ctx, { checkTail: true });
@@ -341,4 +404,12 @@ async function tick(ctx) {
   }
 }
 
-module.exports = { closingLine, runEvents, afterCreate, tick, sweepLines };
+module.exports = {
+  closingLine,
+  runEvents,
+  afterCreate,
+  tick,
+  sweepLines,
+  // tests only: forget the in-process transient-line registry
+  _reset: () => transient.clear(),
+};

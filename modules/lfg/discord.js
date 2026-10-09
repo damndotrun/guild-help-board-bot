@@ -3,7 +3,7 @@
 // REST error is logged and reported as a falsy result, never thrown into an
 // action (the state is already saved). The DM card runs on a per-member
 // promise queue (§5.2/7), so two events can never leave two cards.
-const { ChannelType, MessageFlags, MessageType, PermissionFlagsBits, ButtonStyle, ComponentType } = require("discord.js");
+const { ChannelType, MessageFlags, PermissionFlagsBits, ButtonStyle, ComponentType } = require("discord.js");
 const S = require("./state");
 const R = require("./render");
 const store = require("./store");
@@ -15,11 +15,7 @@ const CHANNEL_OBFUSCATED = 1 << 17;
 const DM_CLOSED = 50007; // "Cannot send messages to this user"
 const DM_RATE_LIMITED = 40003; // "You are opening direct messages too fast"
 const UNKNOWN_MESSAGE = 10008;
-const MISSING_PERMISSIONS = 50013;
 const MAX_NEW_SEARCH_DMS = 50;
-// How many of a thread's newest messages the system-line tidy looks at.
-const TIDY_WINDOW = 5;
-const TIDY_RETRY_MS = 2000;
 
 // What the board channel needs from the bot (§8.2), by name for the log.
 const NEEDED = Object.freeze({
@@ -34,16 +30,9 @@ const NEEDED = Object.freeze({
   ManageRoles: PermissionFlagsBits.ManageRoles,
 });
 
-// SOFT requirements: without them nothing breaks, the owner's Teammates
-// screen names them. ManageMessages deletes the "BB Bot added X to the
-// thread" system lines (live test round 2, item C).
-const OPTIONAL = Object.freeze({
-  ManageMessages: PermissionFlagsBits.ManageMessages,
-});
-
 const nowOf = (ctx) => (typeof ctx.now === "function" ? ctx.now() : Date.now());
 
-// A best-effort job some time later (a transient line's delete, a retry). The
+// A best-effort job some time later (a transient line's delete). The
 // seam: ctx.setTimer(fn, ms) when the ctx has one (tests); else an unref'd
 // setTimeout (it never keeps the process alive). Errors are logged. A restart
 // loses the timer — every such job has a tick-side backstop.
@@ -112,16 +101,6 @@ function missingPermissions(guild, channel, pingRoleIds = []) {
   return missing;
 }
 
-// The SOFT permissions (OPTIONAL) the bot lacks in the board channel; an
-// unknown / hidden channel → none reported here (missingPermissions covers it).
-function missingOptional(guild, channel) {
-  if (!channel || isObfuscated(channel)) return [];
-  const me = guild && guild.members && guild.members.me;
-  const have = me && typeof channel.permissionsFor === "function" ? channel.permissionsFor(me) : null;
-  if (!have) return [];
-  return Object.entries(OPTIONAL).filter(([, bit]) => !have.has(bit)).map(([name]) => name);
-}
-
 // Live names and avatars from the caches (D6), stored names as fallback.
 function lookFor(ctx, guild) {
   return {
@@ -159,49 +138,9 @@ async function openThread(ctx, config, listing) {
     await thread.delete().catch((delErr) => ctx.log.warn(`could not delete the half-opened thread ${thread.id}: ${delErr.message}`));
     throw err;
   }
-  await tidySystemLines(ctx, thread, MessageType.RecipientAdd);
+  // The "BB Bot added X to the thread" system line (RecipientAdd) stays:
+  // Discord refuses to delete system messages (50021 — live test round 2).
   return thread;
-}
-
-// After the bot adds / removes a thread member Discord posts a system line
-// ("BB Bot added X to the thread", MessageType.RecipientAdd / RecipientRemove,
-// authored by the bot): delete those among the newest few (live test round 2,
-// item C). Best-effort: 10008 is fine; 50013 (no Manage Messages) is logged
-// once and the line stays. Nothing found → one retry a moment later, in case
-// the line was not there yet. → how many were deleted.
-let tidyPermLogged = false;
-async function tidySystemLines(ctx, thread, type, { retry = true } = {}) {
-  if (!thread || !thread.messages || typeof thread.messages.fetch !== "function") return 0;
-  const botId = ctx.client && ctx.client.user ? ctx.client.user.id : null;
-  if (!botId) return 0;
-  let recent;
-  try {
-    recent = await thread.messages.fetch({ limit: TIDY_WINDOW });
-  } catch (err) {
-    ctx.log.warn(`could not read thread ${thread.id} to tidy its system lines: ${err.message}`);
-    return 0;
-  }
-  const lines = [...recent.values()].filter((m) => m.type === type && m.author && m.author.id === botId);
-  if (lines.length === 0) {
-    if (retry) later(ctx, TIDY_RETRY_MS, () => tidySystemLines(ctx, thread, type, { retry: false }));
-    return 0;
-  }
-  let deleted = 0;
-  for (const m of lines) {
-    try {
-      await thread.messages.delete(m.id);
-      deleted += 1;
-    } catch (err) {
-      if (err.code === UNKNOWN_MESSAGE) continue;
-      if (err.code === MISSING_PERMISSIONS) {
-        if (!tidyPermLogged) ctx.log.warn("Manage Messages needed in the board channel to tidy thread system lines");
-        tidyPermLogged = true;
-        return deleted;
-      }
-      ctx.log.warn(`could not delete a system line in thread ${thread.id}: ${err.message}`);
-    }
-  }
-  return deleted;
 }
 
 async function send(ctx, channelId, payload) {
@@ -246,12 +185,11 @@ async function threadMember(ctx, threadId, userId, op) {
   if (!thread || !thread.members) return false;
   try {
     await thread.members[op](userId);
+    return true;
   } catch (err) {
     ctx.log.warn(`could not ${op} ${userId} in thread ${threadId}: ${err.message}`);
     return false;
   }
-  await tidySystemLines(ctx, thread, op === "add" ? MessageType.RecipientAdd : MessageType.RecipientRemove);
-  return true;
 }
 
 // A finished search's thread (§3.3/7): locked, then archived right away (live
@@ -532,9 +470,7 @@ module.exports = {
   DM_CLOSED,
   DM_RATE_LIMITED,
   UNKNOWN_MESSAGE,
-  MISSING_PERMISSIONS,
   NEEDED,
-  OPTIONAL,
   nowOf,
   later,
   isObfuscated,
@@ -543,11 +479,9 @@ module.exports = {
   hasEmojiIn,
   getChannel,
   missingPermissions,
-  missingOptional,
   lookFor,
   threadName,
   openThread,
-  tidySystemLines,
   send,
   edit,
   remove,
@@ -559,6 +493,4 @@ module.exports = {
   deliverCard,
   deleteStaleCard,
   dmNewSearch,
-  // tests only: re-arm the log-once flag
-  _reset: () => { tidyPermLogged = false; },
 };

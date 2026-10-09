@@ -113,25 +113,20 @@ async function seedIfNeeded(ctx) {
 
 // The bot's missing permissions in the board channel, for the log and the
 // owner's line in Menu › Teammates (§8.2). Refreshed on every start.
-// `optional`: the SOFT ones (D.OPTIONAL — Manage Messages tidies the thread
-// system lines); missing them breaks nothing, the owner's screen names them.
-const health = { missing: [], optional: [], checkedAt: null };
+const health = { missing: [], checkedAt: null };
 
 async function checkPermissions(ctx) {
   const data = store.load(ctx);
   health.checkedAt = D.nowOf(ctx);
   if (!data.config) {
     health.missing = [];
-    health.optional = [];
     return health;
   }
   const guild = await D.getGuild(ctx, data.config);
   const channel = await D.getChannel(ctx, data.config.channelId);
   const pingRoleIds = [...new Set(data.config.categories.flatMap((c) => c.buttons.flatMap((b) => b.pingRoleIds)))];
   health.missing = D.missingPermissions(guild, channel, pingRoleIds);
-  health.optional = D.missingOptional(guild, channel);
   if (health.missing.length) ctx.log.error(`missing permissions in the board channel: ${health.missing.join(", ")}`);
-  if (health.optional.length) ctx.log.warn(`optional permissions missing in the board channel: ${health.optional.join(", ")}`);
   return health;
 }
 

@@ -192,10 +192,8 @@ unless the teammate roles are mentionable); on the server: **Manage Roles**
 bot's role **above** the teammate roles. Members should lose **Send
 Messages** in that channel and keep **Send Messages in Threads** — only the
 bot posts there. Missing permissions are logged at start and shown to owners
-in `/menu › Teammates`. Optional: **Manage Messages** in that channel lets the
-bot delete the "BB Bot added X to the thread" system lines in the search
-threads — without it nothing breaks, those lines just stay (the owner's
-Teammates screen names it as optional).
+in `/menu › Teammates`. The "BB Bot added X to the thread" lines in the
+search threads are Discord system messages — no bot can delete them.
 
 **Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
 the start command needs).

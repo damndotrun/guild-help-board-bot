@@ -365,7 +365,8 @@ B holds `💥 SUP`. Phone block last.
       Note) → `BASIC · SUP`, empty, "gg" → the modal closes with NO answer
       line ("Your search is live" is gone). A private thread opened with A
       only, holding ONE bot message: the intro line + **Requests** (0) +
-      red **Cancel search**. No "BB Bot Test added A to the thread" line.
+      red **Cancel search** (plus Discord's own "BB Bot Test added A to the
+      thread" system line — no bot can delete those).
 - [ ] Under the board a ping `@💥 SUP **A** is looking for **BASIC · SUP** ·
       now` → B's phone notifies; the ping is gone after about 5 seconds.
 - [ ] The board shows a teal **Now** box: `💥 **BASIC · SUP** · **A**`,
@@ -379,9 +380,9 @@ B holds `💥 SUP`. Phone block last.
 - [ ] **(B)** Join again → "You already asked… #1".
 
 **Accept and confirm**
-- [ ] **(A)** **Accept** → B is added to the thread (no "added B to the
-      thread" line stays — it needs **Manage Messages**, see Menu, officer,
-      owner); NO "WAKEY-WAKEY" message: the ONE thread message is edited —
+- [ ] **(A)** **Accept** → B is added to the thread (Discord's "added B to
+      the thread" system line appears and stays); NO "WAKEY-WAKEY" message:
+      the ONE thread message is edited —
       "You picked **B** for **BASIC · SUP**.", Requests (B accepted), and an
       amber **Confirm 0 / 2** box with the green **I'm here** at the right
       INSIDE the box; no **Cancel search** any more. B's DM card is replaced
@@ -405,7 +406,8 @@ B holds `💥 SUP`. Phone block last.
       minutes → B's card: red "You didn't confirm in time"; the thread
       message gets a red box "…didn't confirm — your search is open again"
       above Requests (Accept and Cancel search are back), B is removed from
-      the thread (no "removed B" line stays), the search is back in **Now**.
+      the thread (Discord's "removed B" system line stays), the search is
+      back in **Now**.
 - [ ] Same, but only B taps → after 5 minutes the search is cancelled: B's
       card "A didn't confirm"; the thread message turns grey with "Search
       closed — not confirmed in time." inside it; the thread is locked and
@@ -451,13 +453,11 @@ B holds `💥 SUP`. Phone block last.
       search, B gets a DM with a **Join** button. **GM pings** Off → B loses
       `⚔ GM-PING`.
 - [ ] **(officer)** **Remove a search** → pick → removed; its requesters'
-      cards say it was cancelled.
+      cards say it was cancelled. Removing a game that already **started**:
+      its thread is locked and archived at once, and nothing touches it
+      again 15 minutes later.
 - [ ] **(A, owner)** With a permission removed from the bot in the channel and
       the bot restarted → the Teammates screen names the missing permission.
-- [ ] **(A, owner)** Without **Manage Messages** for the bot in the channel
-      (restart) → the Teammates screen shows "Optional, missing in the board
-      channel: ManageMessages"; searches still work, only the "added X to
-      the thread" lines stay in the threads. Give it back afterwards.
 
 **Self-repair**
 - [ ] Delete the bot's message by hand → within 30 s it is back (banner,

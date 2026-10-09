@@ -52,13 +52,11 @@ tricky bits don't get re-broken.
   hand — any other edit error leaves the state untouched; the new-search DM
   role check is a forced REST member fetch; `ManageRoles` is read from the
   guild permissions, the rest from the channel; `ReadMessageHistory` is needed
-  for the tail check and the system-line tidy; `OPTIONAL` = `ManageMessages`
-  (soft — `missingOptional`, `seed.health.optional`, an owner-only "Optional"
-  line in Teammates); `later` = the timer seam (`ctx.setTimer` in tests, an
-  unref'd `setTimeout` otherwise); `tidySystemLines` deletes the bot's
-  RecipientAdd / RecipientRemove line after every thread member add / remove,
-  one retry 2 s later if none was there yet, 50013 logged once;
-  `closeThread` = lock + archive, `archiveThread` = archive only),
+  for the tail check; `later` = the timer seam (`ctx.setTimer` in tests, an
+  unref'd `setTimeout` otherwise); `closeThread` = lock + archive,
+  `archiveThread` = archive only; the "added / removed X to the thread"
+  RecipientAdd / RecipientRemove lines stay — Discord refuses to delete a
+  system message (50021, live test round 2)),
   `menu.js` / `buttons.js` (role screens show the state
   from the action result — with the Guilds-only intent the member cache is
   stale; news is consumed only once its screen is ready; the role picker
@@ -89,7 +87,13 @@ tricky bits don't get re-broken.
       (`notify` · `nag` · `picked` · `headsUp`). The timer (`D.later`) is
       best-effort; the tick (`expirePing`, `sweepLines`) deletes what a
       restart left. A line of a listing that leaves the list is deleted
-      before its thread is locked / archived.
+      before its thread is locked / archived — incl. one whose send was in
+      flight at the drop (not in the dropped event's snapshot, and its record
+      patch finds no listing): `effects.sendTransient` keeps an in-process
+      registry per listing (in-flight sends + sent ids), the `dropped`
+      handler awaits those sends and deletes the registry's ids too
+      (`dropAllLines`); a listing already gone from the store gets no new
+      line.
   16. lfg: what is NOT crash-safe — the state is saved first, the Discord
       side (`effects`) runs after, and nothing replays the events. A restart
       between the two loses that batch: a terminal thread's last edit, lock
@@ -174,14 +178,16 @@ tricky bits don't get re-broken.
       No WAKEY message; a joiner without a reachable DM card (or not added)
       gets one transient `picked` ping; the check-in Heads up pings both.
       A store's old `welcomeMessageId` is kept only while set: the next
-      panel edit deletes that message (the tick redraws such panels). The
-      bot's "added / removed X" system lines are deleted after each member
-      add / remove (`tidySystemLines`; Manage Messages is SOFT). A terminal
+      panel edit deletes that message (the tick redraws such panels; a
+      listing without a panel message gets the welcome deleted directly by
+      the tick). Discord's "added / removed X to the thread" system lines
+      stay — a system message cannot be deleted (50021). A terminal
       search: its thread message goes terminal (the closing line inside;
       a thread without one gets the line as a message), then lock + archive
-      right away; a played game: archive only, `archiveAfterMin` (15) after
-      the start (`data.archives`, by the tick). Each archive → a `thread` /
-      `archived` journal line.
+      right away, and its queued played-game archive (if any — an officer
+      removing a started game) is dropped in the same save; a played game:
+      archive only, `archiveAfterMin` (15) after the start (`data.archives`,
+      by the tick). Each archive → a `thread` / `archived` journal line.
   24. lfg: the start modal's submit is acknowledged with `deferUpdate`
       (every start modal comes from a component); only a failure answers,
       with an ephemeral `followUp`.

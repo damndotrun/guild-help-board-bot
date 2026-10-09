@@ -10,7 +10,7 @@ const A = require("../modules/lfg/actions");
 const store = require("../modules/lfg/store");
 const { T0, MIN, dataWith, listing, request, fakeDiscord, fakeCtx } = require("./fixtures/lfg-fakes");
 
-beforeEach(() => { C._reset(); D._reset(); });
+beforeEach(() => { C._reset(); E._reset(); });
 
 function setup(mutate, fakeOpts) {
   const fake = fakeDiscord(fakeOpts);
@@ -46,8 +46,8 @@ test("afterCreate: thread + ONE message (intro inside the request panel), ids sa
   assert.equal(inThread.length, 1, "one message in the thread");
   assert.match(inThread[0].payload.components[0].content, /^Your search is live\./);
   assert.match(JSON.stringify(inThread[0].payload), /### Requests/);
-  // the searcher's "added to the thread" system line is gone (item C)
-  assert.deepEqual(fake.messagesIn(thread.threadId).map((m) => m.id), [inThread[0].messageId]);
+  // besides Discord's own "added A to the thread" system line (undeletable), only ours
+  assert.deepEqual(fake.messagesIn(thread.threadId).map((m) => m.type ?? 0), [1, 0]);
   const saved = store.load(ctx).listings[0];
   assert.deepEqual([saved.threadId, saved.panelMessageId], [thread.threadId, inThread[0].messageId]);
   // nothing in the channel and no DM before the followUp — the answer does not wait for them
@@ -190,15 +190,13 @@ function confirming(extra = {}) {
   });
 }
 
-test("D: accepted → the joiner is added (system line tidied), NO WAKEY message; a joiner with a DM card gets no thread line", async () => {
+test("D: accepted → the joiner is added, NO WAKEY message; a joiner with a DM card gets no thread line", async () => {
   const { fake, ctx } = setup((x) => x.listings.push(confirming()));
-  fake.textChannel("th-L1", {}); // a thread whose members.add posts the system line
-  const th = fake.channels.get("th-L1");
-  th.members = { add: async (u) => { fake.ops.push({ op: "threadAdd", threadId: "th-L1", userId: u }); fake.messagesIn("th-L1").push({ id: "sys9", type: 1, authorId: "bot", payload: {} }); } };
+  withThread(fake, "L1");
   await E.runEvents(ctx, [{ type: "accepted", listingId: "L1" }], { sync: false });
   assert.deepEqual(opsOf(fake, "threadAdd"), [{ op: "threadAdd", threadId: "th-L1", userId: "u2" }]);
   assert.deepEqual(threadSends(fake, "L1"), [], "no WAKEY, no ping");
-  assert.deepEqual(opsOf(fake, "delete").map((o) => o.messageId), ["sys9"]);
+  assert.equal(opsOf(fake, "delete").length, 0);
 });
 
 test("D: a joiner without a reachable DM card — or one the bot couldn't add — gets ONE transient ping line (fixed: with the start)", async () => {
@@ -258,15 +256,14 @@ test("D: the one message across open → confirming → started — every step a
   assert.deepEqual(store.load(ctx).archives.map((a) => a.threadId), ["th-L1"]);
 });
 
-test("D: reopened → the red notice is in the thread message (no welcome edit), leftover pings deleted, the joiner removed and the system line tidied", async () => {
+test("D: reopened → the red notice is in the thread message (no welcome edit), leftover pings deleted, the joiner removed", async () => {
   const { fake, ctx } = setup((x) => x.listings.push(confirming({ requests: [request("u2", T0, { status: "accepted", userName: "[x](https://e.com)" }), request("u3", T0 + 1, { onHold: true })], lines: [{ id: "nag1", kind: "nag", until: T0 + 5000 }] })));
-  fake.textChannel("th-L1", {});
+  withThread(fake, "L1");
   fake.messagesIn("th-L1").push({ id: "pm-L1", payload: {} }, { id: "nag1", payload: {} });
-  fake.channels.get("th-L1").members = { remove: async (u) => { fake.ops.push({ op: "threadRemove", userId: u }); fake.messagesIn("th-L1").push({ id: "sysR", type: 2, authorId: "bot", payload: {} }); } };
   const r = A.withdraw(ctx, { userId: "u2", displayName: "x", level: "member" }, { listingId: "L1" });
   await r.effects();
-  assert.deepEqual(opsOf(fake, "threadRemove"), [{ op: "threadRemove", userId: "u2" }]);
-  assert.deepEqual(opsOf(fake, "delete").map((o) => o.messageId).sort(), ["nag1", "sysR"]);
+  assert.deepEqual(opsOf(fake, "threadRemove"), [{ op: "threadRemove", threadId: "th-L1", userId: "u2" }]);
+  assert.deepEqual(opsOf(fake, "delete").map((o) => o.messageId), ["nag1"]);
   const edit = opsOf(fake, "edit").find((o) => o.messageId === "pm-L1");
   assert.match(JSON.stringify(edit.payload), /\*\*\\\\\[x\]\(https:\/\/e\.com\)\*\* left — your search is open again/);
   assert.match(JSON.stringify(edit.payload), /lfg:accept:L1:u3/);
@@ -287,6 +284,47 @@ test("D: migration — a listing with the old welcome message: the next render p
   th.messages.delete = async () => { throw Object.assign(new Error("nope"), { code: 50001 }); };
   await E.runEvents(b.ctx, [{ type: "panel", listingId: "L1" }], { sync: false });
   assert.equal(S.findListing(store.load(b.ctx), "L1").welcomeMessageId, "w2");
+});
+
+test("D (A3): migration without a panel message — the tick deletes the old welcome directly (no panel to redraw)", async () => {
+  const { fake, ctx } = setup((x) => x.listings.push(confirming({ panelMessageId: null, welcomeMessageId: "w1" })));
+  withThread(fake, "L1");
+  fake.messagesIn("th-L1").push({ id: "w1", payload: {} });
+  await E.tick(ctx);
+  assert.deepEqual(opsOf(fake, "delete").map((o) => o.messageId), ["w1"]);
+  assert.equal(opsOf(fake, "edit").some((o) => o.channelId === "th-L1"), false);
+  assert.equal("welcomeMessageId" in S.findListing(store.load(ctx), "L1"), false);
+  await E.tick(ctx);
+  assert.equal(opsOf(fake, "delete").length, 1, "done once");
+});
+
+test("A (A2): a ping line whose send was still in flight when the search was dropped is deleted by the dropped handler BEFORE lock + archive; no new line for a dropped search", async () => {
+  const { fake, ctx } = setup((x) => x.listings.push(confirming()));
+  const th = withThread(fake, "L1");
+  fake.messagesIn("th-L1").push({ id: "pm-L1", payload: {} });
+  const realSend = th.send;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  th.send = async (payload) => { await gate; return realSend(payload); };
+  // the tick's nag starts sending…
+  const nag = E.runEvents(ctx, [{ type: "nag", listingId: "L1", userId: "u1" }], { sync: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  // …the searcher cancels meanwhile (saved before the send returns)
+  const r = A.cancelListing(ctx, { userId: "u1", displayName: "Dani", level: "member" }, { listingId: "L1" });
+  assert.ok(r.ok);
+  const effects = r.effects();
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  await Promise.all([nag, effects]);
+  const sent = threadSends(fake, "L1").find((o) => /tap I'm here/.test(o.payload.content));
+  assert.ok(sent, "the nag went out");
+  const order = fake.ops.filter((o) => (o.op === "delete" && o.messageId === sent.messageId) || o.op === "lock" || o.op === "archive").map((o) => o.op);
+  assert.deepEqual(order, ["delete", "lock", "archive"]);
+  // after the drop a new transient line is not even sent
+  th.send = realSend;
+  const before = threadSends(fake, "L1").length;
+  await E.runEvents(ctx, [{ type: "nag", listingId: "L1", userId: "u1" }], { sync: false });
+  assert.equal(threadSends(fake, "L1").length, before);
 });
 
 // ── E: archive ─────────────────────────────────────────────────────────────

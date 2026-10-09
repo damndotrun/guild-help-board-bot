@@ -88,11 +88,10 @@ module.exports = { T0, MIN, config, dataWith, listing, request };
 //   failThreads: thread creation throws
 //   perms: the bot's permission set in every channel ({ has(bit) })
 //   roleFail: role ids whose add/remove throws
-//   noManageMessages: deleting a system line (RecipientAdd / RecipientRemove)
-//     throws 50013 Missing Permissions
 // A thread's members.add / remove posts the system line Discord posts
-// (type 1 RecipientAdd / 2 RecipientRemove, authored by the bot "bot").
-function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleFail = [], noManageMessages = false } = {}) {
+// (type 1 RecipientAdd / 2 RecipientRemove, authored by the bot "bot"); like
+// Discord (live test round 2), a system message cannot be deleted: 50021.
+function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleFail = [] } = {}) {
   const ops = [];
   let next = 1;
   const nid = (p) => `${p}${next++}`;
@@ -126,7 +125,7 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
         const list = listOf(channelId);
         const i = list.findIndex((x) => x.id === id);
         if (i === -1) throw unknown();
-        if (noManageMessages && (list[i].type === 1 || list[i].type === 2)) throw Object.assign(new Error("Missing Permissions"), { code: 50013 });
+        if (list[i].type === 1 || list[i].type === 2) throw Object.assign(new Error("Cannot execute action on a system message"), { code: 50021 });
         list.splice(i, 1);
         ops.push({ op: "delete", channelId, messageId: id });
       },
