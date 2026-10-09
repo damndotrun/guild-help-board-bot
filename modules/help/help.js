@@ -2128,18 +2128,21 @@ function roleNameResolver(interaction) {
   return (id) => interaction.guild?.roles.cache.get(id)?.name;
 }
 
-async function updateRolesPanel(interaction, data) {
+// `content` is the refusal line ("" on success — that clears a refusal line
+// left by an earlier tap; an edit keeps fields it isn't sent).
+async function updateRolesPanel(interaction, data, content = "") {
   // F2: wrap for consistency with the other panel handlers, even though
   // there's no post-ack slow REST here to protect — a failed ack shouldn't
   // surface as an unhandled throw up to the top-level "Something went wrong".
   try {
     await interaction.update({
-      content: "", // clears a refusal line left by an earlier tap (an edit keeps fields it isn't sent)
+      content,
       embeds: [rolesPanelEmbed(data)],
       components: rolesPanelComponents(data, roleNameResolver(interaction)),
     });
   } catch {
     await respond(interaction, {
+      ...(content ? { content } : {}),
       embeds: [rolesPanelEmbed(data)],
       components: rolesPanelComponents(data, roleNameResolver(interaction)),
       flags: MessageFlags.Ephemeral,
@@ -2204,11 +2207,7 @@ async function rolesPanelAction(interaction, run) {
   }
   const r = run(actorOf(interaction, data));
   if (!r.ok) {
-    await interaction.update({
-      content: r.error,
-      embeds: [rolesPanelEmbed(data)],
-      components: rolesPanelComponents(data, roleNameResolver(interaction)),
-    });
+    await updateRolesPanel(interaction, data, r.error);
     return;
   }
   await updateRolesPanel(interaction, r.data);

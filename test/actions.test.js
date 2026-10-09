@@ -897,9 +897,22 @@ test("the /config roles panel re-renders its selects with fresh customIds that s
   const notify = component("role", second.notify, OWNER, { values: ["r2"], rights: boss });
   await help.dispatch(notify);
   assert.equal(help.loadData().notifyRoleId, "r2");
-  const remove = component("string", selectIds(notify).remove, OWNER, { values: ["r1"], rights: boss });
+  const removeId = selectIds(notify).remove;
+  assert.notEqual(removeId, selectIds(again).remove, "the remove select is re-tagged too");
+  const remove = component("string", removeId, OWNER, { values: ["r1"], rights: boss });
   await help.dispatch(remove);
   assert.deepEqual(help.loadData().managerRoleIds, []);
+});
+
+test("a refused /config roles pick whose ack fails still shows the refusal (no 'Something went wrong')", async () => {
+  const boss = { manageGuild: true };
+  seed();
+  const refused = component("role", "roles:add", OWNER, { values: ["b1"], rights: boss });
+  refused.guild.roles.cache.set("b1", { managed: true, name: "Bot" });
+  refused.update = async () => { throw new Error("Unknown Message"); };
+  await help.dispatch(refused);
+  assert.equal(refused.calls[0][0], "reply");
+  assert.equal(refused.calls[0][1].content, "You can't add @everyone or a bot-managed role as a manager role.");
 });
 
 test("/config notify and the notify panel refuse @everyone and bot-managed roles", async () => {
