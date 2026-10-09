@@ -216,12 +216,29 @@ const cardQueues = new Map();
 
 // Refresh one member's card: `event` = an important event (notifies), null = a
 // silent refresh. Runs after every earlier card job of the same member.
-function deliverCard(ctx, userId, event = null) {
+function queueCardJob(ctx, userId, run) {
   const prev = cardQueues.get(userId) || Promise.resolve();
-  const job = prev.then(() => deliverNow(ctx, userId, event)).catch((err) => ctx.log.error(`DM card for ${userId} failed:`, err));
+  const job = prev.then(run).catch((err) => ctx.log.error(`DM card for ${userId} failed:`, err));
   cardQueues.set(userId, job);
   job.finally(() => { if (cardQueues.get(userId) === job) cardQueues.delete(userId); });
   return job;
+}
+
+function deliverCard(ctx, userId, event = null) {
+  return queueCardJob(ctx, userId, () => deliverNow(ctx, userId, event));
+}
+
+// A stale card (24 h; the tick already dropped its record) goes off the same
+// per-member queue, so it never overtakes or interleaves with a live card job.
+function deleteStaleCard(ctx, userId, messageId) {
+  return queueCardJob(ctx, userId, async () => {
+    if (!ctx.client || !messageId) return "none";
+    const user = await ctx.client.users.fetch(userId).catch(() => null);
+    const dm = user && (await user.createDM().catch(() => null));
+    if (!dm) return "nodm";
+    await deleteCardMessage(ctx, dm, userId, messageId);
+    return "deleted";
+  });
 }
 
 // Delete a card message; already gone (10008) is fine, anything else is logged.
@@ -383,5 +400,6 @@ module.exports = {
   setRoles,
   dmReachable,
   deliverCard,
+  deleteStaleCard,
   dmNewSearch,
 };
