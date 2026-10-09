@@ -154,9 +154,10 @@ function pairBox(config, color, titleKey, segment, listings, look) {
   return box(color, inner);
 }
 
-// "No one is looking right now." — also the stand-in for a board that cannot
-// be rendered (channel.repost → renderStackFallback), so a message id is
-// always stored.
+// "No one is looking right now." — only for a board that is the whole message
+// (a layout without a panel or banner: a V2 message cannot be empty) and for
+// the fallback of a board-only layout (renderStackFallback). Beside a panel or
+// banner an empty board renders NOTHING (live test round 2, item G).
 const emptyBoardParts = (config) => [box(COLORS.grey, [td(textOf(config, "boardEmpty"))])];
 const renderEmptyBoard = (config) => v2(emptyBoardParts(config));
 
@@ -165,14 +166,16 @@ const renderEmptyBoard = (config) => v2(emptyBoardParts(config));
 // `wrap(parts)` builds the whole message around the board's components
 // (renderStack puts the banner and the panel around them), so the rows get
 // only the 40-component / 4000-character budget LEFT after the other blocks.
-function renderBoard(data, now, look = PLAIN_LOOK, wrap = (parts) => v2(parts)) {
+// `hideEmpty`: no search to show → no board component at all (renderStack,
+// when another block carries the message).
+function renderBoard(data, now, look = PLAIN_LOOK, wrap = (parts) => v2(parts), { hideEmpty = false } = {}) {
   const config = data.config;
   const started = data.listings.filter((l) => l.state === "started").sort((a, b) => a.startedAt - b.startedAt);
   const fixed = data.listings.filter((l) => l.state === "fixed" || l.state === "confirming").sort((a, b) => (a.startAt ?? a.acceptedAt) - (b.startAt ?? b.acceptedAt));
   const open = S.joinable(data, now); // a lapsed search is gone even before the tick drops it
   const nowRows = open.filter((l) => l.startAt === null);
   const timedRows = open.filter((l) => l.startAt !== null);
-  if (started.length + fixed.length + open.length === 0) return fitRows(0, () => wrap(emptyBoardParts(config)));
+  if (started.length + fixed.length + open.length === 0) return fitRows(0, () => wrap(hideEmpty ? [] : emptyBoardParts(config)));
   const priority = [...nowRows, ...timedRows];
   return fitRows(priority.length, (n) => {
     const shown = new Set(priority.slice(0, n));
@@ -192,8 +195,11 @@ function renderBoard(data, now, look = PLAIN_LOOK, wrap = (parts) => v2(parts)) 
 
 // The channel's ONE bot message (§3.1/§5.3, live test 2026-10-09: separate
 // messages each showed "(edited)"): the active blocks' components in layout
-// order. Null when not even the empty board fits beside the other blocks —
-// the caller keeps the last message, or posts renderStackFallback.
+// order. With no search to show the board adds nothing (no "No one is
+// looking" box beside the panel / banner — item G); a search appearing later
+// brings the board's boxes into the same message (an edit). Null when the
+// blocks do not fit — the caller keeps the last message, or posts
+// renderStackFallback.
 function renderStack(data, blocks, now, look = PLAIN_LOOK, hasRole = () => true, tag = renderTag(), hasEmoji = () => true) {
   const config = data.config;
   // One block per type, the first wins (channel.activeBlocks does the same):
@@ -202,14 +208,16 @@ function renderStack(data, blocks, now, look = PLAIN_LOOK, hasRole = () => true,
   const pieces = once.map((b) => (b.type === "banner" ? bannerParts(b) : b.type === "panel" ? panelParts(config, hasRole, tag, hasEmoji) : null));
   const wrap = (boardParts) => v2(pieces.flatMap((p) => p || boardParts), { allowedMentions: { parse: [] } });
   if (!once.some((b) => b.type === "board")) return fitRows(0, () => wrap([]));
-  return renderBoard(data, now, look, wrap);
+  return renderBoard(data, now, look, wrap, { hideEmpty: once.length > 1 });
 }
 
-// What repost sends when renderStack gives null: the panel (when the layout
-// has one) and the empty board — never no message, or every tick would repost.
+// What repost sends when renderStack gives null: the panel alone when the
+// layout has one (an empty board shows nothing beside it, item G), else the
+// "No one is looking" box — never no message, or every tick would repost. The
+// next edit brings the real board once it fits.
 function renderStackFallback(config, blocks, hasRole = () => true, tag = renderTag(), hasEmoji = () => true) {
-  const panel = blocks.some((b) => b.type === "panel") ? panelParts(config, hasRole, tag, hasEmoji) : [];
-  return v2([...panel, ...emptyBoardParts(config)], { allowedMentions: { parse: [] } });
+  const parts = blocks.some((b) => b.type === "panel") ? panelParts(config, hasRole, tag, hasEmoji) : emptyBoardParts(config);
+  return v2(parts, { allowedMentions: { parse: [] } });
 }
 
 // The new-search ping under the board (U7): the only message that pings roles.

@@ -344,9 +344,12 @@ B holds `💥 SUP`. Phone block last.
 **Channel**
 - [ ] The channel shows ONE bot message: the banner image on top, under it
       the grey **Want a game?** panel with **Start a search** and
-      **Pick your roles…**, under that the board ("No one is looking right
-      now.") — stacked, no "(edited)" between them; a single "(edited)"
+      **Pick your roles…** — with no search on the board there is NO board
+      box at all (no "No one is looking right now."); a single "(edited)"
       under the whole message at most.
+- [ ] Once a search is posted, its board box (e.g. teal **Now**) appears
+      under the panel in the SAME message (edited, not re-posted); when the
+      last search leaves, the box goes again.
 - [ ] **(B)** Type in the channel → not allowed (only the bot posts here).
 
 **Roles**

@@ -76,7 +76,7 @@ test("activeBlocks: a duplicate block type is dropped — the first (renderable)
   assert.deepEqual(messageErrors(raw, { prefixes: R.PREFIXES }), []);
 });
 
-test("sync: the first run posts exactly ONE message — banner · panel · board stacked — and stores its id; an unchanged one is not re-sent", async () => {
+test("sync: the first run posts exactly ONE message — banner · panel (· board) stacked — and stores its id; an unchanged one is not re-sent", async () => {
   const { fake, ctx } = setup();
   assert.equal(await C.sync(ctx), "reposted");
   assert.deepEqual(fake.ops.map((o) => o.op), ["send"]); // nothing else
@@ -86,14 +86,45 @@ test("sync: the first run posts exactly ONE message — banner · panel · board
   assert.deepEqual(p.allowedMentions, { parse: [] });
   assert.equal(p.components[0].type, ComponentType.MediaGallery);
   assert.equal(p.components[1].components[0].accessory.custom_id, "lfg:start");
-  assert.match(JSON.stringify(p.components[2]), /No one is looking right now/);
-  assert.equal(p.components.length, 3);
+  // item G: an empty board adds NO component beside the banner and the panel
+  assert.doesNotMatch(JSON.stringify(p), /No one is looking right now/);
+  assert.equal(p.components.length, 2);
   assert.deepEqual(messageErrors(p, { prefixes: R.PREFIXES }), []);
   assert.equal(mainId(ctx), posted.messageId);
   assert.equal(store.load(ctx).channel.messageIds, undefined);
   assert.equal(await C.sync(ctx), "unchanged"); // the picker's fresh tag alone is no change
   assert.equal(await C.sync(ctx, { checkTail: true }), "unchanged");
   assert.equal(fake.messagesIn("ch1").length, 1);
+});
+
+test("item G: no search → only the banner and the panel; a search appears → its board box joins the SAME message (an edit); it leaves → the box goes again", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const id = mainId(ctx);
+  const d = store.load(ctx);
+  d.listings.push(listing("L1", "u1"));
+  store.save(ctx, d);
+  assert.equal(await C.sync(ctx, { checkTail: true }), "edited");
+  const edit = fake.ops.filter((o) => o.op === "edit").at(-1);
+  assert.equal(edit.messageId, id);
+  assert.equal(edit.payload.components.length, 3);
+  assert.ok(ids(edit.payload).includes("lfg:join:L1"));
+  assert.equal(sends(fake).length, 1, "no repost");
+  const e = store.load(ctx);
+  e.listings = [];
+  store.save(ctx, e);
+  assert.equal(await C.sync(ctx), "edited");
+  assert.equal(fake.ops.filter((o) => o.op === "edit").at(-1).payload.components.length, 2);
+  assert.equal(mainId(ctx), id);
+});
+
+test("item G: a board-only layout still shows the No one is looking box (a V2 message cannot be empty); banner + board shows the banner alone", () => {
+  const boardOnly = dataWith();
+  assert.match(JSON.stringify(R.renderStack(boardOnly, C.activeBlocks(boardOnly.config), T0)), /No one is looking right now/);
+  const bannerBoard = dataWith((x) => { x.config.layout = [LAYOUT[0], { type: "board" }]; });
+  const p = R.renderStack(bannerBoard, C.activeBlocks(bannerBoard.config), T0);
+  assert.deepEqual(p.components.map((c) => c.type), [ComponentType.MediaGallery]);
+  assert.deepEqual(messageErrors(p, { prefixes: R.PREFIXES }), []);
 });
 
 test("picker tag: a board-only edit keeps the select's custom_id; resetPanel changes it; the next board edit keeps the new one", async () => {
@@ -423,7 +454,7 @@ test("the board's row cap gets only the budget LEFT after the banner and panel: 
   assert.ok(ids(stack).includes("lfg:start"));
 });
 
-test("repost: blocks that cannot fit one message post the panel + the empty board — the id is kept, no repost loop", async () => {
+test("repost: blocks that cannot fit one message post the panel alone (board-only layout: the No one is looking box) — the id is kept, no repost loop", async () => {
   const real = R.renderStack;
   R.renderStack = () => null;
   try {
@@ -433,7 +464,11 @@ test("repost: blocks that cannot fit one message post the panel + the empty boar
     assert.ok(id);
     const p = fake.ops.find((o) => o.messageId === id).payload;
     assert.ok(ids(p).includes("lfg:start"));
-    assert.match(JSON.stringify(p), /No one is looking right now/);
+    assert.equal(p.components.length, 1, "the panel box only");
+    assert.doesNotMatch(JSON.stringify(p), /No one is looking right now/);
+    assert.deepEqual(messageErrors(p, { prefixes: R.PREFIXES }), []);
+    const boardOnly = R.renderStackFallback(store.load(ctx).config, [{ type: "board" }]);
+    assert.match(JSON.stringify(boardOnly), /No one is looking right now/);
     assert.deepEqual(p.allowedMentions, { parse: [] });
     assert.ok(ctx.errors.some((e) => /do not fit one message/.test(e)));
     assert.equal(await C.sync(ctx, { checkTail: true }), "invalid"); // kept, not reposted
