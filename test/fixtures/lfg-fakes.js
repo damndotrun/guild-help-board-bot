@@ -267,3 +267,47 @@ function fakeCtx(fake, { now = T0 } = {}) {
 
 module.exports.fakeDiscord = fakeDiscord;
 module.exports.fakeCtx = fakeCtx;
+
+// ── a fake interaction (menu / buttons tasks) ───────────────────────────────
+// who = { id, name, roles?: [roleId], manageGuild?: bool }. Every answer lands
+// in `calls` as [method, payload]. ephemeral / v2: the flags of the message
+// the tap came from; dm: a tap in a DM (no guild, no member).
+function tap(customId, who, { kind = "button", values = [], fields = {}, ephemeral = false, v2 = false, guild = null, member, dm = false } = {}) {
+  const { MessageFlags, MessageFlagsBitField } = require("discord.js");
+  const calls = [];
+  const field = (n) => {
+    if (!Object.hasOwn(fields, n)) throw new Error(`no field ${n}`);
+    return fields[n];
+  };
+  const i = {
+    customId,
+    values,
+    calls,
+    deferred: false,
+    replied: false,
+    user: { id: who.id, username: who.name, globalName: null },
+    member: member !== undefined ? member : dm ? null : { displayName: who.name, roles: { cache: new Map((who.roles || []).map((r) => [r, { id: r }])) } },
+    memberPermissions: { has: () => !!who.manageGuild },
+    guild,
+    guildId: dm ? null : "g1",
+    message: { flags: new MessageFlagsBitField((ephemeral ? MessageFlags.Ephemeral : 0) | (v2 ? MessageFlags.IsComponentsV2 : 0)) },
+    fields: { getTextInputValue: field, getStringSelectValues: field },
+    isChatInputCommand: () => false,
+    isAutocomplete: () => false,
+    isRepliable: () => true,
+    isButton: () => kind === "button",
+    isStringSelectMenu: () => kind === "string",
+    isUserSelectMenu: () => false,
+    isModalSubmit: () => kind === "modal",
+    deferUpdate: async () => { i.deferred = true; calls.push(["deferUpdate"]); },
+    deferReply: async (o) => { i.deferred = true; calls.push(["deferReply", o]); },
+    reply: async (p) => { i.replied = true; calls.push(["reply", p]); },
+    update: async (p) => { i.replied = true; calls.push(["update", p]); },
+    editReply: async (p) => calls.push(["editReply", p]),
+    followUp: async (p) => calls.push(["followUp", p]),
+    showModal: async (m) => calls.push(["showModal", m]),
+  };
+  return i;
+}
+
+module.exports.tap = tap;
