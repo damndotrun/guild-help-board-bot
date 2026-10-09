@@ -10,10 +10,15 @@ const store = require("./store");
 
 let chain = Promise.resolve();
 function enqueue(ctx, fn) {
-  const job = chain.then(fn).catch((err) => ctx.log.error("channel write failed:", err));
+  const job = chain.then(() => fn()).catch((err) => ctx.log.error("channel write failed:", err));
   chain = job;
   return job;
 }
+
+// Log-once flags: a persistent condition is reported when it starts, not on
+// every 30-second tick (reset when it clears).
+let hiddenLogged = false;
+let tailSkipLogged = false;
 
 // The last payload sent per message id: an unchanged board is never re-sent.
 const lastSent = new Map();
@@ -35,6 +40,8 @@ function renderBlock(data, block, now, look, hasRole) {
 // Pure: is the bottom of the channel exactly our blocks (+ the live ping)?
 // `recent` is newest first ({ id, type, authorId }). The "X started a thread"
 // system lines the bot itself leaves are `junk` — deleted, not a reason to repost.
+// (Private threads normally post no such line in the parent channel, so this
+// branch is a guard; Task 13's live measurement shows whether it ever fires.)
 function tailCheck(recent, blockIds, pingId, botId) {
   const junk = recent.filter((m) => m.type === MessageType.ThreadCreated && m.authorId === botId).map((m) => m.id);
   const rest = recent.filter((m) => !junk.includes(m.id));
@@ -50,9 +57,19 @@ const hasRoleIn = (guild) => (id) => !guild || !guild.roles || guild.roles.cache
 // with a block gone, or when something got between / under them.
 async function repost(ctx, channel, data, blocks, now) {
   for (const id of Object.values(data.channel.messageIds)) {
-    await channel.messages.delete(id).catch(() => {});
+    // Only "already gone" is expected; anything else is worth a log line.
+    await channel.messages.delete(id).catch((err) => {
+      if (err.code !== D.UNKNOWN_MESSAGE) ctx.log.warn(`could not delete old block ${id}: ${err.message}`);
+    });
     lastSent.delete(id);
   }
+  // The old ids are gone; from here each new id is saved the moment its send
+  // succeeds, so a send failing half-way never leaves a block no store knows
+  // (an orphan panel would be a second live Start button): the next sync sees
+  // a missing id and reposts, deleting the ones already sent.
+  const cleared = store.load(ctx);
+  cleared.channel.messageIds = {};
+  store.save(ctx, cleared);
   const guild = await D.getGuild(ctx, data.config);
   const look = D.lookFor(ctx, guild);
   const ids = {};
@@ -67,10 +84,10 @@ async function repost(ctx, channel, data, blocks, now) {
     const msg = await channel.send({ ...payload, allowedMentions: { parse: [] } });
     ids[block.index] = msg.id;
     lastSent.set(msg.id, hashOf(payload));
+    const fresh = store.load(ctx); // no await between this load and the save
+    fresh.channel.messageIds[block.index] = msg.id;
+    store.save(ctx, fresh);
   }
-  const fresh = store.load(ctx);
-  fresh.channel.messageIds = ids;
-  store.save(ctx, fresh);
   return ids;
 }
 
@@ -85,9 +102,11 @@ function sync(ctx, { checkTail = false } = {}) {
     if (!data.config) return "unconfigured";
     const channel = await D.getChannel(ctx, data.config.channelId);
     if (!channel || D.isObfuscated(channel)) {
-      ctx.log.error("I can't see the looking-for-game channel — not posting.");
+      if (!hiddenLogged) ctx.log.error("I can't see the looking-for-game channel — not posting.");
+      hiddenLogged = true;
       return "hidden";
     }
+    hiddenLogged = false;
     const blocks = activeBlocks(data.config);
     const ids = blocks.map((b) => data.channel.messageIds[b.index]);
     if (ids.some((id) => !id) || Object.keys(data.channel.messageIds).length !== blocks.length) {
@@ -101,10 +120,21 @@ function sync(ctx, { checkTail = false } = {}) {
         const fetched = await channel.messages.fetch({ limit: blocks.length + 4 });
         recent = [...fetched.values()].map((m) => ({ id: m.id, type: m.type, authorId: m.author && m.author.id }));
       } catch (err) {
-        // e.g. no Read Message History: skip the position check, still edit the board
-        ctx.log.warn(`tail check skipped: ${err.message}`);
+        // Some failures throw: skip the position check, still edit the board
+        if (!tailSkipLogged) ctx.log.warn(`tail check skipped: ${err.message}`);
+        tailSkipLogged = true;
+      }
+      // Without Read Message History Discord does NOT throw — it returns an
+      // empty list. A history that holds none of our blocks is just as
+      // unreadable: treating it as "something is in the way" would repost every
+      // tick. A block that is truly gone surfaces as 10008 on the board edit.
+      if (recent && !recent.some((m) => ids.includes(m.id))) {
+        if (!tailSkipLogged) ctx.log.warn("tail check skipped: the channel history is empty or holds none of our blocks (Read Message History?)");
+        tailSkipLogged = true;
+        recent = null;
       }
       if (recent) {
+        tailSkipLogged = false;
         const botId = ctx.client && ctx.client.user ? ctx.client.user.id : "bot";
         const { ok, junk } = tailCheck(recent, ids, data.channel.pingMessageId, botId);
         for (const id of junk) await channel.messages.delete(id).catch(() => {});
@@ -191,6 +221,8 @@ function expirePing(ctx) {
 // Tests only: forget the sent-payload cache and start a fresh chain.
 function _reset() {
   lastSent.clear();
+  hiddenLogged = false;
+  tailSkipLogged = false;
   chain = Promise.resolve();
 }
 

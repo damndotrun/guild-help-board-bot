@@ -148,3 +148,61 @@ test("repost: a board that cannot be rendered is posted as the empty board — i
     R.renderBoard = real;
   }
 });
+
+test("sync with checkTail: an EMPTY history (no Read Message History — Discord does not throw) is not a reason to repost, and is logged once", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  fake.channels.get("ch1").messages.fetch = async () => new Map();
+  const d = store.load(ctx);
+  d.listings.push(listing("L1", "u1"));
+  store.save(ctx, d);
+  fake.ops.length = 0;
+  ctx.warnings = [];
+  const warn = ctx.log.warn;
+  ctx.log.warn = (...a) => { ctx.warnings.push(a.join(" ")); return warn && warn(...a); };
+  assert.equal(await C.sync(ctx, { checkTail: true }), "edited");
+  assert.equal(await C.sync(ctx, { checkTail: true }), "unchanged");
+  assert.equal(await C.sync(ctx, { checkTail: true }), "unchanged");
+  assert.deepEqual(fake.ops.map((o) => o.op), ["edit"]); // no delete, no send
+  assert.equal(ctx.warnings.filter((w) => /tail check skipped/.test(w)).length, 1);
+});
+
+test("repost: a send failing half-way leaves no orphan — the ids sent so far are stored and deleted by the next sync", async () => {
+  const { fake, ctx } = setup();
+  const ch = fake.channels.get("ch1");
+  const realSend = ch.send;
+  let calls = 0;
+  ch.send = async (payload) => {
+    if (++calls === 2) throw new Error("boom");
+    return realSend(payload);
+  };
+  await C.sync(ctx); // 1st block sent, 2nd throws (logged by the chain)
+  const partial = store.load(ctx).channel.messageIds;
+  assert.deepEqual(Object.keys(partial), ["0"]);
+  assert.equal(fake.messagesIn("ch1").length, 1);
+  assert.equal(await C.sync(ctx), "reposted");
+  assert.equal(fake.messagesIn("ch1").length, 3); // no orphan of the first attempt
+  assert.ok(!fake.messagesIn("ch1").some((m) => m.id === partial[0]));
+  assert.equal(Object.keys(store.load(ctx).channel.messageIds).length, 3);
+});
+
+test("sync: a hidden channel is logged once, not on every tick; seeing it again re-arms the log", async () => {
+  const { fake, ctx } = setup();
+  fake.channels.get("ch1").flags = 1 << 17;
+  await C.sync(ctx);
+  await C.sync(ctx);
+  assert.equal(ctx.errors.filter((e) => /can't see the looking-for-game channel/.test(e)).length, 1);
+  fake.channels.get("ch1").flags = 0;
+  assert.equal(await C.sync(ctx), "reposted");
+  fake.channels.get("ch1").flags = 1 << 17;
+  await C.sync(ctx);
+  assert.equal(ctx.errors.filter((e) => /can't see the looking-for-game channel/.test(e)).length, 2);
+});
+
+test("enqueue: the job never receives the previous job's result", async () => {
+  const { ctx } = setup();
+  await C.enqueue(ctx, async () => "first");
+  let seen = "unset";
+  await C.enqueue(ctx, async (...args) => { seen = args; });
+  assert.deepEqual(seen, []);
+});
