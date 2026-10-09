@@ -44,7 +44,7 @@ function emptyData() {
   return {
     version: 1,
     config: null,
-    channel: { mainMessageId: null, pingMessageId: null, pingUntil: null },
+    channel: { mainMessageId: null, staleIds: [], pingMessageId: null, pingUntil: null },
     listings: [],
     dmCards: {},
     notices: {},
@@ -68,6 +68,9 @@ function shape(raw) {
   // deletes those messages and drops the field (channel.repost).
   if (typeof d.channel.mainMessageId !== "string" || !d.channel.mainMessageId) d.channel.mainMessageId = null;
   if (!isObj(d.channel.messageIds) || Object.keys(d.channel.messageIds).length === 0) delete d.channel.messageIds;
+  // Our old messages whose delete failed (not 10008): retried by every sync
+  // until gone, so an old Start button is never left untracked.
+  d.channel.staleIds = Array.isArray(d.channel.staleIds) ? d.channel.staleIds.filter((id) => typeof id === "string" && id) : [];
   d.listings = Array.isArray(d.listings) ? d.listings.filter(isObj).map(shapeListing) : [];
   for (const key of ["dmCards", "notices", "prefs", "favorites"]) if (!isObj(d[key])) d[key] = {};
   return d;

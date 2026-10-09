@@ -25,20 +25,55 @@ const ids = (payload) => { const out = []; walk(payload, (c) => { if (c.custom_i
 
 test("tailCheck: our message at the bottom (+ the live ping) passes; anything under it does not", () => {
   const m = (id, type = 0, authorId = "bot") => ({ id, type, authorId });
-  assert.deepEqual(C.tailCheck([m("b"), m("old")], "b", null, "bot"), { ok: true, junk: [] });
+  assert.deepEqual(C.tailCheck([m("b"), m("old", 0, "u1")], "b", null, "bot"), { ok: true, junk: [] });
   assert.deepEqual(C.tailCheck([m("p"), m("b")], "b", "p", "bot"), { ok: true, junk: [] });
   assert.equal(C.tailCheck([m("b")], "b", "gone", "bot").ok, true); // ping already deleted
   assert.equal(C.tailCheck([m("x", 0, "u1"), m("b")], "b", null, "bot").ok, false);
   assert.equal(C.tailCheck([m("x", 0, "u1"), m("p"), m("b")], "b", "p", "bot").ok, false); // under the ping too
-  assert.equal(C.tailCheck([m("old")], "b", null, "bot").ok, false); // buried out of the window
+  assert.equal(C.tailCheck([m("old", 0, "u1")], "b", null, "bot").ok, false); // buried out of the window
   assert.deepEqual(C.tailCheck([m("t", MessageType.ThreadCreated), m("b")], "b", null, "bot"), { ok: true, junk: ["t"] });
   assert.deepEqual(C.tailCheck([m("p"), m("t", MessageType.ThreadCreated), m("b")], "b", "p", "bot"), { ok: true, junk: ["t"] });
   assert.equal(C.tailCheck([m("t", MessageType.ThreadCreated, "u1"), m("b")], "b", null, "bot").ok, false);
 });
 
+test("tailCheck: a plain bot message that is neither ours nor the ping is an orphan — junk, wherever it sits; a stranger's is not", () => {
+  const m = (id, type = 0, authorId = "bot") => ({ id, type, authorId });
+  assert.deepEqual(C.tailCheck([m("b"), m("orphan"), m("u", 0, "u1")], "b", null, "bot"), { ok: true, junk: ["orphan"] }); // above ours: a crash before the save
+  assert.deepEqual(C.tailCheck([m("orphan"), m("p"), m("b")], "b", "p", "bot"), { ok: true, junk: ["orphan"] }); // under the ping
+  assert.deepEqual(C.tailCheck([m("p"), m("b")], "b", "p", "bot").junk, []); // ours and the ping are never junk
+  assert.deepEqual(C.tailCheck([m("x", 0, "u1"), m("b")], "b", null, "bot"), { ok: false, junk: [] });
+  assert.deepEqual(C.tailCheck([m("r", MessageType.Reply), m("b")], "b", null, "bot"), { ok: false, junk: [] }); // only plain (Default) bot messages
+});
+
+test("sync with checkTail: an orphan of ours (crash between send and save) is deleted, no repost", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const id = mainId(ctx);
+  const list = fake.messagesIn("ch1");
+  list.unshift({ id: "orphan-above", payload: {} }); // the bot's own, older
+  list.push({ id: "orphan-below", payload: {} }); // the bot's own, newer
+  fake.ops.length = 0;
+  assert.equal(await C.sync(ctx, { checkTail: true }), "unchanged");
+  assert.deepEqual(fake.ops.map((o) => [o.op, o.messageId]).sort(), [["delete", "orphan-above"], ["delete", "orphan-below"]]);
+  assert.deepEqual(fake.messagesIn("ch1").map((m) => m.id), [id]);
+});
+
 test("activeBlocks: a banner without an image is skipped, indexes stay the layout's", () => {
   const blocks = C.activeBlocks({ layout: [{ type: "banner" }, { type: "panel" }, { type: "board" }, { type: "nope" }] });
   assert.deepEqual(blocks.map((b) => [b.type, b.index]), [["panel", 1], ["board", 2]]);
+});
+
+test("activeBlocks: a duplicate block type is dropped — the first (renderable) one wins; the stack stays valid", () => {
+  const layout = [{ type: "banner" }, { type: "panel" }, { type: "board" }, { type: "panel" }, { type: "banner", imageUrl: "https://example.com/2.png" }, { type: "board" }];
+  const blocks = C.activeBlocks({ layout });
+  assert.deepEqual(blocks.map((b) => [b.type, b.index]), [["panel", 1], ["board", 2], ["banner", 4]]);
+  const d = dataWith((x) => { x.config.layout = layout; });
+  const stack = R.renderStack(d, C.activeBlocks(d.config), T0);
+  assert.deepEqual(messageErrors(stack, { prefixes: R.PREFIXES }), []);
+  assert.equal(ids(stack).filter((id) => id === "lfg:start").length, 1);
+  // renderStack itself also keeps one per type, even when handed duplicates
+  const raw = R.renderStack(d, layout.map((b, index) => ({ ...b, index })).filter((b) => b.type !== "banner"), T0);
+  assert.deepEqual(messageErrors(raw, { prefixes: R.PREFIXES }), []);
 });
 
 test("sync: the first run posts exactly ONE message — banner · panel · board stacked — and stores its id; an unchanged one is not re-sent", async () => {
@@ -96,6 +131,116 @@ test("picker tag: a repost (new message) gets a fresh tag; a failed resetPanel e
   store.save(ctx, d);
   assert.equal(await C.sync(ctx), "edited");
   assert.equal(pickerId(fake.ops.filter((o) => o.op === "edit").pop().payload), second);
+});
+
+test("a custom emoji the guild no longer has is dropped from its picker option (the option stays); a known one is kept; no cache = present", async () => {
+  const GONE = "<:sup:111111111111111111>";
+  const HERE = "<:dps:222222222222222222>";
+  const { fake, ctx } = setup((x) => {
+    x.config.categories[0].buttons[0].emoji = GONE;
+    x.config.categories[0].buttons[1].emoji = HERE;
+  });
+  fake.guild.emojis = { cache: new Map([["222222222222222222", { id: "222222222222222222" }]]) };
+  await C.sync(ctx);
+  const options = sends(fake)[0].payload.components[1].components[1].components[0].options;
+  const byRole = Object.fromEntries(options.map((o) => [o.value, o]));
+  assert.equal(byRole["r-sup"].emoji, undefined, "the gone emoji is dropped");
+  assert.equal(byRole["r-sup"].label, "BASIC · SUP", "the option itself stays");
+  assert.equal(byRole["r-dps"].emoji.id, "222222222222222222");
+  assert.equal(byRole["r-radar"].emoji.name, "🧬"); // unicode emoji: never checked
+  // the pure renderer: without a hasEmoji check (unknown cache) every emoji counts as present
+  const d = store.load(ctx);
+  const plain = R.renderPanel(d.config).components[0].components[1].components[0].options;
+  assert.equal(plain.find((o) => o.value === "r-sup").emoji.id, "111111111111111111");
+  // unparsable emoji text never yields `emoji: null`
+  d.config.categories[0].buttons[0].emoji = "<a:x:1>";
+  const odd = R.renderPanel(d.config).components[0].components[1].components[0].options.find((o) => o.value === "r-sup");
+  assert.ok(!("emoji" in odd) || (odd.emoji && odd.emoji.name), JSON.stringify(odd));
+});
+
+test("sync: an edit Discord refuses (not 10008) is logged ONCE, not thrown every tick; a later good edit re-arms the log", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const ch = fake.channels.get("ch1");
+  const realEdit = ch.messages.edit;
+  ch.messages.edit = async () => { throw Object.assign(new Error("Invalid Form Body"), { code: 50035 }); };
+  const addListing = (id) => { const d = store.load(ctx); d.listings.push(listing(id, `u-${id}`)); store.save(ctx, d); };
+  addListing("L1");
+  assert.equal(await C.sync(ctx), "failed");
+  assert.equal(await C.sync(ctx, { checkTail: true }), "failed"); // retried (the hash was not stored), no repost
+  const editErrors = () => ctx.errors.filter((e) => /could not edit the channel message/.test(e)).length;
+  assert.equal(editErrors(), 1);
+  assert.ok(!ctx.errors.some((e) => /channel write failed/.test(e)), "no stack trace through the chain");
+  ch.messages.edit = realEdit;
+  assert.equal(await C.sync(ctx), "edited");
+  ch.messages.edit = async () => { throw Object.assign(new Error("Invalid Form Body"), { code: 50035 }); };
+  addListing("L2");
+  assert.equal(await C.sync(ctx), "failed");
+  assert.equal(editErrors(), 2);
+});
+
+test("repost: an old message whose delete fails (not 10008) stays tracked in staleIds and is retried until gone", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const old = mainId(ctx);
+  const ch = fake.channels.get("ch1");
+  const realDelete = ch.messages.delete;
+  ch.messages.delete = async (id) => { if (id === old) throw Object.assign(new Error("Service Unavailable"), { code: 0 }); return realDelete(id); };
+  fake.messagesIn("ch1").push({ id: "x1", payload: {}, authorId: "u1" });
+  assert.equal(await C.sync(ctx, { checkTail: true }), "reposted");
+  const fresh = mainId(ctx);
+  assert.notEqual(fresh, old);
+  assert.deepEqual(store.load(ctx).channel.staleIds, [old], "never untracked");
+  assert.equal(await C.sync(ctx), "unchanged"); // still failing: kept, no repost loop
+  assert.deepEqual(store.load(ctx).channel.staleIds, [old]);
+  assert.equal(ctx.errors.length, 0);
+  ch.messages.delete = realDelete;
+  assert.equal(await C.sync(ctx), "unchanged");
+  assert.deepEqual(store.load(ctx).channel.staleIds, []);
+  assert.ok(!fake.messagesIn("ch1").some((m) => m.id === old));
+  assert.equal(mainId(ctx), fresh);
+});
+
+test("empty layout: a failed delete keeps the id (retried next tick); 10008 counts as gone", async () => {
+  const { fake, ctx } = setup();
+  await C.sync(ctx);
+  const old = mainId(ctx);
+  const d = store.load(ctx);
+  d.config.layout = [];
+  d.channel.messageIds = { 0: "legacy-gone" }; // not in the channel: 10008
+  store.save(ctx, d);
+  const ch = fake.channels.get("ch1");
+  const realDelete = ch.messages.delete;
+  ch.messages.delete = async (id) => { if (id === old) throw new Error("Missing Access"); return realDelete(id); };
+  assert.equal(await C.sync(ctx), "empty");
+  let c = store.load(ctx).channel;
+  assert.deepEqual([c.mainMessageId, c.messageIds, c.staleIds], [null, undefined, [old]]);
+  ch.messages.delete = realDelete;
+  assert.equal(await C.sync(ctx), "empty");
+  c = store.load(ctx).channel;
+  assert.deepEqual(c.staleIds, []);
+  assert.equal(fake.messagesIn("ch1").length, 0);
+  assert.equal(await C.sync(ctx), "empty");
+});
+
+test("does not fit one message: logged once while it lasts (repost and edit path), re-armed once it fits again", async () => {
+  const real = R.renderStack;
+  R.renderStack = () => null;
+  try {
+    const { ctx } = setup();
+    await C.sync(ctx); // repost → fallback
+    await C.sync(ctx); // edit path → invalid
+    await C.sync(ctx, { checkTail: true });
+    const fitErrors = () => ctx.errors.filter((e) => /do not fit one message/.test(e)).length;
+    assert.equal(fitErrors(), 1);
+    R.renderStack = real;
+    assert.equal(await C.sync(ctx), "edited"); // the real board replaces the fallback
+    R.renderStack = () => null;
+    assert.equal(await C.sync(ctx), "invalid");
+    assert.equal(fitErrors(), 2);
+  } finally {
+    R.renderStack = real;
+  }
 });
 
 test("sync: a board change edits only the one message, in place", async () => {

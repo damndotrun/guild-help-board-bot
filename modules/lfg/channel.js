@@ -20,6 +20,9 @@ function enqueue(ctx, fn) {
 // every 30-second tick (reset when it clears).
 let hiddenLogged = false;
 let tailSkipLogged = false;
+let fitLogged = false; // "does not fit one message"
+let editFailLogged = false; // an edit refused with anything but 10008
+let deleteFailLogged = false; // an old message we could not delete
 
 // The last payload sent per message id: an unchanged message is never re-sent.
 // The role picker's tag (render.renderTag) is left out of the hash, so a tag
@@ -35,20 +38,28 @@ const stableTag = () => pickerTag || (pickerTag = R.renderTag());
 const hashOf = (payload) =>
   JSON.stringify(payload, (key, value) => (key === "custom_id" && typeof value === "string" && value.startsWith("lfg:roles:") ? "lfg:roles:" : value));
 
-// The blocks that render: a banner without an image is skipped (§3.1).
+// The blocks that render: a banner without an image is skipped (§3.1); one
+// block per type, the first (renderable) one wins — a second panel or board
+// would repeat its custom_ids.
 function activeBlocks(config) {
+  const seen = new Set();
   return (config.layout || [])
     .map((block, index) => ({ ...block, index }))
-    .filter((b) => (b.type === "banner" ? !!b.imageUrl : b.type === "panel" || b.type === "board"));
+    .filter((b) => (b.type === "banner" ? !!b.imageUrl : b.type === "panel" || b.type === "board"))
+    .filter((b) => !seen.has(b.type) && seen.add(b.type));
 }
 
 // Pure: is the bottom of the channel exactly our message (+ the live ping)?
-// `recent` is newest first ({ id, type, authorId }). The "X started a thread"
-// system lines the bot itself leaves are `junk` — deleted, not a reason to repost.
-// (Private threads normally post no such line in the parent channel, so this
-// branch is a guard; Task 13's live measurement shows whether it ever fires.)
+// `recent` is newest first ({ id, type, authorId }). `junk` = the bot's OWN
+// messages in the window that are deleted, not a reason to repost: the "X
+// started a thread" system lines (private threads normally post none in the
+// parent channel, so this branch is a guard; Task 13's live measurement shows
+// whether it ever fires) and orphans — a plain bot message that is neither
+// ours nor the ping, left by a crash between a send and its save.
 function tailCheck(recent, mainId, pingId, botId) {
-  const junk = recent.filter((m) => m.type === MessageType.ThreadCreated && m.authorId === botId).map((m) => m.id);
+  const isJunk = (m) =>
+    m.authorId === botId && (m.type === MessageType.ThreadCreated || (m.type === MessageType.Default && m.id !== mainId && m.id !== pingId));
+  const junk = recent.filter(isJunk).map((m) => m.id);
   const rest = recent.filter((m) => !junk.includes(m.id));
   let i = 0;
   if (pingId && rest[0] && rest[0].id === pingId) i = 1;
@@ -56,41 +67,68 @@ function tailCheck(recent, mainId, pingId, botId) {
 }
 
 const hasRoleIn = (guild) => (id) => !guild || !guild.roles || guild.roles.cache.has(id);
+// A custom emoji still in the guild? An unknown cache counts as present.
+const hasEmojiIn = (guild) => (id) => !guild || !guild.emojis || !guild.emojis.cache || guild.emojis.cache.has(id);
 
-// Every message id the store still points at: the one message, plus the old
-// per-block ids of a store from before the one-message build (migration).
-const knownIds = (channelData) => [channelData.mainMessageId, ...Object.values(channelData.messageIds || {})].filter(Boolean);
+// Every message id the store still points at: the one message, the old
+// per-block ids of a store from before the one-message build (migration), and
+// the old messages whose delete failed earlier (staleIds).
+const knownIds = (channelData) => [
+  ...new Set([channelData.mainMessageId, ...Object.values(channelData.messageIds || {}), ...(channelData.staleIds || [])].filter(Boolean)),
+];
+
+// Delete these of our messages; returns the ids still there (a failure other
+// than 10008 = already gone) — the caller keeps them in staleIds.
+async function deleteAll(ctx, channel, ids) {
+  const left = [];
+  for (const id of ids) {
+    try {
+      await channel.messages.delete(id);
+    } catch (err) {
+      if (err.code !== D.UNKNOWN_MESSAGE) {
+        left.push(id);
+        if (!deleteFailLogged) ctx.log.warn(`could not delete old message ${id} (kept, retried every sync): ${err.message}`);
+        deleteFailLogged = true;
+      }
+    }
+    if (!left.includes(id)) lastSent.delete(id);
+  }
+  if (left.length === 0) deleteFailLogged = false;
+  return left;
+}
+
+function fitFailed(ctx, what) {
+  if (!fitLogged) ctx.log.error(`the channel blocks do not fit one message — ${what}`);
+  fitLogged = true;
+}
 
 async function renderNow(ctx, data, blocks, now, tag) {
   const guild = await D.getGuild(ctx, data.config);
-  return R.renderStack(data, blocks, now, D.lookFor(ctx, guild), hasRoleIn(guild), tag);
+  return R.renderStack(data, blocks, now, D.lookFor(ctx, guild), hasRoleIn(guild), tag, hasEmojiIn(guild));
 }
 
 // Delete our message(s) and post the stack again (no ping) — after a restart
 // with the message gone, when something got under it, or to migrate a store
 // with the old per-block ids.
 async function repost(ctx, channel, data, blocks, now) {
-  for (const id of knownIds(data.channel)) {
-    // Only "already gone" is expected; anything else is worth a log line.
-    await channel.messages.delete(id).catch((err) => {
-      if (err.code !== D.UNKNOWN_MESSAGE) ctx.log.warn(`could not delete old message ${id}: ${err.message}`);
-    });
-    lastSent.delete(id);
-  }
-  // The old ids are gone; the new one is saved the moment its send succeeds.
-  // A failing send leaves no id → the next sync reposts.
+  const left = await deleteAll(ctx, channel, knownIds(data.channel));
+  // The old ids are gone — or kept in staleIds, never untracked (an old
+  // message is a second live Start button). The new id is saved the moment
+  // its send succeeds; a failing send leaves no id → the next sync reposts.
   const cleared = store.load(ctx);
   cleared.channel.mainMessageId = null;
   delete cleared.channel.messageIds;
+  cleared.channel.staleIds = left;
   store.save(ctx, cleared);
   const tag = R.renderTag(); // a new message: a new picker tag
   let payload = await renderNow(ctx, data, blocks, now, tag);
-  if (!payload) {
+  if (payload) fitLogged = false;
+  else {
     // Never skip the message: a missing id would repost every tick. The panel
     // and the empty board stand in; the next edit brings the real board once it fits.
-    ctx.log.error("the channel blocks do not fit one message — posting the panel and an empty board");
+    fitFailed(ctx, "posting the panel and an empty board");
     const guild = await D.getGuild(ctx, data.config);
-    payload = R.renderStackFallback(data.config, blocks, hasRoleIn(guild), tag);
+    payload = R.renderStackFallback(data.config, blocks, hasRoleIn(guild), tag, hasEmojiIn(guild));
   }
   const msg = await channel.send(payload);
   pickerTag = tag;
@@ -122,14 +160,13 @@ function sync(ctx, { checkTail = false } = {}) {
     if (blocks.length === 0) {
       // Nothing to show (an empty layout, or only a banner without an image):
       // an empty V2 message would be refused every tick — take ours down instead.
+      // A delete that fails (not 10008) keeps its id in staleIds → retried next tick.
       if (knownIds(data.channel).length === 0) return "empty";
-      for (const old of knownIds(data.channel)) {
-        await D.remove(ctx, data.config.channelId, old);
-        lastSent.delete(old);
-      }
+      const left = await deleteAll(ctx, channel, knownIds(data.channel));
       const fresh = store.load(ctx); // no await between this load and the save
       fresh.channel.mainMessageId = null;
       delete fresh.channel.messageIds;
+      fresh.channel.staleIds = left;
       store.save(ctx, fresh);
       return "empty";
     }
@@ -170,20 +207,34 @@ function sync(ctx, { checkTail = false } = {}) {
         }
       }
     }
+    if (data.channel.staleIds.length) {
+      const left = await deleteAll(ctx, channel, data.channel.staleIds);
+      const fresh = store.load(ctx); // no await between this load and the save
+      fresh.channel.staleIds = left;
+      store.save(ctx, fresh);
+    }
     const payload = await renderNow(ctx, data, blocks, now, stableTag()); // a board edit keeps the picker's custom_id
     if (!payload) {
-      ctx.log.error("the channel blocks do not fit one message — keeping the last one");
+      fitFailed(ctx, "keeping the last one");
       return "invalid";
     }
+    fitLogged = false;
     if (lastSent.get(id) === hashOf(payload)) return "unchanged";
     try {
       await channel.messages.edit(id, payload);
       lastSent.set(id, hashOf(payload));
+      editFailLogged = false;
       return "edited";
     } catch (err) {
-      if (err.code !== D.UNKNOWN_MESSAGE) throw err;
-      await repost(ctx, channel, store.load(ctx), blocks, now);
-      return "reposted";
+      if (err.code === D.UNKNOWN_MESSAGE) {
+        await repost(ctx, channel, store.load(ctx), blocks, now);
+        return "reposted";
+      }
+      // e.g. 50035: refused payload — logged once, retried every tick (the
+      // hash is not stored), re-armed by the next edit that goes through.
+      if (!editFailLogged) ctx.log.error(`could not edit the channel message ${id}: ${err.message}`);
+      editFailLogged = true;
+      return "failed";
     }
   });
 }
@@ -253,6 +304,9 @@ function expirePing(ctx) {
 function _reset() {
   lastSent.clear();
   pickerTag = null;
+  fitLogged = false;
+  editFailLogged = false;
+  deleteFailLogged = false;
   hiddenLogged = false;
   tailSkipLogged = false;
   chain = Promise.resolve();

@@ -107,14 +107,27 @@ tricky bits don't get re-broken.
       get only what the banner and the panel leave (`renderStack`); if not
       even the empty board fits, `repost` logs it and posts
       `renderStackFallback` — never no message, or every tick would repost.
-      A layout with no active block posts nothing (an empty V2 message is
-      refused) and takes ours down.
+      One block per type (`activeBlocks`, first renderable wins). A layout
+      with no active block posts nothing (an empty V2 message is refused)
+      and takes ours down.
       Every send / edit carries `{ parse: [] }`; the 60-second ping stays a
       separate message under it. The role picker's tag is STABLE across
       board-driven edits (`channel.pickerTag`, in memory — after a restart the
       first render mints one), so a board change does not touch an open pick;
       a fresh tag only from `resetPanel` (right after a pick — invariant 17)
       and on a repost (a new message). The sent-payload hash ignores the tag.
+      Accepted race: a tick `sync` queued just before a post-pick
+      `resetPanel` can edit once with the old tag (a sub-second window).
+      Because the panel rides in the board's message, a payload Discord
+      refuses would freeze the board: a picker option's custom emoji that
+      the guild no longer has is dropped (the option stays; unknown emoji
+      cache = present), and an edit refused with anything but 10008 is
+      logged ONCE (re-armed by the next good edit), not thrown every tick.
+      "Does not fit" is logged once the same way. An old message of ours is
+      never left untracked: a delete that fails (not 10008) keeps its id in
+      `channel.staleIds`, retried by every sync. The tail check also deletes
+      orphans — a plain bot-authored message in the window that is neither
+      ours nor the ping (a crash between a send and its save).
 
 ## 2026-10-09 — `/config roles` select no longer freezes after a refusal
 

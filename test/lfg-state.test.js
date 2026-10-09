@@ -40,12 +40,14 @@ test("shape: garbage becomes an empty store; unknown fields and listings survive
 });
 
 test("shape: the channel holds one message id; the old per-block map survives only while non-empty (migration)", () => {
-  assert.deepEqual(S.emptyData().channel, { mainMessageId: null, pingMessageId: null, pingUntil: null });
-  assert.deepEqual(S.shape({ channel: { mainMessageId: 5, messageIds: {} } }).channel, { mainMessageId: null, pingMessageId: null, pingUntil: null });
-  assert.deepEqual(S.shape({ channel: { messageIds: "bad", pingMessageId: "p" } }).channel, { mainMessageId: null, pingMessageId: "p", pingUntil: null });
+  const empty = { mainMessageId: null, staleIds: [], pingMessageId: null, pingUntil: null };
+  assert.deepEqual(S.emptyData().channel, empty);
+  assert.deepEqual(S.shape({ channel: { mainMessageId: 5, messageIds: {} } }).channel, empty);
+  assert.deepEqual(S.shape({ channel: { messageIds: "bad", pingMessageId: "p", staleIds: "x" } }).channel, { ...empty, pingMessageId: "p" });
   const old = S.shape({ channel: { messageIds: { 0: "a", 2: "b" }, pingMessageId: null, pingUntil: null } }).channel;
-  assert.deepEqual(old, { mainMessageId: null, messageIds: { 0: "a", 2: "b" }, pingMessageId: null, pingUntil: null });
+  assert.deepEqual(old, { ...empty, messageIds: { 0: "a", 2: "b" } });
   assert.equal(S.shape({ channel: { mainMessageId: "m1" } }).channel.mainMessageId, "m1");
+  assert.deepEqual(S.shape({ channel: { staleIds: ["s1", 3, "", null, "s2"] } }).channel.staleIds, ["s1", "s2"]);
 });
 
 // ── input──────────────────────────────────────────────────────────────────

@@ -89,19 +89,29 @@ function fitRows(total, build) {
 const bannerParts = (block) => [{ type: ComponentType.MediaGallery, items: [{ media: { url: block.imageUrl } }] }];
 const renderBanner = (block) => v2(bannerParts(block));
 
+// A select option's emoji, or nothing: a custom emoji the guild no longer has
+// (hasEmoji false) makes Discord refuse the WHOLE message (50035 Invalid
+// emoji) — and the panel rides in the board's message — so only the emoji is
+// dropped, the option stays. Unparsable text is dropped too.
+function optionEmoji(raw, hasEmoji = () => true) {
+  const e = raw ? parseEmoji(raw) : null;
+  if (!e || !e.name || (e.id && !hasEmoji(e.id))) return {};
+  return { emoji: e };
+}
+
 // The static start panel; the role picker lists the subscribable roles that
 // still exist (hasRole: a deleted role drops out, §8.1).
-function panelParts(config, hasRole = () => true, tag = renderTag()) {
+function panelParts(config, hasRole = () => true, tag = renderTag(), hasEmoji = () => true) {
   const options = S.subscribable(config)
     .filter((s) => hasRole(s.roleId))
-    .map((s) => ({ label: s.label, value: s.roleId, ...(s.emoji ? { emoji: parseEmoji(s.emoji) } : {}) }));
+    .map((s) => ({ label: s.label, value: s.roleId, ...optionEmoji(s.emoji, hasEmoji) }));
   const components = [section([`### ${textOf(config, "panelTitle")}`, `-# ${textOf(config, "panelSub")}`], btn("lfg:start", textOf(config, "startButton")))];
   if (options.length > 0) {
     components.push(row({ type: ComponentType.StringSelect, custom_id: `lfg:roles:${tag}`, placeholder: textOf(config, "rolesPlaceholder"), min_values: 1, max_values: options.length, options }));
   }
   return [box(COLORS.grey, components)];
 }
-const renderPanel = (config, hasRole, tag) => v2(panelParts(config, hasRole, tag));
+const renderPanel = (config, hasRole, tag, hasEmoji) => v2(panelParts(config, hasRole, tag, hasEmoji));
 
 function joinRow(config, listing, look) {
   const { label, emoji } = S.labelOf(config, listing);
@@ -184,21 +194,21 @@ function renderBoard(data, now, look = PLAIN_LOOK, wrap = (parts) => v2(parts)) 
 // messages each showed "(edited)"): the active blocks' components in layout
 // order. Null when not even the empty board fits beside the other blocks —
 // the caller keeps the last message, or posts renderStackFallback.
-function renderStack(data, blocks, now, look = PLAIN_LOOK, hasRole = () => true, tag = renderTag()) {
+function renderStack(data, blocks, now, look = PLAIN_LOOK, hasRole = () => true, tag = renderTag(), hasEmoji = () => true) {
   const config = data.config;
-  const pieces = blocks.map((b) => (b.type === "banner" ? bannerParts(b) : b.type === "panel" ? panelParts(config, hasRole, tag) : null));
-  const wrap = (boardParts) => {
-    let placed = false; // a second board block in the layout renders nothing
-    return v2(pieces.flatMap((p) => p || (placed ? [] : ((placed = true), boardParts))), { allowedMentions: { parse: [] } });
-  };
-  if (!blocks.some((b) => b.type === "board")) return fitRows(0, () => wrap([]));
+  // One block per type, the first wins (channel.activeBlocks does the same):
+  // a second panel or board would repeat its custom_ids.
+  const once = blocks.filter((b, i) => blocks.findIndex((x) => x.type === b.type) === i);
+  const pieces = once.map((b) => (b.type === "banner" ? bannerParts(b) : b.type === "panel" ? panelParts(config, hasRole, tag, hasEmoji) : null));
+  const wrap = (boardParts) => v2(pieces.flatMap((p) => p || boardParts), { allowedMentions: { parse: [] } });
+  if (!once.some((b) => b.type === "board")) return fitRows(0, () => wrap([]));
   return renderBoard(data, now, look, wrap);
 }
 
 // What repost sends when renderStack gives null: the panel (when the layout
 // has one) and the empty board — never no message, or every tick would repost.
-function renderStackFallback(config, blocks, hasRole = () => true, tag = renderTag()) {
-  const panel = blocks.some((b) => b.type === "panel") ? panelParts(config, hasRole, tag) : [];
+function renderStackFallback(config, blocks, hasRole = () => true, tag = renderTag(), hasEmoji = () => true) {
+  const panel = blocks.some((b) => b.type === "panel") ? panelParts(config, hasRole, tag, hasEmoji) : [];
   return v2([...panel, ...emptyBoardParts(config)], { allowedMentions: { parse: [] } });
 }
 
