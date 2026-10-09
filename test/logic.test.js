@@ -1374,11 +1374,16 @@ test("rolesRemoveSelectOptions: no manager roles yields an empty array (caller m
   assert.deepEqual(bot.rolesRemoveSelectOptions(undefined, () => "x"), []);
 });
 
-test("rolesPanelComponents: wires roles:add / roles:notify RoleSelects and the roles:notifyclear button", () => {
-  const json = JSON.stringify(bot.rolesPanelComponents({ managerRoleIds: [], notifyRoleId: null }, () => undefined));
-  assert.match(json, /roles:add/);
-  assert.match(json, /roles:notify"/);
-  assert.match(json, /roles:notifyclear/);
+test("rolesPanelComponents: wires roles:add / roles:notify RoleSelects (per-render tag) and the roles:notifyclear button", () => {
+  const json = JSON.stringify(bot.rolesPanelComponents({ managerRoleIds: [], notifyRoleId: null }, () => undefined, "t1"));
+  assert.match(json, /"custom_id":"roles:add:t1"/);
+  assert.match(json, /"custom_id":"roles:notify:t1"/);
+  assert.match(json, /"custom_id":"roles:notifyclear"/);
+});
+
+test("rolesPanelComponents: two renders get different select custom_ids (the client must not see the same select twice)", () => {
+  const ids = () => JSON.stringify(bot.rolesPanelComponents({ managerRoleIds: [], notifyRoleId: null }, () => undefined)).match(/roles:add:[^"]+/)[0];
+  assert.notEqual(ids(), ids());
 });
 
 test("rolesPanelComponents: omits the roles:remove select when there are no manager roles (no 0-option select)", () => {

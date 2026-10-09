@@ -8,6 +8,17 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-10-09 — `/config roles` select no longer freezes after a refusal
+
+- Live bug: after a refused pick (e.g. a bot-managed role) the panel came back
+  with the very same select (same `custom_id`); the Discord client kept it in
+  its loading state for ~15 s and the next valid pick never reached the bot.
+  The panel's three selects now carry a per-render tag
+  (`roles:add|remove|notify:<tag>`, `rolesRenderTag()` in `help.js`), so every
+  re-render is a new select for the client. The dispatcher routes on the part
+  after `roles:`, so panels still open with the old bare ids keep working. The
+  `roles:notifyclear` button is unchanged (a button holds no picked value).
+
 ## 2026-10-08 — Review fixes (M0–M3 review)
 
 - **Data files:** an unreadable `data.json` (help `loadData`) or module file
