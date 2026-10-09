@@ -88,7 +88,11 @@ module.exports = { T0, MIN, config, dataWith, listing, request };
 //   failThreads: thread creation throws
 //   perms: the bot's permission set in every channel ({ has(bit) })
 //   roleFail: role ids whose add/remove throws
-function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleFail = [] } = {}) {
+//   noManageMessages: deleting a system line (RecipientAdd / RecipientRemove)
+//     throws 50013 Missing Permissions
+// A thread's members.add / remove posts the system line Discord posts
+// (type 1 RecipientAdd / 2 RecipientRemove, authored by the bot "bot").
+function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleFail = [], noManageMessages = false } = {}) {
   const ops = [];
   let next = 1;
   const nid = (p) => `${p}${next++}`;
@@ -122,6 +126,7 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
         const list = listOf(channelId);
         const i = list.findIndex((x) => x.id === id);
         if (i === -1) throw unknown();
+        if (noManageMessages && (list[i].type === 1 || list[i].type === 2)) throw Object.assign(new Error("Missing Permissions"), { code: 50013 });
         list.splice(i, 1);
         ops.push({ op: "delete", channelId, messageId: id });
       },
@@ -160,10 +165,17 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
     return textChannel(id, {
       parentId,
       members: {
-        add: async (userId) => ops.push({ op: "threadAdd", threadId: id, userId }),
-        remove: async (userId) => ops.push({ op: "threadRemove", threadId: id, userId }),
+        add: async (userId) => {
+          ops.push({ op: "threadAdd", threadId: id, userId });
+          listOf(id).push({ id: nid("sys"), type: 1, authorId: "bot", payload: { system: "add", userId } });
+        },
+        remove: async (userId) => {
+          ops.push({ op: "threadRemove", threadId: id, userId });
+          listOf(id).push({ id: nid("sys"), type: 2, authorId: "bot", payload: { system: "remove", userId } });
+        },
       },
       setLocked: async (locked) => ops.push({ op: "lock", threadId: id, locked }),
+      setArchived: async (archived) => ops.push({ op: "archive", threadId: id, archived }),
       delete: async () => {
         channels.delete(id);
         ops.push({ op: "threadDelete", threadId: id });
@@ -232,6 +244,7 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
     channels: { cache: channels, fetch: async () => channels },
   };
   const client = {
+    user: { id: "bot" },
     guilds: { cache: new Map([["g1", guild]]), fetch: async () => guild },
     channels: {
       fetch: async (id) => {
@@ -245,7 +258,10 @@ function fakeDiscord({ blockedDms = [], failThreads = false, perms = null, roleF
   return { client, ops, guild, channels, lists, textChannel, member, user, roles, messagesIn: (id) => listOf(id) };
 }
 
-// A ctx for module code: a temp DATA_DIR store, a quiet log and a settable clock.
+// A ctx for module code: a temp DATA_DIR store, a quiet log, a settable clock
+// and the timer seam (D.later → ctx.setTimer): jobs wait in `ctx.timers`
+// ({ ms, fn }) until a test runs them with `await ctx.runTimers()` (in order,
+// incl. the ones they schedule).
 function fakeCtx(fake, { now = T0 } = {}) {
   const os = require("node:os");
   const path = require("node:path");
@@ -261,6 +277,16 @@ function fakeCtx(fake, { now = T0 } = {}) {
     errors,
     clock: now,
     now: () => ctx.clock,
+    timers: [],
+    setTimer: (fn, ms) => { ctx.timers.push({ fn, ms }); return ctx.timers.length; },
+    runTimers: async () => {
+      let n = 0;
+      while (ctx.timers.length) {
+        await ctx.timers.shift().fn();
+        n += 1;
+      }
+      return n;
+    },
   };
   return ctx;
 }

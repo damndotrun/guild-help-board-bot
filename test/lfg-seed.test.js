@@ -73,4 +73,14 @@ test("checkPermissions: the missing ones are logged and kept for the owner's men
   assert.deepEqual(health.missing, ["ManageRoles"]);
   assert.equal(seed.health.missing, health.missing);
   assert.match(ctx.errors[0], /missing permissions in the board channel: ManageRoles/);
+  assert.deepEqual(health.optional, []);
+});
+
+test("checkPermissions: Manage Messages missing is SOFT — kept in health.optional, not in missing, no error", async () => {
+  const fake = fakeDiscord({ perms: { has: (b) => b !== PermissionFlagsBits.ManageMessages } });
+  const ctx = fakeCtx(fake);
+  store.save(ctx, dataWith());
+  const health = await seed.checkPermissions(ctx);
+  assert.deepEqual([health.missing, health.optional], [[], ["ManageMessages"]]);
+  assert.deepEqual(ctx.errors, []);
 });

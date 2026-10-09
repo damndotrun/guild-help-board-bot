@@ -86,6 +86,9 @@ function mainScreen(ctx, viewer, notice) {
     body.push(text("**Officer**"));
     body.push(row(button("menu:lfg:remove", "Remove a search")));
   }
+  if (atLeast(viewer.level, "owner") && health.optional && health.optional.length) {
+    body.push(text(`-# Optional, missing in the board channel: ${health.optional.join(", ")} — without Manage Messages the "added to the thread" lines stay.`));
+  }
   if (atLeast(viewer.level, "owner") && health.missing.length) {
     body.push(text(`⚠\uFE0F I'm missing permissions in the board channel: ${health.missing.join(", ")}`));
   }

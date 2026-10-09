@@ -67,6 +67,61 @@ test("openThread: a private, non-invitable thread named after the search, with t
   await assert.rejects(D.openThread(ctx, d.config, L), /not visible/);
 });
 
+test("C: openThread deletes the \"added X to the thread\" system line the searcher's add posted", async () => {
+  D._reset();
+  const fake = fakeDiscord();
+  const ctx = fakeCtx(fake);
+  const thread = await D.openThread(ctx, dataWith().config, listing("L1", "u1"));
+  const sys = fake.ops.find((o) => o.op === "delete" && o.channelId === thread.id);
+  assert.ok(sys, "the system line was deleted");
+  assert.deepEqual(fake.messagesIn(thread.id), []);
+  assert.deepEqual(ctx.timers, [], "found at once: no retry scheduled");
+});
+
+test("C: threadMember add / remove tidy the RecipientAdd / RecipientRemove line — only the bot's, not a member's message", async () => {
+  D._reset();
+  const fake = fakeDiscord();
+  const ctx = fakeCtx(fake);
+  const thread = await D.openThread(ctx, dataWith().config, listing("L1", "u1"));
+  fake.messagesIn(thread.id).push({ id: "chat1", type: 0, authorId: "u1", payload: {} }, { id: "foreign", type: 1, authorId: "u1", payload: {} });
+  assert.equal(await D.threadMember(ctx, thread.id, "u2", "add"), true);
+  assert.equal(await D.threadMember(ctx, thread.id, "u2", "remove"), true);
+  assert.deepEqual(fake.messagesIn(thread.id).map((m) => m.id), ["chat1", "foreign"]);
+});
+
+test("C: nothing found yet → one retry later (the timer); 50013 → the line stays, logged ONCE, nothing breaks", async () => {
+  D._reset();
+  const fake = fakeDiscord({ noManageMessages: true });
+  const ctx = fakeCtx(fake);
+  const warnings = [];
+  ctx.log.warn = (m) => warnings.push(String(m));
+  const thread = await D.openThread(ctx, dataWith().config, listing("L1", "u1"));
+  assert.equal(await D.threadMember(ctx, thread.id, "u2", "add"), true);
+  assert.equal(fake.messagesIn(thread.id).length, 2, "both system lines stay");
+  assert.equal(warnings.filter((w) => w === "Manage Messages needed in the board channel to tidy thread system lines").length, 1);
+  // a thread where the line shows up only a moment later
+  const late = fakeDiscord();
+  const lctx = fakeCtx(late);
+  const th = late.textChannel("th-x", { members: { add: async () => {} } });
+  assert.equal(await D.threadMember(lctx, "th-x", "u2", "add"), true);
+  assert.equal(lctx.timers.length, 1);
+  late.messagesIn("th-x").push({ id: "sys-late", type: 1, authorId: "bot", payload: {} });
+  await lctx.runTimers();
+  assert.deepEqual(late.messagesIn(th.id), []);
+  assert.deepEqual(lctx.timers, [], "the retry does not retry again");
+});
+
+test("missingOptional: Manage Messages is a SOFT permission — named apart, never in missingPermissions", () => {
+  const without = (bits) => ({ has: (b) => !bits.includes(b) });
+  const fake = fakeDiscord({ perms: without([PermissionFlagsBits.ManageMessages]) });
+  const ch = fake.channels.get("ch1");
+  assert.deepEqual(D.missingPermissions(fake.guild, ch), []);
+  assert.deepEqual(D.missingOptional(fake.guild, ch), ["ManageMessages"]);
+  const full = fakeDiscord();
+  assert.deepEqual(D.missingOptional(full.guild, full.channels.get("ch1")), []);
+  assert.deepEqual(D.missingOptional(fake.guild, null), []);
+});
+
 test("closeThread: the closing line, then the lock; send / edit / remove report failure instead of throwing", async () => {
   const fake = fakeDiscord();
   const ctx = fakeCtx(fake);

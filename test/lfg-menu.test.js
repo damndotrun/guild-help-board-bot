@@ -97,6 +97,15 @@ test("main: officers get Remove a search; owners see the missing permissions; no
   assert.match(textIn(owner), /missing permissions in the board channel: ManageRoles/);
   const [, member] = await run(menuTap("menu:lfg:main", MEMBER));
   assert.equal(/missing permissions/.test(textIn(member)), false);
+  // a SOFT one (Manage Messages): named on the owner's screen only, as optional
+  seed.health.missing = [];
+  seed.health.optional = ["ManageMessages"];
+  const [, soft] = await run(menuTap("menu:lfg:main", OWNER));
+  assert.match(textIn(soft), /Optional, missing in the board channel: ManageMessages/);
+  assert.doesNotMatch(textIn(soft), /I'm missing permissions/);
+  const [, memberSoft] = await run(menuTap("menu:lfg:main", MEMBER));
+  assert.doesNotMatch(textIn(memberSoft), /Optional/);
+  seed.health.optional = [];
   store.save(ctx, { ...store.load(ctx), config: null });
   const [, bare] = await run(menuTap("menu:lfg:main", OWNER));
   assert.match(textIn(bare), /No visible #looking-for-game channel/);
