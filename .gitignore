@@ -6,6 +6,8 @@
 /*.json
 !/package.json
 !/package-lock.json
+# The teammate finder's append-only journal (lfg-log.jsonl) — member ids too.
+/*.jsonl
 *.json.bak
 *.json.tmp
 *.json.bak.tmp
