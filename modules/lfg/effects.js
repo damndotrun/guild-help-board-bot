@@ -1,8 +1,15 @@
 // What happens on Discord after a saved change (M4 spec §3.3–§3.6, §5.4): the
 // events state.js collected (out.events) are played here, in order, against
-// the state as saved — thread lines, the welcome / confirm message, the
-// request panel, DM cards, the board. Called as an action's `effects` (after
-// the interaction is acknowledged) and by the 30-second tick.
+// the state as saved — the thread's ONE live message (the request panel:
+// intro, Requests, Removed, the reopen notice, Confirm with I'm here, Game
+// on!), the transient ping lines, DM cards, the board. Called as an action's
+// `effects` (after the interaction is acknowledged) and by the 30-second tick.
+//
+// Transient lines (live test round 2, item A): Discord notifies at send time,
+// so a ping line is deleted transientSec after it was sent. Its id is
+// recorded on the listing (listing.lines) until the delete succeeds (10008 =
+// done): an in-process timer deletes it, and the tick (sweepLines) takes what
+// a restart left behind.
 const S = require("./state");
 const R = require("./render");
 const D = require("./discord");
@@ -26,40 +33,98 @@ function closingLine(config, outcome, reason) {
 // The joiner's DM card can carry the news (else the thread pings them).
 const joinerHasDm = (data, listing, now) => D.dmReachable(data, listing.joinerId, now);
 
-async function onAccepted(ctx, data, L, look, now) {
-  // Not added (§8.1) → the welcome mentions the joiner, which also lets them
-  // into the private thread; so does a joiner the DM card cannot reach.
+const transientMs = (config) => Math.max(0, Number(S.times(config).transientSec) || 0) * 1000;
+
+// ── transient thread lines ─────────────────────────────────────────────────
+
+// Delete one recorded line; once it is gone (deleted or 10008) its record goes
+// too (re-load, patch by listing id, save). A failed delete keeps the record
+// for the next try (timer or tick).
+async function dropLine(ctx, listingId, threadId, messageId) {
+  if (!(await D.remove(ctx, threadId, messageId))) return false;
+  patch(ctx, (d) => {
+    const l = S.findListing(d, listingId);
+    if (l) l.lines = l.lines.filter((x) => x.id !== messageId);
+  });
+  return true;
+}
+
+// Delete the listing's recorded lines of these kinds now (a nag replacing the
+// last nag, a join notification replacing the last one, a reopen).
+async function dropLines(ctx, listingId, kinds) {
+  const L = S.findListing(store.load(ctx), listingId);
+  if (!L) return;
+  for (const line of L.lines.filter((x) => kinds.includes(x.kind))) await dropLine(ctx, L.id, L.threadId, line.id);
+}
+
+// Send a ping line into the thread, record it, and delete it transientSec later.
+async function sendTransient(ctx, L, kind, payload) {
+  const msg = await D.send(ctx, L.threadId, payload);
+  if (!msg) return null;
+  const ms = transientMs(store.load(ctx).config);
+  patch(ctx, (d) => {
+    const l = S.findListing(d, L.id);
+    if (l) l.lines.push({ id: msg.id, kind, until: D.nowOf(ctx) + ms });
+  });
+  D.later(ctx, ms, () => dropLine(ctx, L.id, L.threadId, msg.id));
+  return msg;
+}
+
+// The tick's backstop: lines whose time is up (a timer a restart lost, or a
+// delete that failed) are deleted now.
+async function sweepLines(ctx, now) {
+  const data = store.load(ctx);
+  for (const L of data.listings) {
+    for (const line of L.lines.filter((x) => now >= x.until)) {
+      try {
+        await dropLine(ctx, L.id, L.threadId, line.id);
+      } catch (err) {
+        ctx.log.error(`could not delete thread line ${line.id} of ${L.id}:`, err);
+      }
+    }
+  }
+}
+
+// ── the events ─────────────────────────────────────────────────────────────
+
+async function onAccepted(ctx, data, L, now) {
+  // No WAKEY message (live test round 2): the searcher just tapped Accept, the
+  // thread message turns into the Confirm box (the panel event). The joiner
+  // hears it on the DM card; one without a reachable card — or one the bot
+  // could not add (the mention lets them in) — gets ONE transient ping line.
   const added = await D.threadMember(ctx, L.threadId, L.joinerId, "add");
-  if (!added) ctx.log.warn(`could not add ${L.joinerId} to the thread of ${L.id} — the welcome mentions them`);
-  const msg = await D.send(ctx, L.threadId, R.buildWelcome(data, L, look, { pingJoiner: !added || !joinerHasDm(data, L, now) }));
-  if (msg) patch(ctx, (d) => { const l = S.findListing(d, L.id); if (l) l.welcomeMessageId = msg.id; });
+  if (!added) ctx.log.warn(`could not add ${L.joinerId} to the thread of ${L.id} — the thread pings them`);
+  if (added && joinerHasDm(data, L, now)) return;
+  const vars = { joiner: L.joinerId, poster: R.esc(L.posterName), when: R.when(L.startAt) };
+  const key = L.state === "fixed" ? "pickedPingTimed" : "pickedPing";
+  await sendTransient(ctx, L, "picked", R.threadLine(textOf(data.config, key, vars), [L.joinerId]));
 }
 
 async function onJoined(ctx, data, L, userId) {
   if (!L.threadId) return;
-  if (L.notifyMessageId) await D.remove(ctx, L.threadId, L.notifyMessageId);
+  await dropLines(ctx, L.id, ["notify"]); // normally already gone (transient)
   const r = S.activeRequest(L, userId);
   const content = textOf(data.config, "joinNotify", { poster: L.posterId, joiner: R.esc((r && r.userName) || "Someone"), n: S.pendingRequests(L).length });
-  const msg = await D.send(ctx, L.threadId, R.threadLine(content, [L.posterId]));
-  patch(ctx, (d) => { const l = S.findListing(d, L.id); if (l) l.notifyMessageId = msg ? msg.id : null; });
+  await sendTransient(ctx, L, "notify", R.threadLine(content, [L.posterId]));
 }
 
-// The welcome carries the thread's I'm here button: if its send failed
-// (welcomeMessageId null) nobody in the thread could ever confirm — send it
-// again and keep its id (re-load, patch by listing id, save); else redraw it.
-async function ensureWelcome(ctx, data, L, look, now) {
-  if (L.welcomeMessageId) return D.edit(ctx, L.threadId, L.welcomeMessageId, R.buildWelcome(data, L, look));
-  const msg = await D.send(ctx, L.threadId, R.buildWelcome(data, L, look, { pingJoiner: !joinerHasDm(data, L, now) }));
-  if (msg) patch(ctx, (d) => { const l = S.findListing(d, L.id); if (l && !l.welcomeMessageId) l.welcomeMessageId = msg.id; });
-  return !!msg;
-}
-
-async function onNag(ctx, data, L, userId, look, now) {
+async function onNag(ctx, data, L, userId, now) {
   if (userId === L.joinerId && joinerHasDm(data, L, now)) return; // the DM card carries it
-  if (!L.welcomeMessageId) await ensureWelcome(ctx, data, L, look, now);
-  if (L.checkIn.nagMessageId) await D.remove(ctx, L.threadId, L.checkIn.nagMessageId);
-  const msg = await D.send(ctx, L.threadId, R.threadLine(textOf(data.config, "nag", { user: userId }), [userId]));
-  patch(ctx, (d) => { const l = S.findListing(d, L.id); if (l && l.checkIn) l.checkIn.nagMessageId = msg ? msg.id : null; });
+  await dropLines(ctx, L.id, ["nag"]); // each nag replaces the previous one
+  await sendTransient(ctx, L, "nag", R.threadLine(textOf(data.config, "nag", { user: userId }), [userId]));
+}
+
+// The old separate welcome message (a store from before the one-message
+// thread): deleted once the panel message carries the Confirm box; the id is
+// kept until the delete succeeds (10008 = gone).
+async function dropLegacyWelcome(ctx, L) {
+  if (!L.welcomeMessageId) return;
+  const id = L.welcomeMessageId;
+  if (!(await D.remove(ctx, L.threadId, id))) return;
+  patch(ctx, (d) => {
+    const l = S.findListing(d, L.id);
+    if (l && l.welcomeMessageId === id) delete l.welcomeMessageId;
+  });
 }
 
 async function runEvents(ctx, events, { sync = true } = {}) {
@@ -88,8 +153,11 @@ async function runEvents(ctx, events, { sync = true } = {}) {
       const L = S.findListing(data, listingId);
       if (!L || !L.panelMessageId) continue;
       const payload = R.renderRequestPanel(data, L, now, look);
-      if (payload) await D.edit(ctx, L.threadId, L.panelMessageId, payload);
-      else ctx.log.error(`the request panel of ${listingId} does not fit a message`);
+      if (!payload) {
+        ctx.log.error(`the request panel of ${listingId} does not fit a message`);
+        continue;
+      }
+      if (await D.edit(ctx, L.threadId, L.panelMessageId, payload)) await dropLegacyWelcome(ctx, L);
     } catch (err) {
       ctx.log.error(`event panel for ${listingId} failed:`, err);
     }
@@ -112,54 +180,63 @@ async function runEvents(ctx, events, { sync = true } = {}) {
   if (sync) await C.sync(ctx);
 }
 
-const eventSubject = (ev) => ev.listingId || (ev.listing && ev.listing.id) || ev.userId || "?";
+const eventSubject = (ev) => ev.listingId || (ev.listing && ev.listing.id) || ev.threadId || ev.userId || "?";
+
+const threadLog = (ctx, now, listingId, threadId, event, extra = {}) =>
+  store.appendLog(ctx, [{ type: "thread", ts: now, listingId, threadId, event, ...extra }]);
 
 async function runEvent(ctx, data, ev, L, look, now, { panels, cards, refresh }) {
   switch (ev.type) {
     case "dropped": {
-      if (ev.outcome === "matched") break; // a played game's thread stays open
-      const line = closingLine(data.config, ev.outcome, ev.reason);
+      if (ev.outcome === "matched") break; // a played game's thread stays open (archived by its own timer)
       const gone = ev.listing;
-      // the request panel goes terminal first: no Accept, no Cancel search left to tap
+      if (!gone.threadId) break;
+      const line = closingLine(data.config, ev.outcome, ev.reason);
+      // its ping lines go first (a locked, archived thread keeps no "tap I'm here")
+      for (const x of gone.lines || []) await D.remove(ctx, gone.threadId, x.id);
+      if (gone.welcomeMessageId) await D.remove(ctx, gone.threadId, gone.welcomeMessageId);
+      // the thread message goes terminal: no Accept, no Cancel search, no I'm
+      // here left to tap, the closing line inside it; a thread without a panel
+      // message gets the line as a message instead
       const payload = gone.panelMessageId ? R.renderRequestPanel(data, gone, now, look, { closedLine: line }) : null;
-      if (payload) await D.edit(ctx, gone.threadId, gone.panelMessageId, payload);
-      await D.closeThread(ctx, gone.threadId, line);
+      const shown = payload ? await D.edit(ctx, gone.threadId, gone.panelMessageId, payload) : false;
+      if (!shown) await D.send(ctx, gone.threadId, { content: line, allowedMentions: { parse: [] } });
+      // locked as before AND archived right away (live test round 2, item E)
+      if (await D.closeThread(ctx, gone.threadId)) threadLog(ctx, now, gone.id, gone.threadId, "archived", { outcome: ev.outcome });
       break;
     }
+    case "archive":
+      // a played game's thread, archiveAfterMin after the start — not locked:
+      // people may keep talking (a new message unarchives it)
+      if (await D.archiveThread(ctx, ev.threadId)) threadLog(ctx, now, ev.listingId, ev.threadId, "archived", { outcome: "matched" });
+      break;
     case "accepted":
-      if (L) await onAccepted(ctx, data, L, look, now);
+      if (L) await onAccepted(ctx, data, L, now);
       break;
     case "joined":
       if (L) await onJoined(ctx, data, L, ev.userId);
       break;
     case "checkInOpen":
+      // a fixed game's confirm window opened: the Heads up pings BOTH players
+      // (transient); the Confirm box gets its I'm here (the panel event)
       if (L && L.state === "confirming" && L.checkIn) {
-        await ensureWelcome(ctx, data, L, look, now);
-        // the joiner hears it on the DM card — unless the card can't reach them
-        const both = !joinerHasDm(data, L, now);
-        const vars = { poster: L.posterId, joiner: L.joinerId, when: `<t:${Math.floor(L.startAt / 1000)}:R>` };
-        await D.send(ctx, L.threadId, R.threadLine(textOf(data.config, both ? "headsUpBoth" : "headsUp", vars), both ? [L.posterId, L.joinerId] : [L.posterId]));
+        const vars = { poster: L.posterId, joiner: L.joinerId, when: R.when(L.startAt) };
+        await sendTransient(ctx, L, "headsUp", R.threadLine(textOf(data.config, "headsUp", vars), [L.posterId, L.joinerId]));
       }
-      break;
-    case "welcome":
-      if (L && L.welcomeMessageId) await D.edit(ctx, L.threadId, L.welcomeMessageId, R.buildWelcome(data, L, look));
       break;
     case "nag":
-      if (L && L.state === "confirming" && L.checkIn) await onNag(ctx, data, L, ev.userId, look, now);
+      if (L && L.state === "confirming" && L.checkIn) await onNag(ctx, data, L, ev.userId, now);
       break;
     case "started":
-      if (L) {
-        await D.edit(ctx, L.threadId, L.welcomeMessageId, R.buildWelcome(data, L, look));
-        if (L.checkIn && L.checkIn.nagMessageId) await D.remove(ctx, L.threadId, L.checkIn.nagMessageId);
-        await D.send(ctx, L.threadId, R.renderGameOn(data, L, look));
-      }
+      // the Game on! box replaces Confirm in the thread message (the panel
+      // event); a "tap I'm here" line has nothing left to ask
+      if (L) await dropLines(ctx, L.id, ["nag", "picked", "headsUp"]);
       break;
     case "reopened": {
-      const name = R.esc((L && (L.requests.find((r) => r.userId === ev.joinerId) || {}).userName) || "Your partner");
-      const key = ev.reason === "no_confirm" ? "reopened" : "reopenedLeft";
-      await D.edit(ctx, ev.threadId, ev.welcomeMessageId, R.renderWelcomeClosed(textOf(data.config, key, { joiner: name })));
-      // the last "tap I'm here" line has nothing left to confirm
-      if (ev.nagMessageId) await D.remove(ctx, ev.threadId, ev.nagMessageId);
+      // the red "didn't confirm / left — open again" box is in the thread
+      // message (listing.notice, the panel event); here: the leftovers
+      if (ev.welcomeMessageId) await D.remove(ctx, ev.threadId, ev.welcomeMessageId);
+      if (L) await dropLines(ctx, L.id, ["nag", "picked", "headsUp"]);
       await D.threadMember(ctx, ev.threadId, ev.joinerId, "remove");
       break;
     }
@@ -185,6 +262,7 @@ async function runEvent(ctx, data, ev, L, look, now, { panels, cards, refresh })
 // No thread → the search is cancelled (thread_failed) and nothing else runs;
 // the ping and the new-search DMs only go out after a thread exists (followUp).
 // A search whose afterCreate never ran is dropped by the tick (state.advance).
+// The thread gets ONE message: the request panel (its intro line inside).
 async function afterCreate(ctx, listingId) {
   const now = D.nowOf(ctx);
   const data = store.load(ctx);
@@ -206,15 +284,17 @@ async function afterCreate(ctx, listingId) {
   // logged before anything is saved: a crash from here on leaves a thread no
   // store knows — this line is how that orphan is found
   ctx.log.log(`opened thread ${thread.id} for search ${listingId}`);
-  await D.send(ctx, thread.id, { content: textOf(data.config, "threadIntro"), allowedMentions: { parse: [] } });
   let current = store.load(ctx);
   let live = S.findListing(current, listingId);
   const panel = live ? await D.send(ctx, thread.id, R.renderRequestPanel(current, { ...live, threadId: thread.id }, now)) : null;
   current = store.load(ctx);
   live = S.findListing(current, listingId);
   if (!live) {
-    // cancelled while the thread was opening
-    await D.closeThread(ctx, thread.id, textOf(data.config, "closedCancelled"));
+    // cancelled while the thread was opening: its message goes terminal, then lock + archive
+    const line = textOf(data.config, "closedCancelled");
+    const closed = panel ? R.renderRequestPanel(current, { ...L, threadId: thread.id }, now, undefined, { closedLine: line }) : null;
+    if (!(closed && (await D.edit(ctx, thread.id, panel.id, closed)))) await D.send(ctx, thread.id, { content: line, allowedMentions: { parse: [] } });
+    await D.closeThread(ctx, thread.id);
     return { ok: false, error: textOf(data.config, "notOpen") };
   }
   live.threadId = thread.id;
@@ -235,7 +315,10 @@ async function afterCreate(ctx, listingId) {
 }
 
 // The 30-second job (§5.4). Re-entrancy guard: a tick that finds the previous
-// one still running is skipped. Idempotent — lfg.json is the truth.
+// one still running is skipped. Idempotent — lfg.json is the truth. Besides
+// advance(): a listing still carrying the old separate welcome message gets a
+// panel redraw (which deletes it — the one-message migration), and the ping
+// lines whose time is up are deleted (a restart's leftovers).
 let ticking = false;
 async function tick(ctx) {
   if (ticking) return "skipped";
@@ -243,10 +326,13 @@ async function tick(ctx) {
   try {
     const data = store.load(ctx);
     if (!data.config) return "idle";
+    const now = D.nowOf(ctx);
     const before = JSON.stringify(data);
-    const { events, log } = S.advance(data, D.nowOf(ctx));
+    const { events, log } = S.advance(data, now);
     if (JSON.stringify(data) !== before) store.commit(ctx, data, { log });
+    for (const l of data.listings) if (l.welcomeMessageId) events.push({ type: "panel", listingId: l.id });
     await runEvents(ctx, events, { sync: false });
+    await sweepLines(ctx, now);
     await C.expirePing(ctx);
     await C.sync(ctx, { checkTail: true });
     return "ran";
@@ -255,4 +341,4 @@ async function tick(ctx) {
   }
 }
 
-module.exports = { closingLine, runEvents, afterCreate, tick };
+module.exports = { closingLine, runEvents, afterCreate, tick, sweepLines };

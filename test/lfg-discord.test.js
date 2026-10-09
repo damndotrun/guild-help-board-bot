@@ -122,13 +122,22 @@ test("missingOptional: Manage Messages is a SOFT permission — named apart, nev
   assert.deepEqual(D.missingOptional(fake.guild, null), []);
 });
 
-test("closeThread: the closing line, then the lock; send / edit / remove report failure instead of throwing", async () => {
+test("closeThread: lock, then archive (E); archiveThread archives without locking; send / edit / remove report failure instead of throwing", async () => {
   const fake = fakeDiscord();
   const ctx = fakeCtx(fake);
-  const th = fake.textChannel("th9", { setLocked: async (v) => fake.ops.push({ op: "lock", threadId: "th9", locked: v }) });
-  await D.closeThread(ctx, th.id, "Search expired.");
-  assert.deepEqual(fake.ops.map((o) => o.op), ["send", "lock"]);
-  assert.deepEqual(fake.ops[0].payload, { content: "Search expired.", allowedMentions: { parse: [] } });
+  const th = fake.textChannel("th9", {
+    setLocked: async (v) => fake.ops.push({ op: "lock", threadId: "th9", locked: v }),
+    setArchived: async (v) => fake.ops.push({ op: "archive", threadId: "th9", archived: v }),
+  });
+  assert.equal(await D.closeThread(ctx, th.id), true);
+  assert.deepEqual(fake.ops.map((o) => [o.op, o.locked ?? o.archived]), [["lock", true], ["archive", true]]);
+  fake.ops.length = 0;
+  assert.equal(await D.archiveThread(ctx, th.id), true);
+  assert.deepEqual(fake.ops.map((o) => o.op), ["archive"]);
+  th.setArchived = async () => { throw new Error("Missing Permissions"); };
+  assert.equal(await D.archiveThread(ctx, th.id), false);
+  assert.equal(await D.closeThread(ctx, null), false);
+  assert.equal(await D.archiveThread(ctx, "gone"), false);
   assert.equal(await D.send(ctx, "nope", { content: "x" }), null);
   assert.equal(await D.edit(ctx, "ch1", "missing", { content: "x" }), false);
   assert.equal(await D.remove(ctx, "ch1", "missing"), true); // already gone counts as removed

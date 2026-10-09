@@ -254,16 +254,39 @@ async function threadMember(ctx, threadId, userId, op) {
   return true;
 }
 
-// The closing line, then the lock (§3.3/7). The 3-day auto-archive files it.
-async function closeThread(ctx, threadId, line) {
-  if (!threadId) return;
-  await send(ctx, threadId, { content: line, allowedMentions: { parse: [] } });
+// A finished search's thread (§3.3/7): locked, then archived right away (live
+// test round 2, item E — needs Manage Threads, already required). The closing
+// line is in the thread message (effects). → true when it was archived.
+async function closeThread(ctx, threadId) {
+  if (!threadId) return false;
   const thread = await getChannel(ctx, threadId);
-  if (!thread || typeof thread.setLocked !== "function") return;
+  if (!thread) return false;
+  if (typeof thread.setLocked === "function") {
+    try {
+      await thread.setLocked(true);
+    } catch (err) {
+      ctx.log.warn(`could not lock thread ${threadId}: ${err.message}`);
+    }
+  }
+  return archive(ctx, thread);
+}
+
+// A played game's thread, archiveAfterMin after the start: archived, NOT
+// locked (a new message unarchives it). → true when it was archived.
+async function archiveThread(ctx, threadId) {
+  if (!threadId) return false;
+  const thread = await getChannel(ctx, threadId);
+  return thread ? archive(ctx, thread) : false;
+}
+
+async function archive(ctx, thread) {
+  if (typeof thread.setArchived !== "function") return false;
   try {
-    await thread.setLocked(true);
+    await thread.setArchived(true);
+    return true;
   } catch (err) {
-    ctx.log.warn(`could not lock thread ${threadId}: ${err.message}`);
+    ctx.log.warn(`could not archive thread ${thread.id}: ${err.message}`);
+    return false;
   }
 }
 
@@ -530,6 +553,7 @@ module.exports = {
   remove,
   threadMember,
   closeThread,
+  archiveThread,
   setRoles,
   dmReachable,
   deliverCard,

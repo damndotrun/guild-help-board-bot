@@ -144,7 +144,7 @@ test("acceptRequest: a now-search confirms at once (5-minute window); the rest a
   const out = S.newOut();
   assert.equal(S.acceptRequest(d, L, L.requests[0], T0 + 2 * MIN, out), "confirming");
   assert.deepEqual([L.joinerId, L.acceptedAt, L.requests[0].status, L.requests[1].onHold], ["u2", T0 + 2 * MIN, "accepted", true]);
-  assert.deepEqual(L.checkIn, { openedAt: T0 + 2 * MIN, deadline: T0 + 7 * MIN, nagMessageId: null, at: {}, nags: {} });
+  assert.deepEqual(L.checkIn, { openedAt: T0 + 2 * MIN, deadline: T0 + 7 * MIN, at: {}, nags: {} });
   assert.deepEqual(cardKinds(out), [["u2", "accepted"]]);
   assert.ok(out.events.some((e) => e.type === "cardRefresh" && e.userId === "u3"));
   assert.equal(S.isBusy(d, "u2"), false); // confirming does not make anyone busy (U9)
@@ -179,7 +179,7 @@ function confirming(extra = {}) {
     state: "confirming",
     joinerId: "u2",
     acceptedAt: T0,
-    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} },
+    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: {}, nags: {} },
     requests: [request("u2", T0, { status: "accepted" }), request("u3", T0 + 1, { onHold: true })],
     ...extra,
   });
@@ -192,7 +192,7 @@ test("confirmPresence: early while fixed, noted once, already on a second tap, s
   const L = d.listings[0];
   const noted = S.newOut();
   assert.equal(S.confirmPresence(d, L, "u1", T0 + 1000, noted), "noted");
-  assert.deepEqual(types(noted), ["cardRefresh", "welcome", "panel"]); // the ✓ shows in the thread and on the card
+  assert.deepEqual(types(noted), ["cardRefresh", "panel"]); // the ✓ shows in the thread message and on the card
   assert.equal(S.confirmPresence(d, L, "u1", T0 + 2000, S.newOut()), "already");
   assert.equal(L.state, "confirming");
   assert.equal(S.isBusy(d, "u1"), false);
@@ -207,13 +207,13 @@ test("confirmPresence: early while fixed, noted once, already on a second tap, s
 
 test("startGame: the busy rule — other requests withdrawn, own search cancelled, an accept elsewhere reopens", () => {
   const d = dataWith((x) => {
-    x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: { u1: T0 }, nags: {} } }));
+    x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: { u1: T0 }, nags: {} } }));
     // u2 (the joiner) has his own search with a requester…
     x.listings.push(listing("OWN", "u2", { categoryId: "ddps", buttonId: "radar", requests: [request("u7")] }));
     // …a pending request on someone else's search…
     x.listings.push(listing("ELSE", "u5", { requests: [request("u2"), request("u8", T0 + 5)] }));
     // …and u1 (the poster) was accepted on another one meanwhile.
-    x.listings.push(listing("ACC", "u6", { state: "confirming", joinerId: "u1", acceptedAt: T0, checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} }, requests: [request("u1", T0, { status: "accepted" }), request("u9", T0 + 1, { onHold: true })] }));
+    x.listings.push(listing("ACC", "u6", { state: "confirming", joinerId: "u1", acceptedAt: T0, checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: {}, nags: {} }, requests: [request("u1", T0, { status: "accepted" }), request("u9", T0 + 1, { onHold: true })] }));
   });
   const out = S.newOut();
   assert.equal(S.confirmPresence(d, d.listings[0], "u2", T0 + MIN, out), "started");
@@ -239,20 +239,25 @@ test("deadline: the joiner didn't confirm → the search reopens with its line; 
     welcomeMessageId: "wm1",
     checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: "nag1", at: { u1: T0 }, nags: { u2: 4 } },
   })));
+  // the old nag id (a store from before transient lines) became a line that is due now
+  assert.deepEqual(d.listings[0].lines, [{ id: "nag1", kind: "nag", until: 0 }]);
+  assert.equal("nagMessageId" in d.listings[0].checkIn, false);
   assert.deepEqual(S.advance(d, T0 + 5 * MIN - 1).events.filter((e) => e.type !== "nag" && e.type !== "card"), []);
   const r = S.advance(d, T0 + 5 * MIN);
   const L = d.listings[0];
-  assert.deepEqual([L.state, L.joinerId, L.checkIn, L.startAt, L.expiresAt, L.welcomeMessageId], ["open", null, null, null, T0 + 35 * MIN, null]);
+  assert.deepEqual([L.state, L.joinerId, L.checkIn, L.startAt, L.expiresAt, L.welcomeMessageId], ["open", null, null, null, T0 + 35 * MIN, undefined]);
   assert.deepEqual([L.requests[0].status, L.requests[0].reason, L.requests[1].onHold], ["closed", "no_confirm", false]);
   assert.deepEqual(r.log.find((l) => l.event === "closed"), { type: "request", ts: T0 + 5 * MIN, listingId: "L1", userId: "u2", event: "closed", reason: "no_confirm", nags: 4 });
-  // B3: the last nag line travels with the event, so the handler can delete it
-  assert.deepEqual(r.events.find((e) => e.type === "reopened"), { type: "reopened", listingId: "L1", joinerId: "u2", welcomeMessageId: "wm1", nagMessageId: "nag1", threadId: "th-L1", reason: "no_confirm" });
+  // a legacy welcome id travels with the event, so the handler can delete it
+  assert.deepEqual(r.events.find((e) => e.type === "reopened"), { type: "reopened", listingId: "L1", joinerId: "u2", welcomeMessageId: "wm1", threadId: "th-L1", reason: "no_confirm" });
+  // the thread message shows the red "didn't confirm — open again" box
+  assert.deepEqual(L.notice, { kind: "reopened", userId: "u2", name: "U2", at: T0 + 5 * MIN });
   assert.deepEqual(r.events.filter((e) => e.type === "card").map((e) => [e.userId, e.event.kind]), [["u2", "noConfirm"]]);
 });
 
 test("deadline: the searcher didn't confirm (or neither did) → cancelled, everyone in line hears it", () => {
   for (const at of [{ u2: T0 }, {}]) {
-    const d = dataWith((x) => x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at, nags: {} } })));
+    const d = dataWith((x) => x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at, nags: {} } })));
     const r = S.advance(d, T0 + 5 * MIN);
     assert.equal(d.listings.length, 0, JSON.stringify(at));
     const line = r.log.find((l) => l.type === "listing");
@@ -262,7 +267,7 @@ test("deadline: the searcher didn't confirm (or neither did) → cancelled, ever
 });
 
 test("nags: one a minute to whoever hasn't confirmed, at most checkInWindowMin, none after confirming", () => {
-  const d = dataWith((x) => x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 20 * MIN, nagMessageId: null, at: {}, nags: {} } })));
+  const d = dataWith((x) => x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 20 * MIN, at: {}, nags: {} } })));
   const L = d.listings[0];
   const nags = (now) => S.advance(d, now).events.filter((e) => e.type === "nag").map((e) => e.userId);
   assert.deepEqual(nags(T0 + MIN - 1), []);
@@ -325,7 +330,7 @@ test("shape: a game without a joiner reopens; confirming without a checkIn gets 
     { id: "C", posterId: "u4", createdAt: T0, threadId: "t", state: "confirming", joinerId: "u5", checkIn: { openedAt: T0, deadline: T0 + MIN } },
   ] });
   assert.deepEqual([d.listings[0].state, d.listings[0].checkIn], ["open", null]);
-  assert.deepEqual(d.listings[1].checkIn, { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} });
+  assert.deepEqual(d.listings[1].checkIn, { openedAt: T0, deadline: T0 + 5 * MIN, at: {}, nags: {} });
   assert.deepEqual([d.listings[2].checkIn.at, d.listings[2].checkIn.nags], [{}, {}]);
   d.config = dataWith().config;
   assert.doesNotThrow(() => S.advance(d, T0 + 10 * MIN));
@@ -341,7 +346,7 @@ test("shape: null note / cancelledOthers get their defaults; a non-number deadli
   const [A, B, C] = d.listings;
   assert.deepEqual([A.note, A.cancelledOthers, A.dmCount, A.state], ["", [], 0, "open"]);
   // confirming: the broken checkIn is replaced by the repair one (deadline already past)
-  assert.deepEqual(B.checkIn, { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} });
+  assert.deepEqual(B.checkIn, { openedAt: T0, deadline: T0 + 5 * MIN, at: {}, nags: {} });
   assert.equal(C.checkIn, null); // fixed: no checkIn until the window opens
   d.config = dataWith().config;
   const out = S.newOut();
@@ -501,13 +506,53 @@ test("cardView: a bad-news box is about its listing — gone once the member is 
 test("cardView: picked by two searchers → the card is about the one to confirm now; the other is listed", () => {
   const d = dataWith((x) => {
     x.listings.push(listing("A", "p1", { state: "fixed", joinerId: "u1", acceptedAt: T0, startAt: T0 + 90 * MIN, expiresAt: T0 + 90 * MIN, requests: [request("u1", T0, { status: "accepted" })] }));
-    x.listings.push(listing("B", "p2", { state: "confirming", joinerId: "u1", acceptedAt: T0 + 1, checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at: {}, nags: {} }, requests: [request("u1", T0, { status: "accepted" })] }));
+    x.listings.push(listing("B", "p2", { state: "confirming", joinerId: "u1", acceptedAt: T0 + 1, checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: {}, nags: {} }, requests: [request("u1", T0, { status: "accepted" })] }));
   });
   const v = S.cardView(d, "u1", T0);
   assert.equal(v.accepted.id, "B");
   assert.deepEqual(v.otherAccepted.map((l) => l.id), ["A"]);
   d.listings[1].state = "started";
   assert.equal(S.cardView(d, "u1", T0).accepted.id, "A"); // a fixed game ranks above a started one
+});
+
+// ── live test round 2: transient lines, the one-message thread, archive ───
+
+test("times: transientSec 5 and archiveAfterMin 15 by default; pingSec is gone", () => {
+  assert.equal(S.DEFAULT_TIMES.transientSec, 5);
+  assert.equal(S.DEFAULT_TIMES.archiveAfterMin, 15);
+  assert.equal("pingSec" in S.DEFAULT_TIMES, false);
+});
+
+test("E: a started game's thread is queued to archive archiveAfterMin after the start; the tick emits it once, when due — even after the listing left the board", () => {
+  const d = dataWith((x) => x.listings.push(confirming({ checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at: { u1: T0 }, nags: {} } })));
+  assert.equal(S.confirmPresence(d, d.listings[0], "u2", T0 + MIN, S.newOut()), "started");
+  assert.deepEqual(d.archives, [{ listingId: "L1", threadId: "th-L1", at: T0 + 16 * MIN }]);
+  // the game leaves the board after startedVisibleMin (5): the archive entry stays
+  assert.equal(S.advance(d, T0 + 6 * MIN).events.some((e) => e.type === "archive"), false);
+  assert.deepEqual(d.listings, []);
+  assert.equal(d.archives.length, 1);
+  const r = S.advance(d, T0 + 16 * MIN);
+  assert.deepEqual(r.events.filter((e) => e.type === "archive"), [{ type: "archive", listingId: "L1", threadId: "th-L1" }]);
+  assert.deepEqual(d.archives, []);
+  assert.equal(S.advance(d, T0 + 17 * MIN).events.some((e) => e.type === "archive"), false);
+  // shape keeps only well-formed entries
+  assert.deepEqual(S.shape({ archives: [{ threadId: "t", at: 1 }, { threadId: "", at: 1 }, { at: 2 }, "x"] }).archives, [{ threadId: "t", at: 1 }]);
+  assert.deepEqual(S.shape({}).archives, []);
+});
+
+test("D: a reopen leaves a notice for the thread message; the next Accept clears it; a legacy welcome id is kept only while set", () => {
+  const d = dataWith((x) => x.listings.push(confirming()));
+  const L = d.listings[0];
+  S.withdrawRequest(d, L, "u2", T0 + MIN, S.newOut());
+  assert.deepEqual(L.notice, { kind: "reopenedLeft", userId: "u2", name: "U2", at: T0 + MIN });
+  S.acceptRequest(d, L, L.requests[1], T0 + 2 * MIN, S.newOut());
+  assert.equal(L.notice, null);
+  const shaped = S.shape({ listings: [{ id: "A", posterId: "u1", welcomeMessageId: "w1", notifyMessageId: "n1" }, { id: "B", posterId: "u2", welcomeMessageId: null }] }).listings;
+  assert.equal(shaped[0].welcomeMessageId, "w1");
+  assert.deepEqual(shaped[0].lines, [{ id: "n1", kind: "notify", until: 0 }]);
+  assert.equal("notifyMessageId" in shaped[0], false);
+  assert.equal("welcomeMessageId" in shaped[1], false);
+  assert.deepEqual(shaped[1].lines, []);
 });
 
 test("joinable(data, now): a search past its expiry is not joinable even before the tick drops it", () => {

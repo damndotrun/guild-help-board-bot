@@ -1,6 +1,6 @@
 // Pure Components V2 renderers for every lfg message (M4 spec §3): channel
-// blocks (banner, panel, board), the ping, the searcher's thread (request
-// panel, welcome + confirm box, Game on!), the DM card and the start modal.
+// blocks (banner, panel, board), the ping, the searcher's thread (ONE message:
+// request panel + Confirm / Game on!), the DM card and the start modal.
 // Raw API JSON (no builders) except the modal, so tests read it directly.
 // Visual rules (§3.0): colour only on the container stripe; Secondary buttons
 // except I'm here (Success) and Cancel search (Danger); a segment's count is a
@@ -245,15 +245,35 @@ const REASON_KEY = {
 };
 const reasonText = (config, reason) => textOf(config, REASON_KEY[reason] || "reason_cancelled");
 
-// The request panel (§3.3/1): Requests (in arrival order, Accept while the
-// search is open), Removed (with the reason), and Cancel search at the bottom.
-// `closedLine`: the search has left the list — the terminal panel, grey, with
-// that line and no Accept or Cancel search left to tap.
+// The searcher's thread is ONE live message (live test round 2, item D),
+// edited as the search goes (panelMessageId):
+//   - the intro line while the search is open; "You picked X…" once accepted;
+//   - the reopen notice (red) — "X didn't confirm / left — open again";
+//   - Requests (in arrival order, Accept while open; accepted / on-hold rows
+//     after) and Removed (with the reason);
+//   - fixed / confirming: the Confirm box (counter badge, per-player status,
+//     deadline, I'm here as a Section accessory INSIDE the box — a fixed game
+//     before its window says when they will be asked, no I'm here yet);
+//   - started: the Game on! box (the joiner's avatar) in its place;
+//   - Cancel search only while the search is open (none once accepted).
+// `closedLine`: the search has left the list — the terminal message, grey,
+// with that line and nothing left to tap. The whole message shares one
+// 40-component / 4000-character budget: fitRows cuts the request rows.
 function renderRequestPanel(data, listing, now, look = PLAIN_LOOK, { closedLine = null } = {}) {
   const config = data.config;
   const closed = closedLine !== null;
+  const open = listing.state === "open" && !closed;
   const rows = S.activeRequests(listing).sort((a, b) => a.createdAt - b.createdAt);
   const removed = listing.requests.filter((r) => r.status === "closed" || r.status === "withdrawn");
+  let top = null;
+  if (open) top = textOf(config, "threadIntro");
+  else if (!closed && (listing.state === "fixed" || listing.state === "confirming")) {
+    top = textOf(config, "threadPicked", { joiner: nameOf(look, listing.joinerId, joinerName(listing)), label: S.labelOf(config, listing).label });
+  }
+  const notice = open && listing.notice ? noticeBox(config, listing.notice, look) : null;
+  let game = [];
+  if (!closed && listing.state === "started") game = [gameOnBox(data, listing, look)];
+  else if (!closed && (listing.state === "fixed" || listing.state === "confirming")) game = confirmBox(config, listing, look, { card: false });
   return fitRows(rows.length, (n) => {
     const inner = [header(textOf(config, "requestsTitle"), "requests", rows.length)];
     rows.slice(0, n).forEach((r, i) => {
@@ -272,14 +292,27 @@ function renderRequestPanel(data, listing, now, look = PLAIN_LOOK, { closedLine 
     if (rows.length === 0 && !closed) inner.push(td(textOf(config, "panelEmpty")));
     if (n < rows.length) inner.push(td(textOf(config, "moreRequests", { n: rows.length - n })));
     if (closed) inner.push(td(`-# ${closedLine}`));
-    const parts = [box(closed ? COLORS.grey : COLORS.teal, inner)];
+    const parts = [];
+    if (top) parts.push(td(top));
+    if (notice) parts.push(notice);
+    parts.push(box(closed ? COLORS.grey : COLORS.teal, inner));
     if (removed.length) {
       const lines = removed.slice(-10).map((r) => `${nameOf(look, r.userId, r.userName)} — ${reasonText(config, r.reason)}`);
       parts.push(box(COLORS.grey, [header(textOf(config, "removedTitle"), "removed", removed.length), td(lines.join("\n"))]));
     }
-    if (listing.state !== "started" && !closed) parts.push(row(btn(`lfg:cancel:${listing.id}`, textOf(config, "cancelSearch"), ButtonStyle.Danger)));
-    return v2(parts);
+    parts.push(...game);
+    if (open) parts.push(row(btn(`lfg:cancel:${listing.id}`, textOf(config, "cancelSearch"), ButtonStyle.Danger)));
+    return v2(parts, { allowedMentions: { parse: [] } });
   });
+}
+
+// The red box after a reopen (listing.notice): "X didn't confirm — your
+// search is open again…" / "X left — …". Shown while the search is open; the
+// next Accept clears it.
+function noticeBox(config, notice, look) {
+  const key = notice.kind === "reopened" ? "reopened" : "reopenedLeft";
+  const name = nameOf(look, notice.userId, notice.name || "Your partner");
+  return box(COLORS.red, [td(textOf(config, key, { joiner: name }))]);
 }
 
 // "Dani ✓ · Marci — not yet"
@@ -292,15 +325,18 @@ function confirmStatus(listing, look) {
 
 const confirmedCount = (listing) => Object.keys((listing.checkIn && listing.checkIn.at) || {}).length;
 
-// The welcome's on-hold line names at most this many, then "+N more" — the
-// welcome is a fixed-size payload that is not cut by fitRows.
+// The thread Confirm box's on-hold line names at most this many, then "+N
+// more" — the box itself is not cut by fitRows (the request rows are).
 const MAX_ON_HOLD_NAMES = 10;
 
-// The confirm box, shared by the thread welcome and the DM card (§3.4).
+// The Confirm box (§3.4), in the thread message (card false) and on the DM
+// card (card true). A fixed game before its window: when they will be asked,
+// no I'm here yet. Confirming: the per-player status and the deadline; in the
+// thread I'm here is the Section accessory INSIDE the box (no extra row —
+// live test round 2), on the card it stays a row with Open the thread.
 function confirmBox(config, listing, look, { card }) {
   const t = S.times(config);
-  const title = header(textOf(config, "confirmTitle"), "confirm", `${listing.state === "started" ? 2 : confirmedCount(listing)} / 2`);
-  if (listing.state === "started") return [box(COLORS.teal, [title, td(textOf(config, "confirmDone"))])];
+  const title = header(textOf(config, "confirmTitle"), "confirm", `${confirmedCount(listing)} / 2`);
   if (listing.state === "fixed") return [box(COLORS.amber, [title, td(textOf(config, "confirmWaitTimed", { lead: t.reminderLeadMin, when: when(listing.startAt) }))])];
   const pending = S.pendingRequests(listing);
   const onHold = pending.slice(0, MAX_ON_HOLD_NAMES).map((r) => `**${nameOf(look, r.userId, r.userName)}**`);
@@ -309,36 +345,20 @@ function confirmBox(config, listing, look, { card }) {
   if (card) lines.push(`-# ${textOf(config, "confirmCardHint")}`);
   else if (onHold.length) lines.push(textOf(config, "confirmOnHold", { names: onHold.join(", "), when: when(listing.checkIn.deadline) }));
   else lines.push(textOf(config, "confirmEnds", { when: when(listing.checkIn.deadline) }));
-  const buttons = [btn(`lfg:here:${listing.id}`, textOf(config, "hereButton"), ButtonStyle.Success)];
-  const url = card ? threadUrl(config, listing.threadId) : null;
+  const here = btn(`lfg:here:${listing.id}`, textOf(config, "hereButton"), ButtonStyle.Success);
+  if (!card) return [box(COLORS.amber, [title, section(lines, here)])];
+  const buttons = [here];
+  const url = threadUrl(config, listing.threadId);
   if (url) buttons.push(linkBtn(url, textOf(config, "openThread")));
   return [box(COLORS.amber, [title, td(lines.join("\n"))]), row(...buttons)];
 }
 
-// The WAKEY message (§3.3/3) — buildWelcome is the one place to extend it
-// (e.g. the build hand-off later). Only the searcher is mentioned, unless the
-// joiner has no DM card to hear it on (pingJoiner).
-function buildWelcome(data, listing, look = PLAIN_LOOK, { pingJoiner = false } = {}) {
-  const config = data.config;
-  const { label } = S.labelOf(config, listing);
-  const key = pingJoiner ? "welcomePing" : "welcome";
-  const text = textOf(config, key, { poster: listing.posterId, joiner: pingJoiner ? listing.joinerId : nameOf(look, listing.joinerId, joinerName(listing)), label });
-  return v2([td(text), ...confirmBox(config, listing, look, { card: false })], {
-    allowedMentions: { users: pingJoiner ? [listing.posterId, listing.joinerId] : [listing.posterId] },
-  });
-}
-
-// The welcome after the joiner dropped out (reopened) — no buttons left.
-function renderWelcomeClosed(text) {
-  return v2([box(COLORS.red, [td(text)])], { allowedMentions: { parse: [] } });
-}
-
-// "Game on!" event box in the thread, with the partner's avatar (U15).
-function renderGameOn(data, listing, look = PLAIN_LOOK) {
+// The "Game on!" box in the thread message, with the partner's avatar (U15).
+function gameOnBox(data, listing, look = PLAIN_LOOK) {
   const config = data.config;
   const { label } = S.labelOf(config, listing);
   const sub = textOf(config, "gameOnSub", { poster: nameOf(look, listing.posterId, listing.posterName), partner: nameOf(look, listing.joinerId, joinerName(listing)), label });
-  return v2([box(COLORS.teal, [section([`### ${textOf(config, "gameOn")}`, sub], thumb(look.avatarOf(listing.joinerId)))])], { allowedMentions: { parse: [] } });
+  return box(COLORS.teal, [section([`### ${textOf(config, "gameOn")}`, sub], thumb(look.avatarOf(listing.joinerId)))]);
 }
 
 // Plain thread lines: who to ping is always explicit (allowedMentions.users).
@@ -470,6 +490,7 @@ module.exports = {
   PLAIN_LOOK,
   MAX_ON_HOLD_NAMES,
   esc,
+  when,
   defaultAvatar,
   threadUrl,
   renderTag,
@@ -483,9 +504,6 @@ module.exports = {
   renderStackFallback,
   renderPing,
   renderRequestPanel,
-  buildWelcome,
-  renderWelcomeClosed,
-  renderGameOn,
   threadLine,
   renderCard,
   renderCardReplaced,

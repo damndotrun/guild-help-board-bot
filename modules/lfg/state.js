@@ -4,24 +4,33 @@
 //   out.log    — journal lines for lfg-log.jsonl (§4.3), appended after save;
 //   out.events — what the Discord side must do afterwards (effects.js):
 //     { type: "dropped", listing, outcome, reason }   listing left the list
-//     { type: "panel", listingId }                     redraw the request panel
-//     { type: "accepted", listingId }                  joiner added: welcome, cards
-//     { type: "checkInOpen", listingId }               the confirm window opened
+//     { type: "panel", listingId }                     redraw the thread message (panelMessageId)
+//     { type: "accepted", listingId }                  add the joiner to the thread, cards
+//     { type: "checkInOpen", listingId }               the confirm window opened (Heads up)
 //     { type: "nag", listingId, userId }               a reminder is due
-//     { type: "welcome", listingId }                   redraw the welcome / confirm box
 //     { type: "started", listingId }                   both tapped I'm here
-//     { type: "reopened", listingId, joinerId, welcomeMessageId, nagMessageId, threadId, reason }
+//     { type: "reopened", listingId, joinerId, threadId, reason, welcomeMessageId? }
+//     { type: "archive", listingId, threadId }         a played game's thread is due to archive
 //     { type: "card", userId, event }                  an important DM-card event (notifies)
 //     { type: "cardRefresh", userId }                  a silent DM-card refresh
 //     { type: "cardDelete", userId, messageId, staleIds? }  the card is stale (24 h)
 // Listing states: open → (accept) fixed | confirming → (2× I'm here) started.
+// The thread is ONE live message (live test round 2, 2026-10-09): the request
+// panel (panelMessageId) carries the intro, Requests, Removed, the reopen
+// notice, Confirm (with I'm here) and Game on!. Thread pings are transient
+// lines (listing.lines: { id, kind, until }), deleted transientSec after the
+// send — by an in-process timer, or by the tick after a restart.
 const crypto = require("crypto");
 const { hasUnprintable, PLAIN_TEXT_ERROR } = require("../../core/text");
 const { textOf } = require("./texts");
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
-const DEFAULT_TIMES = Object.freeze({ reminderLeadMin: 5, checkInWindowMin: 5, startedVisibleMin: 5, nowTtlMin: 30, pingSec: 60 });
+// transientSec: how long a ping line lives (the channel's new-search ping and
+// the thread's pings) — Discord notifies at send time, so a deleted ping has
+// still notified. archiveAfterMin: a played game's thread is archived this
+// long after the start.
+const DEFAULT_TIMES = Object.freeze({ reminderLeadMin: 5, checkInWindowMin: 5, startedVisibleMin: 5, nowTtlMin: 30, transientSec: 5, archiveAfterMin: 15 });
 const MAX_NOTE = 100;
 const MAX_MINUTES = 1440;
 const MAX_NOTICES = 5;
@@ -46,6 +55,8 @@ function emptyData() {
     config: null,
     channel: { mainMessageId: null, staleIds: [], pingMessageId: null, pingUntil: null },
     listings: [],
+    // played games' threads to archive once `at` passes (the tick; survives a restart)
+    archives: [],
     dmCards: {},
     notices: {},
     prefs: {},
@@ -72,6 +83,7 @@ function shape(raw) {
   // until gone, so an old Start button is never left untracked.
   d.channel.staleIds = Array.isArray(d.channel.staleIds) ? d.channel.staleIds.filter((id) => typeof id === "string" && id) : [];
   d.listings = Array.isArray(d.listings) ? d.listings.filter(isObj).map(shapeListing) : [];
+  d.archives = Array.isArray(d.archives) ? d.archives.filter((a) => isObj(a) && typeof a.threadId === "string" && a.threadId && Number.isFinite(a.at)) : [];
   for (const key of ["dmCards", "notices", "prefs", "favorites"]) if (!isObj(d[key])) d[key] = {};
   return d;
 }
@@ -101,12 +113,11 @@ function shapeListing(l) {
     state: "open",
     threadId: null,
     panelMessageId: null,
-    notifyMessageId: null,
-    welcomeMessageId: null,
     joinerId: null,
     acceptedAt: null,
     startedAt: null,
     checkIn: null,
+    notice: null,
     dmCount: 0,
     cancelledOthers: [],
   };
@@ -115,6 +126,18 @@ function shapeListing(l) {
   if (typeof l.note !== "string") l.note = String(l.note);
   if (!Array.isArray(l.cancelledOthers)) l.cancelledOthers = [];
   l.requests = Array.isArray(l.requests) ? l.requests.filter(isObj) : [];
+  if (!isObj(l.notice)) l.notice = null;
+  // The transient thread lines still to delete. A store from before them kept
+  // the last join notification / nag by id: those become lines that are due
+  // now (the next tick deletes them).
+  l.lines = Array.isArray(l.lines) ? l.lines.filter((x) => isObj(x) && typeof x.id === "string" && x.id && Number.isFinite(x.until)) : [];
+  if (typeof l.notifyMessageId === "string" && l.notifyMessageId) l.lines.push({ id: l.notifyMessageId, kind: "notify", until: 0 });
+  delete l.notifyMessageId;
+  if (isObj(l.checkIn) && typeof l.checkIn.nagMessageId === "string" && l.checkIn.nagMessageId) l.lines.push({ id: l.checkIn.nagMessageId, kind: "nag", until: 0 });
+  if (isObj(l.checkIn)) delete l.checkIn.nagMessageId;
+  // The old separate WAKEY welcome message (before the one-message thread):
+  // kept only while set — the next panel render deletes it (effects.runEvents).
+  if (typeof l.welcomeMessageId !== "string" || !l.welcomeMessageId) delete l.welcomeMessageId;
   if (typeof l.expiresAt !== "number") l.expiresAt = l.startAt ?? (l.createdAt ?? 0) + DEFAULT_TIMES.nowTtlMin * MIN;
   repairGame(l);
   return l;
@@ -131,12 +154,11 @@ function repairGame(l) {
     l.state = "open";
     l.checkIn = null;
     l.acceptedAt = null;
-    l.welcomeMessageId = null;
     return;
   }
   if (l.state === "confirming" && !isObj(l.checkIn)) {
     const openedAt = l.acceptedAt ?? l.createdAt ?? 0;
-    l.checkIn = { openedAt, deadline: openedAt + DEFAULT_TIMES.checkInWindowMin * MIN, nagMessageId: null, at: {}, nags: {} };
+    l.checkIn = { openedAt, deadline: openedAt + DEFAULT_TIMES.checkInWindowMin * MIN, at: {}, nags: {} };
   }
   if (isObj(l.checkIn)) {
     if (!isObj(l.checkIn.at)) l.checkIn.at = {};
@@ -343,7 +365,6 @@ function openCheckIn(listing, now, t) {
   listing.checkIn = {
     openedAt: now,
     deadline: Math.max(listing.startAt ?? 0, now + t.checkInWindowMin * MIN),
-    nagMessageId: null,
     at: {},
     nags: {},
   };
@@ -357,6 +378,7 @@ function acceptRequest(data, listing, r, now, out) {
   requestLog(out, listing, r, "accepted", now);
   listing.joinerId = r.userId;
   listing.acceptedAt = now;
+  listing.notice = null; // the last reopen's news is out of date
   for (const other of pendingRequests(listing)) other.onHold = true;
   if (listing.startAt === null || listing.startAt - now <= t.reminderLeadMin * MIN) openCheckIn(listing, now, t);
   else listing.state = "fixed";
@@ -374,13 +396,16 @@ function reopenListing(data, listing, reason, now, out) {
   const r = listing.requests.find((x) => x.userId === joinerId && x.status === "accepted");
   const nags = listing.checkIn ? listing.checkIn.nags[joinerId] || 0 : 0;
   if (r) closeRequest(listing, r, reason === "no_confirm" ? "closed" : "withdrawn", reason, now, out, { nags });
-  const nagMessageId = listing.checkIn ? listing.checkIn.nagMessageId || null : null;
-  out.events.push({ type: "reopened", listingId: listing.id, joinerId, welcomeMessageId: listing.welcomeMessageId, nagMessageId, threadId: listing.threadId, reason });
+  // the old separate welcome (a store from before the one-message thread) goes with the game
+  const legacy = listing.welcomeMessageId ? { welcomeMessageId: listing.welcomeMessageId } : {};
+  out.events.push({ type: "reopened", listingId: listing.id, joinerId, threadId: listing.threadId, reason, ...legacy });
   listing.state = "open";
   listing.joinerId = null;
   listing.acceptedAt = null;
   listing.checkIn = null;
-  listing.welcomeMessageId = null;
+  delete listing.welcomeMessageId;
+  // the red box in the thread message: "X didn't confirm / left — your search is open again"
+  listing.notice = { kind: reason === "no_confirm" ? "reopened" : "reopenedLeft", userId: joinerId, name: (r && r.userName) || "", at: now };
   if (listing.startAt === null || listing.startAt <= now) {
     listing.startAt = null;
     listing.expiresAt = now + t.nowTtlMin * MIN;
@@ -447,6 +472,9 @@ function dropListing(data, listing, { outcome, reason = null, removedBy = null }
 function startGame(data, listing, now, out) {
   listing.state = "started";
   listing.startedAt = now;
+  // the played game's thread is archived archiveAfterMin later (by the tick:
+  // it survives a restart, and the listing may have left the board by then)
+  if (listing.threadId) data.archives.push({ listingId: listing.id, threadId: listing.threadId, at: now + times(data.config).archiveAfterMin * MIN });
   for (const r of pendingRequests(listing)) {
     closeRequest(listing, r, "closed", "filled", now, out);
     out.events.push({ type: "card", userId: r.userId, event: cardEvent(data.config, listing, "full", listing.posterId, listing.posterName, now) });
@@ -487,7 +515,7 @@ function confirmPresence(data, listing, userId, now, out) {
     startGame(data, listing, now, out);
     return "started";
   }
-  out.events.push({ type: "welcome", listingId: listing.id }, { type: "panel", listingId: listing.id });
+  out.events.push({ type: "panel", listingId: listing.id });
   return "noted";
 }
 
@@ -544,6 +572,12 @@ function advance(data, now) {
     } else if (listing.state === "started" && now >= listing.startedAt + t.startedVisibleMin * MIN) {
       dropListing(data, listing, { outcome: "matched" }, now, out);
     }
+  }
+  // played games' threads whose archive time came (the effect archives, journals)
+  const due = data.archives.filter((a) => now >= a.at);
+  if (due.length) {
+    data.archives = data.archives.filter((a) => now < a.at);
+    for (const a of due) out.events.push({ type: "archive", listingId: a.listingId || null, threadId: a.threadId });
   }
   pruneNotices(data, now);
   // §3.6: a card goes once its member has no pending request and 24 h passed

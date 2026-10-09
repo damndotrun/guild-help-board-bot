@@ -1,7 +1,8 @@
 // The board channel (M4 spec §5.3): ONE bot message at the bottom of the
 // channel holding the blocks in config.layout order (banner · panel · board —
 // live test 2026-10-09: separate messages each showed "(edited)" and read as a
-// pile), the 60-second ping under it. ONE writer: every channel write runs on
+// pile), the transient new-search ping under it (deleted transientSec after
+// the send). ONE writer: every channel write runs on
 // one promise chain, so two searches posted at once can never leave two boards.
 const { MessageType } = require("discord.js");
 const S = require("./state");
@@ -262,7 +263,11 @@ function resetPanel(ctx) {
 }
 
 // The new-search ping under the board (U7): one at a time; a deleted ping
-// role is left out (and logged); no role left → no ping.
+// role is left out (and logged); no role left → no ping. TRANSIENT (live test
+// round 2, item A): Discord notifies at send time, so the ping is deleted
+// transientSec later by an in-process timer on this chain; its id and
+// pingUntil stay stored until the delete succeeds, so the tick (expirePing)
+// takes one a restart left behind.
 function postPing(ctx, listingId) {
   return enqueue(ctx, async () => {
     const now = D.nowOf(ctx);
@@ -276,27 +281,41 @@ function postPing(ctx, listingId) {
     if (roleIds.length === 0) return null;
     if (data.channel.pingMessageId) await D.remove(ctx, data.config.channelId, data.channel.pingMessageId);
     const msg = await D.send(ctx, data.config.channelId, R.renderPing(data.config, listing, roleIds, D.lookFor(ctx, guild)));
+    const ms = Math.max(0, Number(S.times(data.config).transientSec) || 0) * 1000;
     const fresh = store.load(ctx);
     fresh.channel.pingMessageId = msg ? msg.id : null;
-    fresh.channel.pingUntil = msg ? now + S.times(fresh.config).pingSec * 1000 : null;
+    fresh.channel.pingUntil = msg ? now + ms : null;
     store.save(ctx, fresh);
+    if (msg) D.later(ctx, ms, () => removePing(ctx, msg.id));
     return msg ? msg.id : null;
   });
 }
 
-// The tick deletes a ping whose 60 seconds are up.
-function expirePing(ctx) {
+// Delete the stored ping (on the channel chain) — `messageId`: only if it is
+// still that one (a newer ping replaced it: the replace deleted it already).
+// The record is cleared only once the delete succeeded (10008 = gone).
+function removePing(ctx, messageId = null) {
   return enqueue(ctx, async () => {
-    const now = D.nowOf(ctx);
     const data = store.load(ctx);
-    if (!data.config || !data.channel.pingMessageId || now < (data.channel.pingUntil || 0)) return false;
-    await D.remove(ctx, data.config.channelId, data.channel.pingMessageId);
-    const fresh = store.load(ctx);
-    fresh.channel.pingMessageId = null;
-    fresh.channel.pingUntil = null;
-    store.save(ctx, fresh);
+    const id = data.channel.pingMessageId;
+    if (!data.config || !id || (messageId && id !== messageId)) return false;
+    if (!(await D.remove(ctx, data.config.channelId, id))) return false;
+    const fresh = store.load(ctx); // no await between this load and the save
+    if (fresh.channel.pingMessageId === id) {
+      fresh.channel.pingMessageId = null;
+      fresh.channel.pingUntil = null;
+      store.save(ctx, fresh);
+    }
     return true;
   });
+}
+
+// The tick's backstop: a ping whose time is up (the timer a restart lost, or
+// a delete that failed) is deleted now.
+function expirePing(ctx) {
+  const data = store.load(ctx);
+  if (!data.config || !data.channel.pingMessageId || D.nowOf(ctx) < (data.channel.pingUntil || 0)) return Promise.resolve(false);
+  return removePing(ctx, data.channel.pingMessageId);
 }
 
 // Tests only: forget the sent-payload cache and start a fresh chain.
@@ -311,4 +330,4 @@ function _reset() {
   chain = Promise.resolve();
 }
 
-module.exports = { enqueue, activeBlocks, tailCheck, sync, resetPanel, postPing, expirePing, _reset };
+module.exports = { enqueue, activeBlocks, tailCheck, sync, resetPanel, postPing, removePing, expirePing, _reset };

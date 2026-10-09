@@ -353,7 +353,7 @@ test("sync: a store with the old per-block ids → one repost that deletes them 
   assert.equal(await C.sync(ctx, { checkTail: true }), "unchanged");
 });
 
-test("postPing: under the board, pings only the button's roles, replaces the previous ping; expirePing after 60 s", async () => {
+test("postPing: under the board, pings only the button's roles, replaces the previous ping; transient — expirePing (the tick's backstop) after transientSec", async () => {
   const { fake, ctx } = setup((x) => {
     x.listings.push(listing("L1", "u1", { posterName: "Dani" }));
     x.listings.push(listing("L2", "u2", { posterName: "Marci", categoryId: "ddps", buttonId: "any" }));
@@ -363,12 +363,12 @@ test("postPing: under the board, pings only the button's roles, replaces the pre
   const first = await C.postPing(ctx, "L1");
   const ping = fake.ops.find((o) => o.messageId === first);
   assert.deepEqual(ping.payload, { content: "<@&r-sup> **Dani** is looking for **BASIC · SUP** · now", allowedMentions: { roles: ["r-sup"] } });
-  assert.deepEqual([store.load(ctx).channel.pingMessageId, store.load(ctx).channel.pingUntil], [first, T0 + 60_000]);
+  assert.deepEqual([store.load(ctx).channel.pingMessageId, store.load(ctx).channel.pingUntil], [first, T0 + 5000]);
   const second = await C.postPing(ctx, "L2");
   assert.ok(fake.ops.some((o) => o.op === "delete" && o.messageId === first));
   assert.equal(fake.ops.find((o) => o.messageId === second && o.op === "send").payload.allowedMentions.roles.join(), "r-radar");
   assert.equal(await C.expirePing(ctx), false);
-  ctx.clock = T0 + 60_000;
+  ctx.clock = T0 + 5000; // the timers were not run (a restart lost them): the tick's expirePing takes it
   assert.equal(await C.expirePing(ctx), true);
   assert.equal(store.load(ctx).channel.pingMessageId, null);
   assert.ok(fake.ops.some((o) => o.op === "delete" && o.messageId === second));

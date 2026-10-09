@@ -152,51 +152,64 @@ function confirmingListing(at = {}) {
     joinerId: "u2",
     acceptedAt: T0,
     threadId: "th1",
-    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, nagMessageId: null, at, nags: {} },
+    checkIn: { openedAt: T0, deadline: T0 + 5 * MIN, at, nags: {} },
     requests: [request("u2", T0, { status: "accepted", userName: "Marci" }), request("u3", T0 + 1, { onHold: true, userName: "Ann" })],
   });
 }
 
-test("welcome: WAKEY pings only the searcher; the amber Confirm box shows who tapped and I'm here (green)", () => {
-  const d = dataWith();
-  const p = R.buildWelcome(d, confirmingListing({ u1: T0 }));
+test("thread message, open: the intro line on top, Requests, Cancel search — no Confirm box", () => {
+  const p = R.renderRequestPanel(dataWith(), listing("L1", "u1"), T0);
   valid(p);
-  assert.deepEqual(p.allowedMentions, { users: ["u1"] });
-  const t = textOf(p);
-  assert.match(t, /^WAKEY-WAKEY! <@u1> you accepted \*\*Marci\*\* for \*\*BASIC · SUP\*\*\./);
-  assert.match(t, /\*\*Dani\*\* ✓ · \*\*Marci\*\* — not yet/);
-  assert.match(t, new RegExp(`On hold until you both confirm: \\*\\*Ann\\*\\* · ends ${ts(T0 + 5 * MIN)}`));
-  assert.deepEqual(all(p, ComponentType.Button).filter((b) => !b.disabled).map((b) => [b.custom_id, b.label, b.style]), [["lfg:here:L1", "I'm here", ButtonStyle.Success]]);
-  assert.equal(all(p, ComponentType.Button).find((b) => b.disabled).label, "1 / 2");
-  assert.deepEqual(accents(p), [R.COLORS.amber]);
-  const ping = R.buildWelcome(d, confirmingListing(), undefined, { pingJoiner: true });
-  assert.deepEqual(ping.allowedMentions, { users: ["u1", "u2"] });
-  assert.match(textOf(ping), /you accepted <@u2>/);
+  assert.equal(p.components[0].type, ComponentType.TextDisplay);
+  assert.equal(p.components[0].content, "Your search is live. Requests show up below in the order they came in — tap Accept on the one you want.");
+  assert.deepEqual(p.allowedMentions, { parse: [] });
+  assert.equal(ids(p).some((id) => id.startsWith("lfg:here:")), false);
+  assert.ok(ids(p).includes("lfg:cancel:L1"));
 });
 
-test("welcome: fixed → wait text without a button; started → ✓ Game on in teal", () => {
-  const d = dataWith();
+test("thread message, confirming: a short state line, Requests, then the amber Confirm box with I'm here as its Section accessory — no Cancel search, no action row", () => {
+  const p = R.renderRequestPanel(dataWith(), confirmingListing({ u1: T0 }), T0);
+  valid(p);
+  assert.equal(p.components[0].content, "You picked **Marci** for **BASIC · SUP**.");
+  assert.doesNotMatch(textOf(p), /WAKEY|Your search is live/);
+  assert.deepEqual(accents(p), [R.COLORS.teal, R.COLORS.amber]);
+  const confirm = p.components.at(-1);
+  assert.equal(confirm.type, ComponentType.Container, "the Confirm box is the last part — no row after it");
+  assert.equal(confirm.components[0].accessory.label, "1 / 2"); // the counter badge
+  const sec = confirm.components[1];
+  assert.equal(sec.type, ComponentType.Section);
+  assert.deepEqual([sec.accessory.custom_id, sec.accessory.label, sec.accessory.style], ["lfg:here:L1", "I'm here", ButtonStyle.Success]);
+  const t = sec.components[0].content;
+  assert.match(t, /\*\*Dani\*\* ✓ · \*\*Marci\*\* — not yet/);
+  assert.match(t, new RegExp(`On hold until you both confirm: \\*\\*Ann\\*\\* · ends ${ts(T0 + 5 * MIN)}`));
+  assert.equal(all(p, ComponentType.ActionRow).length, 0);
+  assert.equal(ids(p).includes("lfg:cancel:L1"), false);
+});
+
+test("thread message, fixed: the Confirm box says when they will be asked — no I'm here yet, no Cancel search", () => {
   const fixed = confirmingListing();
   fixed.state = "fixed";
   fixed.startAt = T0 + 60 * MIN;
-  const p = R.buildWelcome(d, fixed);
+  fixed.checkIn = null;
+  const p = R.renderRequestPanel(dataWith(), fixed, T0);
   valid(p);
   assert.match(textOf(p), new RegExp(`asked to confirm 5 minutes before the start \\(${ts(T0 + 60 * MIN)}\\)`));
-  assert.equal(ids(p).some((id) => id.startsWith("lfg:here:")), false);
-  const started = confirmingListing({ u1: T0, u2: T0 });
-  started.state = "started";
-  const s = R.buildWelcome(d, started);
-  assert.match(textOf(s), /✓ Game on/);
-  assert.equal(all(s, ComponentType.Button).find((b) => b.disabled).label, "2 / 2");
-  assert.deepEqual(accents(s), [R.COLORS.teal]);
+  assert.equal(ids(p).some((id) => id.startsWith("lfg:here:") || id.startsWith("lfg:cancel:")), false);
+  assert.equal(all(p, ComponentType.Button).find((b) => b.custom_id === "lfg:badge:confirm").label, "0 / 2");
 });
 
-test("Game on! event box carries the partner's avatar; defaultAvatar follows the id", () => {
-  const p = R.renderGameOn(dataWith(), confirmingListing(), { nameOf: (id, fb) => fb, avatarOf: (id) => `https://cdn/${id}.png` });
+test("thread message, started: the Game on! box (partner's avatar) replaces Confirm in the same message; defaultAvatar follows the id", () => {
+  const started = confirmingListing({ u1: T0, u2: T0 });
+  started.state = "started";
+  started.startedAt = T0;
+  const p = R.renderRequestPanel(dataWith(), started, T0, { nameOf: (id, fb) => fb, avatarOf: (id) => `https://cdn/${id}.png` });
   valid(p);
-  const sec = p.components[0].components[0];
-  assert.deepEqual(sec.accessory, { type: ComponentType.Thumbnail, media: { url: "https://cdn/u2.png" } });
+  assert.equal(ids(p).some((id) => id.startsWith("lfg:here:") || id.startsWith("lfg:cancel:") || id === "lfg:badge:confirm"), false);
+  const gameOn = p.components.at(-1);
+  assert.equal(gameOn.accent_color, R.COLORS.teal);
+  assert.deepEqual(gameOn.components[0].accessory, { type: ComponentType.Thumbnail, media: { url: "https://cdn/u2.png" } });
   assert.match(textOf(p), /### Game on!\n-# \*\*Dani\*\* \+ \*\*Marci\*\* · BASIC · SUP · good luck/);
+  assert.doesNotMatch(textOf(p), /Your search is live|You picked/);
   assert.equal(R.defaultAvatar("175928847299117063"), `https://cdn.discordapp.com/embed/avatars/${Number((175928847299117063n >> 22n) % 6n)}.png`);
   assert.equal(R.defaultAvatar("not-a-number"), "https://cdn.discordapp.com/embed/avatars/0.png");
 });
@@ -290,14 +303,37 @@ test("request panel, closed (B2): grey, the closing line, no Accept and no Cance
   assert.doesNotMatch(textOf(p), /No requests yet/);
 });
 
-test("names are escaped incl. masked links (D1); the welcome's on-hold list stops at 10 names + “+N more” (D2)", () => {
+test("thread message, reopened: the red notice box (who didn't confirm / left) while open; gone once closed", () => {
+  const L = listing("L1", "u1", { notice: { kind: "reopened", userId: "u2", name: "Z_ed", at: T0 }, requests: [request("u2", T0, { status: "closed", reason: "no_confirm", userName: "Z_ed" }), request("u3", T0 + 1)] });
+  const p = R.renderRequestPanel(dataWith(), L, T0);
+  valid(p);
+  assert.deepEqual(accents(p), [R.COLORS.red, R.COLORS.teal, R.COLORS.grey]);
+  assert.match(textOf(p), /\*\*Z\\_ed\*\* didn't confirm — your search is open again\. Pick someone else from the list\./);
+  L.notice.kind = "reopenedLeft";
+  assert.match(textOf(R.renderRequestPanel(dataWith(), L, T0)), /\*\*Z\\_ed\*\* left — your search is open again/);
+  assert.doesNotMatch(textOf(R.renderRequestPanel(dataWith(), L, T0, undefined, { closedLine: "Search expired." })), /open again/);
+});
+
+test("thread message: the Confirm box and a long request line share ONE message budget (fitRows cuts the rows)", () => {
+  const L = confirmingListing();
+  L.requests = [L.requests[0], ...Array.from({ length: 30 }, (_, i) => request(`h${i}`, T0 + 1 + i, { onHold: true, userName: `Held ${i}` }))];
+  L.requests.push(...Array.from({ length: 10 }, (_, i) => request(`x${i}`, T0 + 50 + i, { status: "withdrawn", reason: "self" })));
+  const p = R.renderRequestPanel(dataWith(), L, T0);
+  assert.ok(p, "it fits");
+  valid(p);
+  assert.ok(ids(p).includes("lfg:here:L1"), "the Confirm box survives the cut");
+  assert.match(textOf(p), /more waiting/);
+});
+
+test("names are escaped incl. masked links (D1); the Confirm box's on-hold list stops at 10 names + “+N more” (D2)", () => {
   assert.equal(R.esc("[x](https://e.com)"), "\\[x](https://e.com)");
   assert.equal(R.esc("Z_ed*"), "Z\\_ed\\*");
   const L = confirmingListing();
   L.requests = [L.requests[0], ...Array.from({ length: 13 }, (_, i) => request(`h${i}`, T0 + 1 + i, { onHold: true, userName: i === 0 ? "[x](https://e.com)" : `Held ${i}` }))];
-  const p = R.buildWelcome(dataWith(), L);
+  const p = R.renderRequestPanel(dataWith(), L, T0);
   valid(p);
-  const t = textOf(p);
+  const confirmBox = p.components.at(-1);
+  const t = textOf(confirmBox);
   assert.match(t, /On hold until you both confirm: \*\*\\\[x\]\(https:\/\/e\.com\)\*\*, \*\*Held 1\*\*/);
   assert.match(t, /\*\*Held 9\*\*, \+3 more · ends/);
   assert.doesNotMatch(t, /Held 10/);

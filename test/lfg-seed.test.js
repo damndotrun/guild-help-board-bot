@@ -54,7 +54,7 @@ test("seedIfNeeded: seeds once from the live guild, never over an existing confi
   assert.equal(await seed.seedIfNeeded(ctx), "seeded");
   const cfg = store.load(ctx).config;
   assert.equal(cfg.channelId, "c2");
-  assert.deepEqual(cfg.times, { reminderLeadMin: 5, checkInWindowMin: 5, startedVisibleMin: 5, nowTtlMin: 30, pingSec: 60 });
+  assert.deepEqual(cfg.times, { reminderLeadMin: 5, checkInWindowMin: 5, startedVisibleMin: 5, nowTtlMin: 30, transientSec: 5, archiveAfterMin: 15 });
   assert.equal(await seed.seedIfNeeded(ctx), "kept");
   const manual = fakeCtx(fake);
   store.save(manual, dataWith());
