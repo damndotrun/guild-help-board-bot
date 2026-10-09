@@ -44,7 +44,7 @@ function emptyData() {
   return {
     version: 1,
     config: null,
-    channel: { messageIds: {}, pingMessageId: null, pingUntil: null },
+    channel: { mainMessageId: null, pingMessageId: null, pingUntil: null },
     listings: [],
     dmCards: {},
     notices: {},
@@ -63,7 +63,11 @@ function shape(raw) {
   if (typeof d.version !== "number") d.version = base.version;
   d.config = isObj(d.config) ? shapeConfig(d.config) : null;
   d.channel = isObj(d.channel) ? { ...base.channel, ...d.channel } : base.channel;
-  if (!isObj(d.channel.messageIds)) d.channel.messageIds = {};
+  // One message for the whole block stack (live test 2026-10-09). The old
+  // per-block `messageIds` map is kept only while non-empty: the next sync
+  // deletes those messages and drops the field (channel.repost).
+  if (typeof d.channel.mainMessageId !== "string" || !d.channel.mainMessageId) d.channel.mainMessageId = null;
+  if (!isObj(d.channel.messageIds) || Object.keys(d.channel.messageIds).length === 0) delete d.channel.messageIds;
   d.listings = Array.isArray(d.listings) ? d.listings.filter(isObj).map(shapeListing) : [];
   for (const key of ["dmCards", "notices", "prefs", "favorites"]) if (!isObj(d[key])) d[key] = {};
   return d;

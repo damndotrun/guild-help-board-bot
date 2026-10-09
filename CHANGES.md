@@ -12,7 +12,8 @@ tricky bits don't get re-broken.
 
 - **What:** the looking-for-game channel as a module (`MODULES=help,lfg`):
   bot-only channel blocks (banner · start panel with **Pick your roles…** ·
-  live board · a 60-second ping), a one-modal search start, a private thread
+  live board — stacked in ONE bot message — and a 60-second ping under it),
+  a one-modal search start, a private thread
   per search (auto-archive 3 days) with an in-order request panel and
   **Accept**, a live DM card per requester, a two-sided **I'm here** check-in
   (reminders, deadline, reopen), `/menu › Teammates`, and an append-only
@@ -25,11 +26,16 @@ tricky bits don't get re-broken.
   thread is not open yet), `effects.js` (plays the events after a save: thread
   lines, welcome/confirm, panel, DM cards, board; `afterCreate`; `tick`),
   `render.js` (pure V2 payloads, `fitRows`; the Just started / Fixed boxes and
-  the accepted DM card are cut with "+N more"), `channel.js` (blocks, tail
-  check, ping — one writer; an EMPTY history (no Read Message History)
-  skips the tail check instead of looping reposts, a non-empty one without
-  our blocks means they are buried → repost; `repost` persists the block ids
-  one by one), `discord.js` (REST glue, `deliverCard` — one queue per member, and
+  the accepted DM card are cut with "+N more"; `renderStack` = the channel
+  message: banner · panel · board components concatenated in layout order,
+  the board's rows fitted to the budget left after the other blocks;
+  `renderStackFallback` = panel + empty board), `channel.js` (the one
+  channel message `channel.mainMessageId`, tail check, ping — one writer; an
+  EMPTY history (no Read Message History) skips the tail check instead of
+  looping reposts, a non-empty one without our message means it is buried →
+  repost; `resetPanel` always edits the whole message (clears the role
+  picker); a store with the old per-block `channel.messageIds` is migrated by
+  one repost that deletes them all), `discord.js` (REST glue, `deliverCard` — one queue per member, and
   `deleteStaleCard` on the same queue; `openThread` deletes the thread again
   if adding a member fails; the DM card is replaced only on 10008 = deleted by
   hand — any other edit error leaves the state untouched; the new-search DM
@@ -68,13 +74,14 @@ tricky bits don't get re-broken.
   17. lfg: every re-rendered select gets a fresh `custom_id`
       (`render.renderTag()`, like help's `rolesRenderTag`) — an identical
       one freezes in the client.
-  18. lfg: the payloads with a variable-length list — the board, the request
-      panel and the DM card — go through `render.fitRows` →
+  18. lfg: the payloads with a variable-length list — the channel message
+      (banner + panel + board, validated as ONE message), the request panel
+      and the DM card — go through `render.fitRows` →
       `messageErrors(..., { prefixes: ["lfg:", "menu:"] })` and are cut with
       "+N more". The fixed-size ones are NOT validated at run time (only by
-      the render tests): banner, start panel, ping, WAKEY welcome (its on-hold
+      the render tests): ping, WAKEY welcome (its on-hold
       name list is capped at 10 + "+N more", `MAX_ON_HOLD_NAMES`), the closed
-      welcome, Game on!, the "card replaced" line, the empty board, the
+      welcome, Game on!, the "card replaced" line, the stack fallback, the
       new-search DM, thread lines and closing lines. Colours only on
       container stripes; buttons Secondary except I'm here (Success) and
       Cancel search (Danger).
@@ -93,6 +100,18 @@ tricky bits don't get re-broken.
       empty (e.g. a self-withdraw of the last request). A refresh with
       nothing left to show edits the card to its empty state. That delete
       writes the same `dm` / `deleted` journal line.
+  22. lfg: the channel blocks are ONE bot message (`channel.mainMessageId`,
+      live test 2026-10-09: separate messages each showed "(edited)"). Its
+      whole payload fits 40 components / 4000 characters — the board's rows
+      get only what the banner and the panel leave (`renderStack`); if not
+      even the empty board fits, `repost` logs it and posts
+      `renderStackFallback` — never no message, or every tick would repost.
+      A layout with no active block posts nothing (an empty V2 message is
+      refused) and takes ours down.
+      Every send / edit carries `{ parse: [] }`; the 60-second ping stays a
+      separate message under it. The sent-payload hash ignores the role
+      picker's render tag; every edit (board change or `resetPanel`) sends a
+      fresh tag, so ANY edit also resets a member's open role pick.
 
 ## 2026-10-09 — `/config roles` select no longer freezes after a refusal
 

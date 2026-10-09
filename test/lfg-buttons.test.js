@@ -209,7 +209,7 @@ test("Pick your roles…: a toggle answered with the ephemeral V2 My roles scree
   assert.match(header, /^\*\*Menu › Teammates › My roles\*\*/);
   assert.match(header, /✅ Added: R-RADAR · Removed: R-SUP/);
   assert.deepEqual([...m.roles.cache.keys()], ["r-radar"]);
-  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.messageIds[0]));
+  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.mainMessageId));
   const ids = [];
   walk(payload, (c) => { if (c.custom_id) ids.push(c.custom_id); });
   assert.ok(ids.every((id) => id.startsWith("menu:")), ids.join());
@@ -232,7 +232,7 @@ test("Pick your roles… with a stale member cache (Guilds intent only): the tog
   assert.equal(selectMenu.length, 1);
   const held = selectMenu[0].options.filter((o) => o.default).map((o) => o.value);
   assert.deepEqual(held, ["r-radar"], "the pre-selection is derived from the action result, not the stale cache");
-  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.messageIds[0]), "the panel was re-sent");
+  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.mainMessageId), "the panel was re-sent");
 });
 
 test("a failed acknowledgement never loses the effects (Join's reply / the modal's defer throw)", async () => {
@@ -289,7 +289,7 @@ test("Pick your roles…: a failed defer still changes the roles and re-sends th
   i.deferReply = async () => { throw new Error("Unknown interaction"); };
   await route(i);
   assert.deepEqual(fake.ops.filter((o) => o.op === "roleAdd" || o.op === "roleRemove").map((o) => [o.op, o.roleId]), [["roleAdd", "r-radar"], ["roleRemove", "r-sup"]]);
-  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.messageIds[0]), "the panel was re-sent");
+  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.mainMessageId), "the panel was re-sent");
 });
 
 test("Pick your roles…: a screen that cannot be built still ends the deferred reply (plain fallback), and the panel is re-sent", async () => {
@@ -310,7 +310,7 @@ test("Pick your roles…: a screen that cannot be built still ends the deferred 
   assert.match(payload.content, /Something went wrong showing your roles/);
   assert.equal(payload.flags, undefined);
   assert.ok(fake.ops.some((o) => o.op === "roleAdd" && o.roleId === "r-sup"), "the change itself went through");
-  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.messageIds[0]), "the panel was re-sent");
+  assert.ok(fake.ops.some((o) => o.op === "edit" && o.messageId === store.load(ctx).channel.mainMessageId), "the panel was re-sent");
 });
 
 test("modal submit: the duplicate-search Cancel button uses the configured label", async () => {

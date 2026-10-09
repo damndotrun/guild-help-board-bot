@@ -255,7 +255,7 @@ test("tick: a lapsed search is closed and logged, the board posted; the confirm 
   assert.ok(opsOf(fake, "edit").some((o) => o.messageId === "w9"));
   assert.ok(opsOf(fake, "dm").some((o) => o.channelId === "dm-u3")); // expired news
   assert.ok(opsOf(fake, "dm").some((o) => o.channelId === "dm-u6")); // the window opened
-  assert.equal(Object.keys(d.channel.messageIds).length, 1); // the board block was posted
+  assert.ok(d.channel.mainMessageId); // the board message was posted
 });
 
 test("tick: a stale DM card (24 h, no activity) is deleted and its record dropped", async () => {

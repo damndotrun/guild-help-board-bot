@@ -342,9 +342,11 @@ need **two accounts** (A = owner, B = `testkaf_`); both hold `⚔ GM-PING` and
 B holds `💥 SUP`. Phone block last.
 
 **Channel**
-- [ ] The channel shows, bottom to top: the board ("No one is looking right
-      now."), above it the grey **Want a game?** panel with **Start my own
-      search** and **Pick your roles…**, above that the banner image.
+- [ ] The channel shows ONE bot message: the banner image on top, under it
+      the grey **Want a game?** panel with **Start my own search** and
+      **Pick your roles…**, under that the board ("No one is looking right
+      now.") — stacked, no "(edited)" between them; a single "(edited)"
+      under the whole message at most.
 - [ ] **(B)** Type in the channel → not allowed (only the bot posts here).
 
 **Roles**
@@ -435,9 +437,12 @@ B holds `💥 SUP`. Phone block last.
       the bot restarted → the Teammates screen names the missing permission.
 
 **Self-repair**
-- [ ] Delete the board message by hand → within 30 s the blocks are back in
-      order. Post as an admin under the board → within 30 s the blocks are
-      re-posted below it.
+- [ ] Delete the bot's message by hand → within 30 s it is back (banner,
+      panel, board in one message). Post as an admin under it → within 30 s
+      it is re-posted below yours.
+- [ ] Upgrading from a build with separate block messages: after the restart
+      the old banner / panel / board messages are gone and ONE message stands
+      in their place.
 
 **Phone**
 - [ ] Every box is readable at phone width; badges sit at the right of the

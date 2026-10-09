@@ -1,7 +1,8 @@
-// The board channel (M4 spec §5.3): the bot's messages in config.layout order
-// (banner · panel · board) at the bottom of the channel, the 60-second ping
-// under them. ONE writer: every channel write runs on one promise chain, so
-// two searches posted at once can never leave two boards.
+// The board channel (M4 spec §5.3): ONE bot message at the bottom of the
+// channel holding the blocks in config.layout order (banner · panel · board —
+// live test 2026-10-09: separate messages each showed "(edited)" and read as a
+// pile), the 60-second ping under it. ONE writer: every channel write runs on
+// one promise chain, so two searches posted at once can never leave two boards.
 const { MessageType } = require("discord.js");
 const S = require("./state");
 const R = require("./render");
@@ -20,9 +21,12 @@ function enqueue(ctx, fn) {
 let hiddenLogged = false;
 let tailSkipLogged = false;
 
-// The last payload sent per message id: an unchanged board is never re-sent.
+// The last payload sent per message id: an unchanged message is never re-sent.
+// The role picker's per-render tag (render.renderTag) is left out of the hash,
+// or every render would count as a change.
 const lastSent = new Map();
-const hashOf = (payload) => JSON.stringify(payload);
+const hashOf = (payload) =>
+  JSON.stringify(payload, (key, value) => (key === "custom_id" && typeof value === "string" && value.startsWith("lfg:roles:") ? "lfg:roles:" : value));
 
 // The blocks that render: a banner without an image is skipped (§3.1).
 function activeBlocks(config) {
@@ -31,70 +35,67 @@ function activeBlocks(config) {
     .filter((b) => (b.type === "banner" ? !!b.imageUrl : b.type === "panel" || b.type === "board"));
 }
 
-function renderBlock(data, block, now, look, hasRole) {
-  if (block.type === "banner") return R.renderBanner(block);
-  if (block.type === "panel") return R.renderPanel(data.config, hasRole);
-  return R.renderBoard(data, now, look);
-}
-
-// Pure: is the bottom of the channel exactly our blocks (+ the live ping)?
+// Pure: is the bottom of the channel exactly our message (+ the live ping)?
 // `recent` is newest first ({ id, type, authorId }). The "X started a thread"
 // system lines the bot itself leaves are `junk` — deleted, not a reason to repost.
 // (Private threads normally post no such line in the parent channel, so this
 // branch is a guard; Task 13's live measurement shows whether it ever fires.)
-function tailCheck(recent, blockIds, pingId, botId) {
+function tailCheck(recent, mainId, pingId, botId) {
   const junk = recent.filter((m) => m.type === MessageType.ThreadCreated && m.authorId === botId).map((m) => m.id);
   const rest = recent.filter((m) => !junk.includes(m.id));
   let i = 0;
   if (pingId && rest[0] && rest[0].id === pingId) i = 1;
-  const ok = [...blockIds].reverse().every((id) => rest[i] && rest[i++].id === id);
-  return { ok, junk };
+  return { ok: !!mainId && !!rest[i] && rest[i].id === mainId, junk };
 }
 
 const hasRoleIn = (guild) => (id) => !guild || !guild.roles || guild.roles.cache.has(id);
 
-// Delete our blocks and post them again in order (no ping) — after a restart
-// with a block gone, or when something got between / under them.
+// Every message id the store still points at: the one message, plus the old
+// per-block ids of a store from before the one-message build (migration).
+const knownIds = (channelData) => [channelData.mainMessageId, ...Object.values(channelData.messageIds || {})].filter(Boolean);
+
+async function renderNow(ctx, data, blocks, now) {
+  const guild = await D.getGuild(ctx, data.config);
+  return R.renderStack(data, blocks, now, D.lookFor(ctx, guild), hasRoleIn(guild));
+}
+
+// Delete our message(s) and post the stack again (no ping) — after a restart
+// with the message gone, when something got under it, or to migrate a store
+// with the old per-block ids.
 async function repost(ctx, channel, data, blocks, now) {
-  for (const id of Object.values(data.channel.messageIds)) {
+  for (const id of knownIds(data.channel)) {
     // Only "already gone" is expected; anything else is worth a log line.
     await channel.messages.delete(id).catch((err) => {
-      if (err.code !== D.UNKNOWN_MESSAGE) ctx.log.warn(`could not delete old block ${id}: ${err.message}`);
+      if (err.code !== D.UNKNOWN_MESSAGE) ctx.log.warn(`could not delete old message ${id}: ${err.message}`);
     });
     lastSent.delete(id);
   }
-  // The old ids are gone; from here each new id is saved the moment its send
-  // succeeds, so a send failing half-way never leaves a block no store knows
-  // (an orphan panel would be a second live Start button): the next sync sees
-  // a missing id and reposts, deleting the ones already sent.
+  // The old ids are gone; the new one is saved the moment its send succeeds.
+  // A failing send leaves no id → the next sync reposts.
   const cleared = store.load(ctx);
-  cleared.channel.messageIds = {};
+  cleared.channel.mainMessageId = null;
+  delete cleared.channel.messageIds;
   store.save(ctx, cleared);
-  const guild = await D.getGuild(ctx, data.config);
-  const look = D.lookFor(ctx, guild);
-  const ids = {};
-  for (const block of blocks) {
-    let payload = renderBlock(data, block, now, look, hasRoleIn(guild));
-    if (!payload) {
-      // Never skip a block: a missing id would repost every tick. The empty
-      // board stands in; the next edit brings the real one once it fits.
-      ctx.log.error(`block ${block.index} (${block.type}) does not fit a message — posting a placeholder`);
-      payload = R.renderEmptyBoard(data.config);
-    }
-    const msg = await channel.send({ ...payload, allowedMentions: { parse: [] } });
-    ids[block.index] = msg.id;
-    lastSent.set(msg.id, hashOf(payload));
-    const fresh = store.load(ctx); // no await between this load and the save
-    fresh.channel.messageIds[block.index] = msg.id;
-    store.save(ctx, fresh);
+  let payload = await renderNow(ctx, data, blocks, now);
+  if (!payload) {
+    // Never skip the message: a missing id would repost every tick. The panel
+    // and the empty board stand in; the next edit brings the real board once it fits.
+    ctx.log.error("the channel blocks do not fit one message — posting the panel and an empty board");
+    const guild = await D.getGuild(ctx, data.config);
+    payload = R.renderStackFallback(data.config, blocks, hasRoleIn(guild));
   }
-  return ids;
+  const msg = await channel.send(payload);
+  lastSent.set(msg.id, hashOf(payload));
+  const fresh = store.load(ctx); // no await between this load and the save
+  fresh.channel.mainMessageId = msg.id;
+  store.save(ctx, fresh);
+  return msg.id;
 }
 
 // Bring the channel in line with lfg.json. checkTail (the tick): also verify
-// that nothing sits between or under the blocks. Without it (after an
-// action) only a missing block forces a repost; the board is edited in place
-// when its payload changed.
+// that nothing sits under the message. Without it (after an action) only a
+// missing id forces a repost; the message is edited in place when its
+// payload changed.
 function sync(ctx, { checkTail = false } = {}) {
   return enqueue(ctx, async () => {
     const now = D.nowOf(ctx);
@@ -108,27 +109,42 @@ function sync(ctx, { checkTail = false } = {}) {
     }
     hiddenLogged = false;
     const blocks = activeBlocks(data.config);
-    const ids = blocks.map((b) => data.channel.messageIds[b.index]);
-    if (ids.some((id) => !id) || Object.keys(data.channel.messageIds).length !== blocks.length) {
+    const id = data.channel.mainMessageId;
+    if (blocks.length === 0) {
+      // Nothing to show (an empty layout, or only a banner without an image):
+      // an empty V2 message would be refused every tick — take ours down instead.
+      if (knownIds(data.channel).length === 0) return "empty";
+      for (const old of knownIds(data.channel)) {
+        await D.remove(ctx, data.config.channelId, old);
+        lastSent.delete(old);
+      }
+      const fresh = store.load(ctx); // no await between this load and the save
+      fresh.channel.mainMessageId = null;
+      delete fresh.channel.messageIds;
+      store.save(ctx, fresh);
+      return "empty";
+    }
+    if (!id || data.channel.messageIds) {
       await repost(ctx, channel, data, blocks, now);
       return "reposted";
     }
     if (checkTail) {
       let recent = null;
       try {
-        // + ping + room for a few junk/system lines (2nd-round review), so two searches in one tick don't force a repost
-        const fetched = await channel.messages.fetch({ limit: blocks.length + 4 });
+        // our message + the ping + room for a few junk/system lines (2nd-round
+        // review), so two searches in one tick don't force a repost
+        const fetched = await channel.messages.fetch({ limit: 6 });
         recent = [...fetched.values()].map((m) => ({ id: m.id, type: m.type, authorId: m.author && m.author.id }));
       } catch (err) {
-        // Some failures throw: skip the position check, still edit the board
+        // Some failures throw: skip the position check, still edit the message
         if (!tailSkipLogged) ctx.log.warn(`tail check skipped: ${err.message}`);
         tailSkipLogged = true;
       }
       // Without Read Message History Discord does NOT throw — it returns an
       // empty list: treating that as "something is in the way" would repost
       // every tick. Only an EMPTY window is skipped; a non-empty one without
-      // our ids means the blocks are buried under newer messages → repost
-      // (after it the blocks are the newest, so this cannot loop).
+      // our id means the message is buried under newer ones → repost (after
+      // it ours is the newest, so this cannot loop).
       if (recent && recent.length === 0) {
         if (!tailSkipLogged) ctx.log.warn("tail check skipped: the channel history came back empty (Read Message History?)");
         tailSkipLogged = true;
@@ -137,23 +153,19 @@ function sync(ctx, { checkTail = false } = {}) {
       if (recent) {
         tailSkipLogged = false;
         const botId = ctx.client && ctx.client.user ? ctx.client.user.id : "bot";
-        const { ok, junk } = tailCheck(recent, ids, data.channel.pingMessageId, botId);
-        for (const id of junk) await channel.messages.delete(id).catch(() => {});
+        const { ok, junk } = tailCheck(recent, id, data.channel.pingMessageId, botId);
+        for (const j of junk) await channel.messages.delete(j).catch(() => {});
         if (!ok) {
           await repost(ctx, channel, data, blocks, now);
           return "reposted";
         }
       }
     }
-    const board = blocks.find((b) => b.type === "board");
-    if (!board) return "ok";
-    const guild = await D.getGuild(ctx, data.config);
-    const payload = R.renderBoard(data, now, D.lookFor(ctx, guild));
+    const payload = await renderNow(ctx, data, blocks, now);
     if (!payload) {
-      ctx.log.error("the board does not fit a message — keeping the last one");
+      ctx.log.error("the channel blocks do not fit one message — keeping the last one");
       return "invalid";
     }
-    const id = data.channel.messageIds[board.index];
     if (lastSent.get(id) === hashOf(payload)) return "unchanged";
     try {
       await channel.messages.edit(id, payload);
@@ -168,16 +180,19 @@ function sync(ctx, { checkTail = false } = {}) {
 }
 
 // The role picker keeps the member's pick on screen until its message is
-// re-rendered — editing the static panel resets it for everyone (§3.1).
+// re-rendered — editing the message resets it for everyone (§3.1). Always
+// sent, even when nothing else changed: clearing the picker is the point.
 function resetPanel(ctx) {
   return enqueue(ctx, async () => {
+    const now = D.nowOf(ctx);
     const data = store.load(ctx);
     if (!data.config) return;
-    const block = activeBlocks(data.config).find((b) => b.type === "panel");
-    const id = block && data.channel.messageIds[block.index];
-    if (!id) return;
-    const guild = await D.getGuild(ctx, data.config);
-    await D.edit(ctx, data.config.channelId, id, R.renderPanel(data.config, hasRoleIn(guild)));
+    const blocks = activeBlocks(data.config);
+    const id = data.channel.mainMessageId;
+    if (!id || data.channel.messageIds || !blocks.some((b) => b.type === "panel")) return;
+    const payload = await renderNow(ctx, data, blocks, now);
+    if (!payload) return; // logged by the next sync, which keeps the last message
+    if (await D.edit(ctx, data.config.channelId, id, payload)) lastSent.set(id, hashOf(payload));
   });
 }
 

@@ -82,14 +82,16 @@ function fitRows(total, build) {
 }
 
 // ── channel blocks ─────────────────────────────────────────────────────────
+// The blocks are ONE channel message (renderStack): each block's components
+// concatenated in config.layout order. renderBanner / renderPanel /
+// renderBoard still render a block on its own (tests, the budget check).
 
-function renderBanner(block) {
-  return v2([{ type: ComponentType.MediaGallery, items: [{ media: { url: block.imageUrl } }] }]);
-}
+const bannerParts = (block) => [{ type: ComponentType.MediaGallery, items: [{ media: { url: block.imageUrl } }] }];
+const renderBanner = (block) => v2(bannerParts(block));
 
 // The static start panel; the role picker lists the subscribable roles that
 // still exist (hasRole: a deleted role drops out, §8.1).
-function renderPanel(config, hasRole = () => true, tag = renderTag()) {
+function panelParts(config, hasRole = () => true, tag = renderTag()) {
   const options = S.subscribable(config)
     .filter((s) => hasRole(s.roleId))
     .map((s) => ({ label: s.label, value: s.roleId, ...(s.emoji ? { emoji: parseEmoji(s.emoji) } : {}) }));
@@ -97,8 +99,9 @@ function renderPanel(config, hasRole = () => true, tag = renderTag()) {
   if (options.length > 0) {
     components.push(row({ type: ComponentType.StringSelect, custom_id: `lfg:roles:${tag}`, placeholder: textOf(config, "rolesPlaceholder"), min_values: 1, max_values: options.length, options }));
   }
-  return v2([box(COLORS.grey, components)]);
+  return [box(COLORS.grey, components)];
 }
+const renderPanel = (config, hasRole, tag) => v2(panelParts(config, hasRole, tag));
 
 function joinRow(config, listing, look) {
   const { label, emoji } = S.labelOf(config, listing);
@@ -142,19 +145,24 @@ function pairBox(config, color, titleKey, segment, listings, look) {
 }
 
 // "No one is looking right now." — also the stand-in for a board that cannot
-// be rendered (channel.repost), so a block id is always stored.
-const renderEmptyBoard = (config) => v2([box(COLORS.grey, [td(textOf(config, "boardEmpty"))])]);
+// be rendered (channel.repost → renderStackFallback), so a message id is
+// always stored.
+const emptyBoardParts = (config) => [box(COLORS.grey, [td(textOf(config, "boardEmpty"))])];
+const renderEmptyBoard = (config) => v2(emptyBoardParts(config));
 
 // The live board (§3.1): Just started · Fixed · Timed · Now, each only when
 // not empty; Now and Timed rows fill the room left, the rest is "+N more".
-function renderBoard(data, now, look = PLAIN_LOOK) {
+// `wrap(parts)` builds the whole message around the board's components
+// (renderStack puts the banner and the panel around them), so the rows get
+// only the 40-component / 4000-character budget LEFT after the other blocks.
+function renderBoard(data, now, look = PLAIN_LOOK, wrap = (parts) => v2(parts)) {
   const config = data.config;
   const started = data.listings.filter((l) => l.state === "started").sort((a, b) => a.startedAt - b.startedAt);
   const fixed = data.listings.filter((l) => l.state === "fixed" || l.state === "confirming").sort((a, b) => (a.startAt ?? a.acceptedAt) - (b.startAt ?? b.acceptedAt));
   const open = S.joinable(data, now); // a lapsed search is gone even before the tick drops it
   const nowRows = open.filter((l) => l.startAt === null);
   const timedRows = open.filter((l) => l.startAt !== null);
-  if (started.length + fixed.length + open.length === 0) return renderEmptyBoard(config);
+  if (started.length + fixed.length + open.length === 0) return fitRows(0, () => wrap(emptyBoardParts(config)));
   const priority = [...nowRows, ...timedRows];
   return fitRows(priority.length, (n) => {
     const shown = new Set(priority.slice(0, n));
@@ -168,8 +176,30 @@ function renderBoard(data, now, look = PLAIN_LOOK) {
       if (visible.length < rows.length) inner.push(td(`-# ${textOf(config, "boardMore", { n: rows.length - visible.length })}`));
       parts.push(box(color, inner));
     }
-    return v2(parts);
+    return wrap(parts);
   });
+}
+
+// The channel's ONE bot message (§3.1/§5.3, live test 2026-10-09: separate
+// messages each showed "(edited)"): the active blocks' components in layout
+// order. Null when not even the empty board fits beside the other blocks —
+// the caller keeps the last message, or posts renderStackFallback.
+function renderStack(data, blocks, now, look = PLAIN_LOOK, hasRole = () => true, tag = renderTag()) {
+  const config = data.config;
+  const pieces = blocks.map((b) => (b.type === "banner" ? bannerParts(b) : b.type === "panel" ? panelParts(config, hasRole, tag) : null));
+  const wrap = (boardParts) => {
+    let placed = false; // a second board block in the layout renders nothing
+    return v2(pieces.flatMap((p) => p || (placed ? [] : ((placed = true), boardParts))), { allowedMentions: { parse: [] } });
+  };
+  if (!blocks.some((b) => b.type === "board")) return fitRows(0, () => wrap([]));
+  return renderBoard(data, now, look, wrap);
+}
+
+// What repost sends when renderStack gives null: the panel (when the layout
+// has one) and the empty board — never no message, or every tick would repost.
+function renderStackFallback(config, blocks, hasRole = () => true, tag = renderTag()) {
+  const panel = blocks.some((b) => b.type === "panel") ? panelParts(config, hasRole, tag) : [];
+  return v2([...panel, ...emptyBoardParts(config)], { allowedMentions: { parse: [] } });
 }
 
 // The new-search ping under the board (U7): the only message that pings roles.
@@ -429,6 +459,8 @@ module.exports = {
   renderEmptyBoard,
   renderPanel,
   renderBoard,
+  renderStack,
+  renderStackFallback,
   renderPing,
   renderRequestPanel,
   buildWelcome,

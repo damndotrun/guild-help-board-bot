@@ -39,7 +39,16 @@ test("shape: garbage becomes an empty store; unknown fields and listings survive
   assert.deepEqual(d.prefs, {});
 });
 
-// ── input ──────────────────────────────────────────────────────────────────
+test("shape: the channel holds one message id; the old per-block map survives only while non-empty (migration)", () => {
+  assert.deepEqual(S.emptyData().channel, { mainMessageId: null, pingMessageId: null, pingUntil: null });
+  assert.deepEqual(S.shape({ channel: { mainMessageId: 5, messageIds: {} } }).channel, { mainMessageId: null, pingMessageId: null, pingUntil: null });
+  assert.deepEqual(S.shape({ channel: { messageIds: "bad", pingMessageId: "p" } }).channel, { mainMessageId: null, pingMessageId: "p", pingUntil: null });
+  const old = S.shape({ channel: { messageIds: { 0: "a", 2: "b" }, pingMessageId: null, pingUntil: null } }).channel;
+  assert.deepEqual(old, { mainMessageId: null, messageIds: { 0: "a", 2: "b" }, pingMessageId: null, pingUntil: null });
+  assert.equal(S.shape({ channel: { mainMessageId: "m1" } }).channel.mainMessageId, "m1");
+});
+
+// ── input──────────────────────────────────────────────────────────────────
 
 test("parseMinutes: empty / 0 = now; whole 1–1440; everything else refused", () => {
   const cases = [["", 0], ["0", 0], [" 15 ", 15], ["1", 1], ["01", 1], ["1440", 1440], [undefined, 0]];
