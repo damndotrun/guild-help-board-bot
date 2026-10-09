@@ -8,6 +8,70 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-10-09 — M4 teammate finder (`lfg` module)
+
+- **What:** the looking-for-game channel as a module (`MODULES=help,lfg`):
+  bot-only channel blocks (banner · start panel with **Pick your roles…** ·
+  live board · a 60-second ping), a one-modal search start, a private thread
+  per search (auto-archive 3 days) with an in-order request panel and
+  **Accept**, a live DM card per requester, a two-sided **I'm here** check-in
+  (reminders, deadline, reopen), `/menu › Teammates`, and an append-only
+  journal. Spec: `docs/superpowers/specs/2026-10-08-m4-teammate-finder-design.md`
+  (local).
+- **`modules/lfg/` code map:** `state.js` (pure state machine; every change
+  pushes `out.events` + `out.log`; `advance(data, now)` is the tick),
+  `store.js` (`lfg.json` via `ctx.store`, `lfg-log.jsonl` journal),
+  `actions.js` (every write, help's contract; `join` refuses a search whose
+  thread is not open yet), `effects.js` (plays the events after a save: thread
+  lines, welcome/confirm, panel, DM cards, board; `afterCreate`; `tick`),
+  `render.js` (pure V2 payloads, `fitRows`; the Just started / Fixed boxes and
+  the accepted DM card are cut with "+N more"), `channel.js` (blocks, tail
+  check, ping — one writer; an empty or foreign-only history skips the tail
+  check instead of looping reposts; `repost` persists the block ids one by
+  one), `discord.js` (REST glue, `deliverCard` — one queue per member, and
+  `deleteStaleCard` on the same queue; `openThread` deletes the thread again
+  if adding a member fails; the DM card is replaced only on 10008 = deleted by
+  hand — any other edit error leaves the state untouched; the new-search DM
+  role check is a forced REST member fetch; `ManageRoles` is read from the
+  guild permissions, the rest from the channel; `ReadMessageHistory` is needed
+  for the tail check), `menu.js` / `buttons.js` (role screens show the state
+  from the action result — with the Guilds-only intent the member cache is
+  stale; news is consumed only once its screen is ready; the role picker
+  answers with a plain fallback if the screen cannot be built), `seed.js`
+  (MEE6 layout by name, permission check), `texts.js` (all copy, `textOf` for
+  the M5 overrides). Core: `core/text.js` (shared `hasUnprintable`),
+  `core/panel.js` `messageErrors` (the V2 limits for module messages).
+- **Invariants (keep them):**
+  10. lfg: no `await` between `store.load()` and `store.save()` in an action;
+      REST only in the returned `effects`, after the interaction is answered.
+  11. lfg: the thread is part of a search — no thread → `cancelled`
+      (`thread_failed`); the ping and the new-search DMs only after a thread.
+  12. lfg: Accept and the second **I'm here** are synchronous single saves —
+      two Accepts: the first wins; `started` and the busy rule (other requests
+      withdrawn, own search cancelled, an accept elsewhere reopened) land in
+      ONE save. Nobody is busy before `started`.
+  13. lfg: every way a search leaves `listings` writes one `listing` journal
+      line; every request change writes a `request` line.
+  14. lfg: one channel writer (`channel.enqueue`) and one DM-card queue per
+      member (`deliverCard`, `deleteStaleCard`) — never call
+      `channel.send`/`user.send` for these around them.
+  15. lfg: pings are explicit — the ping message `{ roles }`, thread lines
+      `{ users }`; everything else `{ parse: [] }`.
+  16. lfg: what is NOT crash-safe — the state is saved first, the Discord
+      side (`effects`) runs after, and nothing replays the events. A restart
+      between the two loses that batch: thread closing lines and locks, the
+      WAKEY / Game on! messages, DM-card news. Only the board (tick `sync`) and
+      a search left without a thread (dropped after 2 min, `thread_failed`)
+      heal themselves; the rest stays as it was until the next event touches
+      it.
+  17. lfg: every re-rendered select gets a fresh `custom_id`
+      (`render.renderTag()`, like help's `rolesRenderTag`) — an identical
+      one freezes in the client.
+  18. lfg: every public/DM payload goes through `render.fitRows` →
+      `messageErrors(..., { prefixes: ["lfg:", "menu:"] })`; colours only on
+      container stripes; buttons Secondary except I'm here (Success) and
+      Cancel search (Danger).
+
 ## 2026-10-09 — `/config roles` select no longer freezes after a refusal
 
 - Live bug: after a refused pick (e.g. a bot-managed role) the panel came back
@@ -748,6 +812,9 @@ fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
    fresh data, so a stale or replayed confirmation writes nothing. Keep
    `Referrer-Policy: same-origin` — `no-referrer` makes browsers send
    `Origin: null` on form POSTs and the CSRF guard would refuse every one.
+
+10.–18. The `lfg` module's invariants are listed in the M4 entry at the top
+    of this file.
 
 ## Updating
 

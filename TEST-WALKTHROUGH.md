@@ -335,6 +335,112 @@ the **2nd account** without one. Use a phone for the last block.
 
 ---
 
+## Phase 12 — Teammate finder (M4, test server)
+
+Against the test bot with `MODULES=help,lfg`, in **🔍︱looking-for-game**. You
+need **two accounts** (A = owner, B = `testkaf_`); both hold `⚔ GM-PING` and
+B holds `💥 SUP`. Phone block last.
+
+**Channel**
+- [ ] The channel shows, bottom to top: the board ("No one is looking right
+      now."), above it the grey **Want a game?** panel with **Start my own
+      search** and **Pick your roles…**, above that the banner image.
+- [ ] **(B)** Type in the channel → not allowed (only the bot posts here).
+
+**Roles**
+- [ ] **(B)** **Pick your roles…** → `BASIC · DPS` → an ephemeral **Menu ›
+      Teammates › My roles** with "Added: 💥 DPS", the list pre-selected; the
+      public picker is empty again. Pick `BASIC · DPS` again → "Removed".
+- [ ] **(B)** In that screen pick only `BASIC · SUP` in the list → the screen
+      updates with "Removed: …"; pick again right away → it reacts at once (no
+      frozen list); **Notifications** opens from there.
+
+**A search, now**
+- [ ] **(A)** **Start my own search** → the modal (Looking for · Starts in ·
+      Note) → `BASIC · SUP`, empty, "gg" → "Your search is live — your thread:
+      #…". A private thread opened with A only: intro line + **Requests** (0).
+- [ ] Under the board a ping `@💥 SUP **A** is looking for **BASIC · SUP** ·
+      now` → it disappears after about a minute.
+- [ ] The board shows a teal **Now** box: `💥 **BASIC · SUP** · **A**`,
+      `now · gg`, **Join**.
+- [ ] **(B)** **Join** → "Request sent to **A** — you're #1 in line…" +
+      **Cancel request**. B gets ONE DM card, silently (no sound): **Your
+      request** + Cancel, **Start my own search**.
+- [ ] **(A)** The thread: "<@A> **B** wants to join · 1 waiting"; the panel
+      lists **1 · B** with **Accept**. The board: "1 interested".
+- [ ] **(B)** Join again → "You already asked… #1".
+
+**Accept and confirm**
+- [ ] **(A)** **Accept** → B is added to the thread; "WAKEY-WAKEY! @A you
+      accepted **B**…" with an amber **Confirm 0 / 2** box and a green **I'm
+      here**. B's DM card is replaced by a new one with sound: **You're in!**
+      (A's avatar) + the Confirm box + **Open the thread**.
+- [ ] **(B)** **I'm here** on the DM card → the box shows "B ✓" in the thread
+      and on the card (1 / 2).
+- [ ] Wait a minute → A gets "<@A> — tap I'm here when you're ready." in the
+      thread (the previous one deleted).
+- [ ] **(A)** **I'm here** in the thread → "✓ Game on", a teal **Game on!**
+      box with B's avatar; the board moves them to **Just started**; B's card
+      shows "✓ Game on!". After 5 minutes they leave the board; the thread
+      stays open.
+
+**Deadlines**
+- [ ] New search by A, B joins, A accepts, **only A** taps I'm here, wait 5
+      minutes → B's card: red "You didn't confirm in time"; the thread's
+      welcome turns red "…didn't confirm — your search is open again", B is
+      removed from the thread, the search is back in **Now**.
+- [ ] Same, but only B taps → after 5 minutes the search is cancelled: B's
+      card "A didn't confirm"; the thread gets "Search closed — not confirmed in
+      time." and is locked.
+- [ ] **(A)** A timed search (Starts in `8`) → the **Timed** box with a
+      countdown; B joins, A accepts → **Fixed**, the Confirm box says "You'll be
+      asked to confirm 5 minutes before the start". At start − 5 min: "Heads up
+      @A — your game starts in 5 minutes!" and B's card notifies again.
+
+**Leaving**
+- [ ] **(B)** Cancel on the card → "Request cancelled" (silent card edit); the
+      thread's Removed box shows "B — cancelled".
+- [ ] **(A)** **Cancel search** (red) → "Search cancelled."; the thread gets
+      "Search cancelled." and is locked; B's card: "A's search was cancelled".
+- [ ] A now-search with no Accept → after 30 minutes: "Search expired.",
+      locked; B's card: "…search expired".
+
+**Busy rule**
+- [ ] B has his own open search AND a request on A's; A accepts B, both tap
+      I'm here → B's own search is cancelled (its thread locked), his other
+      requests disappear; his card: "Your other requests were cancelled."
+
+**Closed DMs (notices)**
+- [ ] **(B)** Discord → Privacy → turn off DMs from server members. Join A's
+      search → "…Your DMs are closed — check Menu › Teammates."; A cancels →
+      B's next **/menu › Teammates** shows "📬 A's search was cancelled · …"
+      once.
+- [ ] **(B)** Notifications → **Request updates by DM** Off → same path,
+      news only in the menu. Turn it back On.
+
+**Menu, officer, owner**
+- [ ] `/menu` → **Teammates · N open** → Browse lists the open searches →
+      pick one → "Request sent…".
+- [ ] Notifications: **New searches by DM** On → when A posts a `BASIC · SUP`
+      search, B gets a DM with a **Join** button. **GM pings** Off → B loses
+      `⚔ GM-PING`.
+- [ ] **(officer)** **Remove a search** → pick → removed; its requesters'
+      cards say it was cancelled.
+- [ ] **(A, owner)** With a permission removed from the bot in the channel and
+      the bot restarted → the Teammates screen names the missing permission.
+
+**Self-repair**
+- [ ] Delete the board message by hand → within 30 s the blocks are back in
+      order. Post as an admin under the board → within 30 s the blocks are
+      re-posted below it.
+
+**Phone**
+- [ ] Every box is readable at phone width; badges sit at the right of the
+      headers; **Join** / **Accept** / **I'm here** are easy to tap; the modal
+      fits.
+
+---
+
 ## What this can't cover by hand
 
 These are verified in code / at the host, not clickable here — listed so you know

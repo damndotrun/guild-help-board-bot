@@ -168,6 +168,28 @@ default `help`) selects which modules run — e.g. `MODULES: "help"`. Leave it
 unset to run exactly the help board. Each module keeps its own `<name>.json` in
 `DATA_DIR`; the help board keeps `data.json`.
 
+**Teammate finder (`lfg`).** Add it with `MODULES: "help,lfg"`. It runs the
+looking-for-game channel: members tap **Start my own search**, get a private
+thread (it auto-archives after 3 days) where requests line up, and pick a
+partner with **Accept**; both tap **I'm here** before the game counts.
+Requests and news live on one DM card per member; `/menu › Teammates` has the
+same actions plus My roles and Notifications. No slash command, no setup
+command — on first start it finds a text channel whose name contains
+`looking-for-game` (not `arch…`) and the teammate roles by exact name
+(`💥 SUP`, `🧬 RADAR`, `🦠 300+`, …, `⚔ GM-PING`) and logs what it could not
+find. Its data is `lfg.json` plus an append-only `lfg-log.jsonl` in
+`DATA_DIR` (never commit either).
+
+The bot needs, in that channel: **View Channel, Send Messages, Embed Links,
+Attach Files, Read Message History, Create Private Threads, Send Messages in
+Threads, Manage Threads** (+ **Mention @everyone, @here, and All Roles**
+unless the teammate roles are mentionable); on the server: **Manage Roles**
+(a guild-level permission — a channel override cannot grant it), with the
+bot's role **above** the teammate roles. Members should lose **Send
+Messages** in that channel and keep **Send Messages in Threads** — only the
+bot posts there. Missing permissions are logged at start and shown to owners
+in `/menu › Teammates`.
+
 **Node.** Use the `node:24` image (the full one — `-slim` has no `git`, which
 the start command needs).
 
@@ -264,3 +286,7 @@ starts from the backup — to really start over, delete both. Delete the
 `.corrupt-*` copies by hand once you have looked at them. The bot refuses
 to start when `DATA_DIR` is not a writable directory. Other modules store
 their data next to it as `<module>.json` (same atomic write + `.bak` safety).
+
+The teammate finder also appends one line per event to `lfg-log.jsonl`
+(searches, requests, role and DM changes) for later stats; it is never
+trimmed and safe to keep.
