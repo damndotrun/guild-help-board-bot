@@ -117,7 +117,7 @@ test("Start my own search: a custom emoji the guild lost is left off its Looking
   }
 });
 
-test("modal submit: bad input → one ephemeral line, nothing saved; a good one → deferred, then the thread link", async () => {
+test("modal submit: bad input → one ephemeral line, nothing saved; a good one → deferUpdate and no answer (the thread is the answer)", async () => {
   seedData();
   let i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: "2000", note: "" } });
   await route(i);
@@ -125,12 +125,30 @@ test("modal submit: bad input → one ephemeral line, nothing saved; a good one 
   assert.equal(store.load(ctx).listings.length, 0);
   i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: " 10 ", note: "gg" } });
   await route(i);
-  assert.deepEqual(i.calls[0], ["deferReply", { flags: MessageFlags.Ephemeral }]);
-  const [kind, payload] = last(i);
-  assert.equal(kind, "editReply");
-  const threadId = store.load(ctx).listings[0].threadId;
-  assert.equal(payload.content, `Your search is live — your thread: <#${threadId}>`);
+  assert.deepEqual(i.calls, [["deferUpdate"]], "no reply, no followUp — only the acknowledgement");
+  assert.ok(store.load(ctx).listings[0].threadId);
   assert.equal(store.load(ctx).listings[0].startAt, T0 + 10 * MIN);
+});
+
+test("modal submit: the thread could not open → deferUpdate, then ONE ephemeral followUp with the reason", async () => {
+  seedData();
+  fake.channels.get("ch1").threads.create = async () => { throw new Error("Missing Permissions"); };
+  const i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: "", note: "" } });
+  await route(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferUpdate", "followUp"]);
+  assert.equal(i.calls[1][1].flags, MessageFlags.Ephemeral);
+  assert.match(i.calls[1][1].content, /couldn't open your search thread/);
+  assert.equal(store.load(ctx).listings.length, 0);
+});
+
+test("modal submit from /menu New search (an ephemeral menu message) is a component modal too → deferUpdate; a modal not from a message falls back to a deleted deferred reply", async () => {
+  seedData();
+  let i = btnTap("lfg:modal", DANI, { kind: "modal", ephemeral: true, v2: true, fields: { lookingfor: ["basic/sup"], minutes: "", note: "" } });
+  await route(i);
+  assert.deepEqual(i.calls, [["deferUpdate"]]);
+  i = btnTap("lfg:modal", MARCI, { kind: "modal", fromMessage: false, fields: { lookingfor: ["basic/dps"], minutes: "", note: "" } });
+  await route(i);
+  assert.deepEqual(i.calls.map(([k]) => k), ["deferReply", "deleteReply"]);
 });
 
 test("Join: the ephemeral confirmation with Cancel request; a repeat tap shows the same place; news first", async () => {
@@ -277,12 +295,12 @@ test("a failed acknowledgement never loses the effects (Join's reply / the modal
   assert.ok(fake.ops.some((o) => o.op === "send" && o.channelId === "ch1" && /^<@&r-sup>/.test(o.payload.content || "")), "and the ping went out");
 });
 
-test("modal submit: the answer comes before the new-search DMs", async () => {
+test("modal submit: the acknowledgement comes before the new-search DMs", async () => {
   seedData((x) => { x.prefs.u9 = { dm: true }; });
   fake.member("u9", { roleIds: ["r-sup"] });
   const i = btnTap("lfg:modal", DANI, { kind: "modal", fields: { lookingfor: ["basic/sup"], minutes: "", note: "" } });
   let dmsAtAnswer = null;
-  i.editReply = async (p) => { dmsAtAnswer = fake.ops.filter((o) => o.op === "dm").length; i.calls.push(["editReply", p]); };
+  i.deferUpdate = async () => { dmsAtAnswer = fake.ops.filter((o) => o.op === "dm").length; i.calls.push(["deferUpdate"]); };
   await route(i);
   assert.equal(dmsAtAnswer, 0);
   assert.equal(fake.ops.filter((o) => o.op === "dm").length, 1);

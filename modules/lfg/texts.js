@@ -84,7 +84,6 @@ const DEFAULTS = Object.freeze({
   event_noConfirm: "You didn't confirm in time",
   event_noConfirm_sub: "the spot went back to the queue.",
   // replies
-  searchLive: "Your search is live — your thread: {link}",
   threadFailed: "I couldn't open your search thread, so the search was cancelled. Try again in a minute.",
   requestSent: "Request sent to **{poster}** — you're #{n} in line. Updates come in your DMs.",
   requestSentNoDm: "Request sent to **{poster}** — you're #{n} in line. Your DMs are closed — check Menu › Teammates.",

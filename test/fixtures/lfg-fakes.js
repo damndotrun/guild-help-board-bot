@@ -272,7 +272,7 @@ module.exports.fakeCtx = fakeCtx;
 // who = { id, name, roles?: [roleId], manageGuild?: bool }. Every answer lands
 // in `calls` as [method, payload]. ephemeral / v2: the flags of the message
 // the tap came from; dm: a tap in a DM (no guild, no member).
-function tap(customId, who, { kind = "button", values = [], fields = {}, ephemeral = false, v2 = false, guild = null, member, dm = false } = {}) {
+function tap(customId, who, { kind = "button", values = [], fields = {}, ephemeral = false, v2 = false, guild = null, member, dm = false, fromMessage = true } = {}) {
   const { MessageFlags, MessageFlagsBitField } = require("discord.js");
   const calls = [];
   const field = (n) => {
@@ -299,12 +299,15 @@ function tap(customId, who, { kind = "button", values = [], fields = {}, ephemer
     isStringSelectMenu: () => kind === "string",
     isUserSelectMenu: () => false,
     isModalSubmit: () => kind === "modal",
+    // a modal submit: did the modal come from a message component?
+    isFromMessage: () => fromMessage,
     deferUpdate: async () => { i.deferred = true; calls.push(["deferUpdate"]); },
     deferReply: async (o) => { i.deferred = true; calls.push(["deferReply", o]); },
     reply: async (p) => { i.replied = true; calls.push(["reply", p]); },
     update: async (p) => { i.replied = true; calls.push(["update", p]); },
     editReply: async (p) => calls.push(["editReply", p]),
     followUp: async (p) => calls.push(["followUp", p]),
+    deleteReply: async () => calls.push(["deleteReply"]),
     showModal: async (m) => calls.push(["showModal", m]),
   };
   return i;

@@ -125,16 +125,26 @@ async function modal(interaction, ctx) {
     const buttons = r.code === "duplicate" ? [button(`lfg:cancel:${r.listingId}`, textOf(store.load(ctx).config, "cancelMySearch"), ButtonStyle.Danger)] : [];
     return interaction.reply(answer(r.error, buttons));
   }
-  // Defer, open the thread (afterCreate), answer with the link, then the
-  // followUp (ping, board, new-search DMs) — the answer never waits for DMs,
-  // and a failed answer never skips the thread or the ping.
-  const after = await ackThen(ctx, () => interaction.deferReply({ flags: EPHEMERAL }), r);
-  const config = store.load(ctx).config;
-  const line = after && after.ok
-    ? textOf(config, "searchLive", { link: `<#${after.threadId}>` })
-    : (after && after.error) || textOf(config, "threadFailed");
+  // No "your search is live" answer (live test round 2): the new thread is the
+  // answer. Every start modal comes from a component (the channel panel, the
+  // DM card, /menu New search), so the submit is acknowledged with
+  // deferUpdate — the message it came from stays as it is. Then the thread
+  // (afterCreate), and only a failure gets a line (followUp, ephemeral); then
+  // the followUp work (ping, board, new-search DMs) — a failed answer never
+  // skips the thread or the ping. A modal not from a message (none today)
+  // falls back to a deferred ephemeral reply that is deleted on success.
+  const fromMessage = typeof interaction.isFromMessage === "function" ? interaction.isFromMessage() : true;
+  const ack = fromMessage ? () => interaction.deferUpdate() : () => interaction.deferReply({ flags: EPHEMERAL });
+  const after = await ackThen(ctx, ack, r);
   try {
-    await interaction.editReply({ content: withNews(newsFor(ctx, interaction), line), allowedMentions: { parse: [] } });
+    if (!after || !after.ok) {
+      const line = (after && after.error) || textOf(store.load(ctx).config, "threadFailed");
+      const payload = { content: withNews(newsFor(ctx, interaction), line), allowedMentions: { parse: [] } };
+      if (fromMessage) await interaction.followUp({ ...payload, flags: EPHEMERAL });
+      else await interaction.editReply(payload);
+    } else if (!fromMessage) {
+      await interaction.deleteReply();
+    }
   } catch (err) {
     ctx.log.error("could not answer the interaction:", err);
   } finally {
