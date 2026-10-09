@@ -323,6 +323,20 @@ test("deliverCard: rendering the accepted state clears an old bad-news box, so i
   assert.doesNotMatch(JSON.stringify(ops(fake, "edit").at(-1).payload), /game is full/);
 });
 
+test("deliverCard: bad news while the card shows the accepted state goes to the menu notices, not lost", async () => {
+  const fake = fakeDiscord();
+  const ctx = seeded(fake, (x) => {
+    x.listings.push(listing("B", "p2", { posterName: "Bob", state: "confirming", joinerId: "u1", acceptedAt: T0, checkIn: { openedAt: T0, deadline: T0 + 5 * 60_000, nagMessageId: null, at: {}, nags: {} }, requests: [request("u1", T0, { status: "accepted" })] }));
+    x.dmCards.u1 = { messageId: "card1", sentAt: T0, lastEventAt: T0, event: null };
+  });
+  fake.messagesIn("dm-u1").push({ id: "card1", payload: {} });
+  const event = { kind: "full", listingId: "Z", aboutId: "p3", aboutName: "Dani", label: "DDPS · HACK", emoji: "🧬", startAt: null, at: T0 };
+  await D.deliverCard(ctx, "u1", event);
+  const d = store.load(ctx);
+  assert.equal(d.dmCards.u1.event, null);
+  assert.deepEqual(d.notices.u1.map((n) => [n.listingId, n.outcome, n.name]), [["Z", "full", "Dani"]]);
+});
+
 test("deliverCard: DMs closing under an existing card delete that card before the block is recorded", async () => {
   const closed = [];
   const fake = fakeDiscord({ blockedDms: closed });

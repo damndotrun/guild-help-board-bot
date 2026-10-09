@@ -295,7 +295,7 @@ async function deliverNow(ctx, userId, event) {
     return null;
   });
   // old cards an earlier replace could not delete: retried first (§5.2/7)
-  const hadStale = card && !card.blocked && Array.isArray(card.staleIds) ? card.staleIds : [];
+  const hadStale = card && Array.isArray(card.staleIds) ? card.staleIds : [];
   let stale = dm && hadStale.length ? await retryStale(ctx, dm, userId, hadStale) : hadStale;
   const guild = await getGuild(ctx, data.config);
   const payload = R.renderCard(data, userId, view, lookFor(ctx, guild));
@@ -337,7 +337,8 @@ async function deliverNow(ctx, userId, event) {
         // the old card (if any) must not outlive the block record
         if (dm && messageId) await deleteCardMessage(ctx, dm, userId, messageId);
         patch(ctx, (d) => {
-          d.dmCards[userId] = { blocked: true, since: now };
+          // un-deletable old cards stay on record for a later retry
+          d.dmCards[userId] = { blocked: true, since: now, ...(stale.length ? { staleIds: stale } : {}) };
           if (toNotice) S.addNotice(d, userId, event, now);
         }, [{ type: "dm", ts: now, userId, event: "blocked" }]);
         return "blocked";
@@ -368,6 +369,8 @@ async function deliverNow(ctx, userId, event) {
       ...(activeAt ? { activeAt } : {}),
       ...(stale.length ? { staleIds: stale } : {}),
     };
+    // the accepted view has no box: bad news about another search goes to the menu (📬) instead
+    if (view.accepted && boxEvent) S.addNotice(d, userId, boxEvent, now);
   }, [{ type: "dm", ts: now, userId, event: outcome }]);
   return outcome;
 }
