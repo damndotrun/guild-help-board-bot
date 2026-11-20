@@ -7,6 +7,7 @@
 // Known modules. Adding a module = one line here + a MODULES entry to enable it.
 const AVAILABLE = {
   help: () => require("../modules/help"),
+  lfg: () => require("../modules/lfg"),
 };
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/;

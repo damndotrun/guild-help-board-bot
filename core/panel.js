@@ -72,13 +72,34 @@ function walk(payload, fn) {
   for (const c of payload.components || []) visit(c);
 }
 
-function screenErrors(screen, payload = buildScreenPayload(screen)) {
+// A V2 message carries no content / embeds and must have the V2 flag.
+function v2FlagErrors(payload, what) {
   const errors = [];
-  if (payload.content != null) errors.push("content must not be set on a V2 menu message");
-  if (payload.embeds != null) errors.push("embeds must not be set on a V2 menu message");
+  if (payload.content != null) errors.push(`content must not be set on a V2 ${what}`);
+  if (payload.embeds != null) errors.push(`embeds must not be set on a V2 ${what}`);
   if ((payload.flags & MessageFlags.IsComponentsV2) === 0) errors.push("missing the IsComponentsV2 flag");
+  return errors;
+}
+
+function screenErrors(screen, payload = buildScreenPayload(screen)) {
+  const errors = v2FlagErrors(payload, "menu message");
   const depth = Array.isArray(screen.crumbs) ? screen.crumbs.length : 0;
   if (depth < 1 || depth > LIMITS.depth) errors.push(`depth must be 1..${LIMITS.depth} (crumbs: ${JSON.stringify(screen.crumbs)})`);
+  return [...errors, ...componentErrors(payload, { prefixes: ["menu:"], maxPrimary: LIMITS.primary })];
+}
+
+// The same limits for a module's own V2 message — a public board, a thread
+// panel, a DM card (M4 spec §9): ≤ 40 components, ≤ 4000 text characters,
+// ≤ 3 buttons a row, ≤ 4 button rows, labels ≤ 20, unique customIds that start
+// with one of `prefixes`. Public messages use no Primary button by default.
+function messageErrors(payload, { prefixes, maxPrimary = 0 }) {
+  if (!Array.isArray(prefixes) || prefixes.length === 0) throw new Error("messageErrors needs the allowed customId prefixes");
+  return [...v2FlagErrors(payload, "message"), ...componentErrors(payload, { prefixes, maxPrimary })];
+}
+
+function componentErrors(payload, { prefixes, maxPrimary }) {
+  const errors = [];
+  const wanted = prefixes.map((p) => `"${p}"`).join(" or ");
   let count = 0;
   let buttonRows = 0;
   let primary = 0;
@@ -97,7 +118,7 @@ function screenErrors(screen, payload = buildScreenPayload(screen)) {
       if (String(c.label || "").length > LIMITS.label) errors.push(`button label "${c.label}" is over ${LIMITS.label} characters`);
     }
     if (c.custom_id !== undefined) {
-      if (!String(c.custom_id).startsWith("menu:")) errors.push(`customId "${c.custom_id}" does not start with "menu:"`);
+      if (!prefixes.some((p) => String(c.custom_id).startsWith(p))) errors.push(`customId "${c.custom_id}" does not start with ${wanted}`);
       if (String(c.custom_id).length > LIMITS.customId) errors.push(`customId "${c.custom_id}" is over ${LIMITS.customId} characters`);
       if (seen.has(c.custom_id)) errors.push(`duplicate customId "${c.custom_id}"`);
       seen.add(c.custom_id);
@@ -108,7 +129,7 @@ function screenErrors(screen, payload = buildScreenPayload(screen)) {
   });
   if (count > LIMITS.components) errors.push(`${count} components (max ${LIMITS.components})`);
   if (buttonRows > LIMITS.buttonRows) errors.push(`${buttonRows} button rows (max ${LIMITS.buttonRows})`);
-  if (primary > LIMITS.primary) errors.push(`${primary} Primary buttons (max ${LIMITS.primary})`);
+  if (primary > maxPrimary) errors.push(`${primary} Primary buttons (max ${maxPrimary})`);
   if (textLength > LIMITS.text) errors.push(`${textLength} text characters (max ${LIMITS.text})`);
   return errors;
 }
@@ -138,5 +159,6 @@ module.exports = {
   buildScreenPayload,
   walk,
   screenErrors,
+  messageErrors,
   textFromEmbed,
 };

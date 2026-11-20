@@ -130,3 +130,54 @@ test("textFromEmbed: title, description and fields as V2 markdown", () => {
   const e = new EmbedBuilder().setTitle("📊 S5 — current season").setDescription("desc").addFields({ name: "By category", value: "a\nb" }, { name: "Average wait", value: "3h" });
   assert.equal(textFromEmbed(e), "### 📊 S5 — current season\ndesc\n**By category**\na\nb\n**Average wait**\n3h");
 });
+
+// ── messageErrors: the same limits for a module's own V2 message (M4) ──
+const { messageErrors } = require("../core/panel");
+const V2 = MessageFlags.IsComponentsV2;
+const box = (...components) => ({ type: ComponentType.Container, accent_color: 0x4f9e88, components });
+const badge = (id, n) => ({ type: ComponentType.Button, style: ButtonStyle.Secondary, custom_id: id, label: String(n), disabled: true });
+const header = (title, id, n) => ({ type: ComponentType.Section, components: [{ type: ComponentType.TextDisplay, content: `### ${title}` }], accessory: badge(id, n) });
+
+test("messageErrors: a public board with lfg: and menu: ids, a badge and a thumbnail passes", () => {
+  const payload = {
+    flags: V2,
+    components: [
+      box(header("Now", "lfg:badge:now", 1), {
+        type: ComponentType.Section,
+        components: [{ type: ComponentType.TextDisplay, content: "**BASIC · SUP** · Dani" }],
+        accessory: { type: ComponentType.Button, style: ButtonStyle.Secondary, custom_id: "lfg:join:abc", label: "Join" },
+      }),
+      box({ type: ComponentType.Section, components: [{ type: ComponentType.TextDisplay, content: "### You're in!" }], accessory: { type: ComponentType.Thumbnail, media: { url: "https://cdn.discordapp.com/embed/avatars/0.png" } } }),
+      { type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Secondary, custom_id: "menu:lfg:main", label: "Menu" }] },
+    ],
+  };
+  assert.deepEqual(messageErrors(payload, { prefixes: ["lfg:", "menu:"] }), []);
+});
+
+test("messageErrors: foreign prefixes, a Primary button, content and the missing flag are reported", () => {
+  const payload = {
+    content: "hi",
+    flags: 0,
+    components: [{ type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Primary, custom_id: "help:claim:1", label: "Claim" }] }],
+  };
+  const errors = messageErrors(payload, { prefixes: ["lfg:", "menu:"] });
+  assert.ok(errors.some((e) => /does not start with "lfg:" or "menu:"/.test(e)), JSON.stringify(errors));
+  assert.ok(errors.some((e) => /1 Primary buttons \(max 0\)/.test(e)), JSON.stringify(errors));
+  assert.ok(errors.some((e) => /content must not be set on a V2 message/.test(e)), JSON.stringify(errors));
+  assert.ok(errors.some((e) => /IsComponentsV2/.test(e)), JSON.stringify(errors));
+  assert.deepEqual(messageErrors({ ...payload, content: undefined, flags: V2 }, { prefixes: ["help:"], maxPrimary: 1 }), []);
+});
+
+test("messageErrors: 41 components, 4001 characters and a duplicate id are over the limit; 40 / 4000 are not", () => {
+  const texts = (n, len = 1) => Array.from({ length: n }, () => ({ type: ComponentType.TextDisplay, content: "x".repeat(len) }));
+  assert.deepEqual(messageErrors({ flags: V2, components: [box(...texts(39))] }, { prefixes: ["lfg:"] }), []);
+  assert.ok(messageErrors({ flags: V2, components: [box(...texts(40))] }, { prefixes: ["lfg:"] }).some((e) => /41 components/.test(e)));
+  assert.deepEqual(messageErrors({ flags: V2, components: [box(...texts(4, 1000))] }, { prefixes: ["lfg:"] }), []);
+  assert.ok(messageErrors({ flags: V2, components: [box(...texts(4, 1000), ...texts(1))] }, { prefixes: ["lfg:"] }).some((e) => /4001 text characters/.test(e)));
+  const dup = box(header("A", "lfg:badge:x", 1), header("B", "lfg:badge:x", 2));
+  assert.ok(messageErrors({ flags: V2, components: [dup] }, { prefixes: ["lfg:"] }).some((e) => /duplicate customId "lfg:badge:x"/.test(e)));
+});
+
+test("messageErrors: refuses to run without the allowed prefixes", () => {
+  assert.throws(() => messageErrors({ flags: V2, components: [] }, { prefixes: [] }), /prefixes/);
+});

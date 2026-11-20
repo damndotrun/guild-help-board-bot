@@ -8,6 +8,190 @@ tricky bits don't get re-broken.
 
 ---
 
+## 2026-10-09 — M4 teammate finder (`lfg` module)
+
+- **What:** the looking-for-game channel as a module (`MODULES=help,lfg`):
+  bot-only channel blocks (banner · start panel with **Pick your roles…** ·
+  live board — stacked in ONE bot message; an empty board adds no box — and
+  a transient ping under it), a one-modal search start (answered with
+  `deferUpdate`: the thread is the answer), a private thread per search that
+  is ONE live message (intro · Requests with **Accept** · Removed · Confirm
+  with **I'm here** · Game on!), a live DM card per requester, a two-sided
+  **I'm here** check-in (reminders, deadline, reopen), transient ping lines,
+  archived threads (terminal: lock + archive at once; played: archive 15 min
+  after the start), `/menu › Teammates`, and an append-only journal. Spec:
+  `docs/superpowers/specs/2026-10-08-m4-teammate-finder-design.md` (local;
+  the live-test round 2 changes are its D26 addendum).
+- **`modules/lfg/` code map:** `state.js` (pure state machine; every change
+  pushes `out.events` + `out.log`; `advance(data, now)` is the tick),
+  `store.js` (`lfg.json` via `ctx.store`, `lfg-log.jsonl` journal),
+  `actions.js` (every write, help's contract; `join` refuses a search whose
+  thread is not open yet), `effects.js` (plays the events after a save: the
+  thread message redraw (`panel`), transient lines (`sendTransient` /
+  `dropLine` / `sweepLines`), the legacy-welcome delete, archive, DM cards,
+  board; `afterCreate`; `tick`),
+  `render.js` (pure V2 payloads, `fitRows`; the Just started / Fixed boxes and
+  the accepted DM card are cut with "+N more"; `renderStack` = the channel
+  message: banner · panel · board components concatenated in layout order,
+  the board's rows fitted to the budget left after the other blocks, NO
+  board component when nothing is on it (a board-only layout keeps the "No
+  one is looking" box — a V2 message cannot be empty);
+  `renderStackFallback` = the panel alone, or the empty-board box for a
+  board-only layout; `renderRequestPanel` = the whole thread message),
+  `channel.js` (the one
+  channel message `channel.mainMessageId`, tail check, ping — one writer; an
+  EMPTY history (no Read Message History) skips the tail check instead of
+  looping reposts, a non-empty one without our message means it is buried →
+  repost; `resetPanel` always edits the whole message (clears the role
+  picker); a store with the old per-block `channel.messageIds` is migrated by
+  one repost that deletes them all; the new-search ping is transient —
+  `postPing` arms the timer, `removePing` deletes it on the chain),
+  `discord.js` (REST glue, `deliverCard` — one queue per member, and
+  `deleteStaleCard` on the same queue; `openThread` deletes the thread again
+  if adding a member fails; the DM card is replaced only on 10008 = deleted by
+  hand — any other edit error leaves the state untouched; the new-search DM
+  role check is a forced REST member fetch; `ManageRoles` is read from the
+  guild permissions, the rest from the channel; `ReadMessageHistory` is needed
+  for the tail check; `later` = the timer seam (`ctx.setTimer` in tests, an
+  unref'd `setTimeout` otherwise); `closeThread` = lock + archive,
+  `archiveThread` = archive only; the "added / removed X to the thread"
+  RecipientAdd / RecipientRemove lines stay — Discord refuses to delete a
+  system message (50021, live test round 2)),
+  `menu.js` / `buttons.js` (role screens show the state
+  from the action result — with the Guilds-only intent the member cache is
+  stale; news is consumed only once its screen is ready; the role picker
+  answers with a plain fallback if the screen cannot be built), `seed.js`
+  (MEE6 layout by name, permission check), `texts.js` (all copy, `textOf` for
+  the M5 overrides). Core: `core/text.js` (shared `hasUnprintable`),
+  `core/panel.js` `messageErrors` (the V2 limits for module messages).
+- **Invariants (keep them):**
+  10. lfg: no `await` between `store.load()` and `store.save()` in an action;
+      REST only in the returned `effects`, after the interaction is answered.
+  11. lfg: the thread is part of a search — no thread → `cancelled`
+      (`thread_failed`); the ping and the new-search DMs only after a thread.
+  12. lfg: Accept and the second **I'm here** are synchronous single saves —
+      two Accepts: the first wins; `started` and the busy rule (other requests
+      withdrawn, own search cancelled, an accept elsewhere reopened) land in
+      ONE save. Nobody is busy before `started`.
+  13. lfg: every way a search leaves `listings` writes one `listing` journal
+      line; every request change writes a `request` line.
+  14. lfg: one channel writer (`channel.enqueue`) and one DM-card queue per
+      member (`deliverCard`, `deleteStaleCard`) — never call
+      `channel.send`/`user.send` for these around them.
+  15. lfg: pings are explicit — the ping message `{ roles }`, thread lines
+      `{ users }`; everything else `{ parse: [] }`. Every ping is TRANSIENT
+      (live test round 2): deleted `times.transientSec` (5) after the send —
+      Discord already notified. The id stays recorded until the delete
+      succeeds (10008 = done): the channel ping in `channel.pingMessageId` /
+      `pingUntil`, thread lines in `listing.lines` `{ id, kind, until }`
+      (`notify` · `nag` · `picked` · `headsUp`). The timer (`D.later`) is
+      best-effort; the tick (`expirePing`, `sweepLines`) deletes what a
+      restart left. A line of a listing that leaves the list is deleted
+      before its thread is locked / archived — incl. one whose send was in
+      flight at the drop (not in the dropped event's snapshot, and its record
+      patch finds no listing): `effects.sendTransient` keeps an in-process
+      registry per listing (in-flight sends + sent ids), the `dropped`
+      handler awaits those sends and deletes the registry's ids too
+      (`dropAllLines`); a listing already gone from the store gets no new
+      line.
+  16. lfg: what is NOT crash-safe — the state is saved first, the Discord
+      side (`effects`) runs after, and nothing replays the events. A restart
+      between the two loses that batch: a terminal thread's last edit, lock
+      and archive, DM-card news. Self-healing: the board (tick `sync`), a
+      search left without a thread (dropped after 2 min, `thread_failed`),
+      transient lines and the ping (tick), a played game's archive
+      (`data.archives`, due by the tick), a legacy welcome message (the tick
+      redraws the panel until it is deleted); the rest stays as it was until
+      the next event touches it.
+  17. lfg: every select re-rendered after a pick gets a fresh `custom_id`
+      (`render.renderTag()`, like help's `rolesRenderTag`; the channel
+      picker: only `resetPanel` / a repost, see 22) — an identical
+      one freezes in the client.
+  18. lfg: the payloads with a variable-length list — the channel message
+      (banner + panel + board, validated as ONE message), the request panel
+      and the DM card — go through `render.fitRows` →
+      `messageErrors(..., { prefixes: ["lfg:", "menu:"] })` and are cut with
+      "+N more". The thread message carries the Confirm / Game on! box inside
+      the same budget (the request rows are cut; the Confirm box's on-hold
+      names are capped at 10 + "+N more", `MAX_ON_HOLD_NAMES`). The
+      fixed-size ones are NOT validated at run time (only by the render
+      tests): ping, the "card replaced" line, the stack fallback, the
+      new-search DM, thread lines and closing lines. Colours only on
+      container stripes; buttons Secondary except I'm here (Success) and
+      Cancel search (Danger).
+  19. lfg: `runEvents` isolates every event — one that throws is logged
+      (`event <type> for <id> failed:`) and the rest of the batch, the panel
+      redraws, the DM cards and the board sync still run. Same per panel /
+      card in the loops after it.
+  20. lfg: a DM-card replace whose old-card delete fails (anything but 10008)
+      never forgets that card: its id goes to `dmCards[userId].staleIds`, the
+      old message is edited to one button-less line ("This card was replaced
+      by a newer one."), and the delete is retried at the next card job
+      (10008 = gone) and, finally, in the 24 h stale-card pass.
+  21. lfg: a DM card is deleted only by the tick, once its member has no
+      active request and 24 h passed since the last event — `max(sentAt,
+      lastEventAt, activeAt)`, where `activeAt` is when the card turned
+      empty (e.g. a self-withdraw of the last request). A refresh with
+      nothing left to show edits the card to its empty state. That delete
+      writes the same `dm` / `deleted` journal line.
+  22. lfg: the channel blocks are ONE bot message (`channel.mainMessageId`,
+      live test 2026-10-09: separate messages each showed "(edited)"). Its
+      whole payload fits 40 components / 4000 characters — the board's rows
+      get only what the banner and the panel leave (`renderStack`); an empty
+      board adds NO component (item G — beside a panel / banner); if the
+      blocks do not fit, `repost` logs it and posts `renderStackFallback`
+      (the panel alone; a board-only layout: the empty-board box) — never no
+      message, or every tick would repost.
+      One block per type (`activeBlocks`, first renderable wins). A layout
+      with no active block posts nothing (an empty V2 message is refused)
+      and takes ours down.
+      Every send / edit carries `{ parse: [] }`; the transient ping stays a
+      separate message under it. The role picker's tag is STABLE across
+      board-driven edits (`channel.pickerTag`, in memory — after a restart the
+      first render mints one), so a board change does not touch an open pick;
+      a fresh tag only from `resetPanel` (right after a pick — invariant 17)
+      and on a repost (a new message). The sent-payload hash ignores the tag.
+      Accepted race: a tick `sync` queued just before a post-pick
+      `resetPanel` can edit once with the old tag (a sub-second window).
+      Because the panel rides in the board's message, a payload Discord
+      refuses would freeze the board: a picker option's custom emoji that
+      the guild no longer has is dropped (the option stays; unknown emoji
+      cache = present) — the same `render.optionEmoji` + `D.hasEmojiIn`
+      guard covers every select with a configured emoji: the start modal's
+      Looking for (guild from the cache only — a modal cannot wait; a DM
+      card's Start has no `interaction.guild`) and `/menu` My roles — and an
+      edit refused with anything but 10008 is
+      logged ONCE (re-armed by the next good edit), not thrown every tick.
+      "Does not fit" is logged once the same way. An old message of ours is
+      never left untracked: a delete that fails (not 10008) keeps its id in
+      `channel.staleIds`, retried by every sync. The tail check also deletes
+      orphans — a plain bot-authored message in the window that is neither
+      ours nor the ping (a crash between a send and its save).
+  23. lfg: a search's thread is ONE bot message (`panelMessageId`, live
+      test round 2): every state change EDITS it (`renderRequestPanel`) —
+      intro while open / "You picked X" after; the reopen notice
+      (`listing.notice`, cleared by the next Accept); Requests + Removed;
+      Confirm (badge, per-player status, deadline, I'm here as the Section
+      accessory inside the box; fixed: no I'm here until the window opens);
+      Game on! in Confirm's place; Cancel search ONLY while open. Nothing
+      else is posted in the thread but transient ping lines (invariant 15).
+      No WAKEY message; a joiner without a reachable DM card (or not added)
+      gets one transient `picked` ping; the check-in Heads up pings both.
+      A store's old `welcomeMessageId` is kept only while set: the next
+      panel edit deletes that message (the tick redraws such panels; a
+      listing without a panel message gets the welcome deleted directly by
+      the tick). Discord's "added / removed X to the thread" system lines
+      stay — a system message cannot be deleted (50021). A terminal
+      search: its thread message goes terminal (the closing line inside;
+      a thread without one gets the line as a message), then lock + archive
+      right away, and its queued played-game archive (if any — an officer
+      removing a started game) is dropped in the same save; a played game:
+      archive only, `archiveAfterMin` (15) after the start (`data.archives`,
+      by the tick). Each archive → a `thread` / `archived` journal line.
+  24. lfg: the start modal's submit is acknowledged with `deferUpdate`
+      (every start modal comes from a component); only a failure answers,
+      with an ephemeral `followUp`.
+
 ## 2026-10-09 — `/config roles` select no longer freezes after a refusal
 
 - Live bug: after a refused pick (e.g. a bot-managed role) the panel came back
@@ -748,6 +932,9 @@ fast-path; the no-arg form opens the panel. New customId namespaces: `reset:`,
    fresh data, so a stale or replayed confirmation writes nothing. Keep
    `Referrer-Policy: same-origin` — `no-referrer` makes browsers send
    `Origin: null` on form POSTs and the CSRF guard would refuse every one.
+
+10.–24. The `lfg` module's invariants are listed in the M4 entry at the top
+    of this file.
 
 ## Updating
 

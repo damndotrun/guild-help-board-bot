@@ -335,6 +335,148 @@ the **2nd account** without one. Use a phone for the last block.
 
 ---
 
+## Phase 12 — Teammate finder (M4, test server)
+
+Against the test bot with `MODULES=help,lfg`, in **🔍︱looking-for-game**. You
+need **two accounts** (A = owner, B = `testkaf_`); both hold `⚔ GM-PING` and
+B holds `💥 SUP`. Phone block last.
+
+**Channel**
+- [ ] The channel shows ONE bot message: the banner image on top, under it
+      the grey **Want a game?** panel with **Start a search** and
+      **Pick your roles…** — with no search on the board there is NO board
+      box at all (no "No one is looking right now."); a single "(edited)"
+      under the whole message at most.
+- [ ] Once a search is posted, its board box (e.g. teal **Now**) appears
+      under the panel in the SAME message (edited, not re-posted); when the
+      last search leaves, the box goes again.
+- [ ] **(B)** Type in the channel → not allowed (only the bot posts here).
+
+**Roles**
+- [ ] **(B)** **Pick your roles…** → `BASIC · DPS` → an ephemeral **Menu ›
+      Teammates › My roles** with "Added: 💥 DPS", the list pre-selected; the
+      public picker is empty again. Pick `BASIC · DPS` again → "Removed".
+- [ ] **(B)** In that screen pick only `BASIC · SUP` in the list → the screen
+      updates with "Removed: …"; pick again right away → it reacts at once (no
+      frozen list); **Notifications** opens from there.
+
+**A search, now**
+- [ ] **(A)** **Start a search** → the modal (Looking for · Starts in ·
+      Note) → `BASIC · SUP`, empty, "gg" → the modal closes with NO answer
+      line ("Your search is live" is gone). A private thread opened with A
+      only, holding ONE bot message: the intro line + **Requests** (0) +
+      red **Cancel search** (plus Discord's own "BB Bot Test added A to the
+      thread" system line — no bot can delete those).
+- [ ] Under the board a ping `@💥 SUP **A** is looking for **BASIC · SUP** ·
+      now` → B's phone notifies; the ping is gone after about 5 seconds.
+- [ ] The board shows a teal **Now** box: `💥 **BASIC · SUP** · **A**`,
+      `now · gg`, **Join**.
+- [ ] **(B)** **Join** → "Request sent to **A** — you're #1 in line…" +
+      **Cancel request**. B gets ONE DM card, silently (no sound): **Your
+      request** + Cancel, **Start a search**.
+- [ ] **(A)** The thread: "<@A> **B** wants to join · 1 waiting" notifies A
+      and is gone after about 5 seconds; the thread message (edited) lists
+      **1 · B** with **Accept**. The board: "1 interested".
+- [ ] **(B)** Join again → "You already asked… #1".
+
+**Accept and confirm**
+- [ ] **(A)** **Accept** → B is added to the thread (Discord's "added B to
+      the thread" system line appears and stays); NO "WAKEY-WAKEY" message:
+      the ONE thread message is edited —
+      "You picked **B** for **BASIC · SUP**.", Requests (B accepted), and an
+      amber **Confirm 0 / 2** box with the green **I'm here** at the right
+      INSIDE the box; no **Cancel search** any more. B's DM card is replaced
+      by a new one with sound: **You're in!** (A's avatar) + the Confirm box
+      + **Open the thread**.
+- [ ] **(B, DMs closed — see Closed DMs)** Same accept → one line "<@B> —
+      **A** picked you, tap I'm here." pings B and is gone after about 5
+      seconds.
+- [ ] **(B)** **I'm here** on the DM card → the box shows "B ✓" in the thread
+      message and on the card (1 / 2).
+- [ ] Wait a minute → "<@A> — tap I'm here when you're ready." notifies A in
+      the thread and is gone after about 5 seconds.
+- [ ] **(A)** **I'm here** in the thread message → the Confirm box turns into
+      a teal **Game on!** box with B's avatar in the SAME message; the board
+      moves them to **Just started**; B's card shows "✓ Game on!". After 5
+      minutes they leave the board; 15 minutes after the start the thread is
+      archived (not locked — a new message there unarchives it).
+
+**Deadlines**
+- [ ] New search by A, B joins, A accepts, **only A** taps I'm here, wait 5
+      minutes → B's card: red "You didn't confirm in time"; the thread
+      message gets a red box "…didn't confirm — your search is open again"
+      above Requests (Accept and Cancel search are back), B is removed from
+      the thread (Discord's "removed B" system line stays), the search is
+      back in **Now**.
+- [ ] Same, but only B taps → after 5 minutes the search is cancelled: B's
+      card "A didn't confirm"; the thread message turns grey with "Search
+      closed — not confirmed in time." inside it; the thread is locked and
+      archived at once.
+- [ ] **(A)** A timed search (Starts in `8`) → the **Timed** box with a
+      countdown; B joins, A accepts → **Fixed**, the Confirm box in the thread
+      message says "You'll be asked to confirm 5 minutes before the start" and
+      has no **I'm here** yet. At start − 5 min: "Heads up @A @B — your game
+      starts in 5 minutes!" notifies both (gone after about 5 seconds), the
+      Confirm box gets its **I'm here**, and B's card notifies again.
+
+**Leaving**
+- [ ] **(B)** Cancel on the card → no answer line (the tap is only
+      acknowledged); the card itself updates silently to its empty state ("You
+      have no open requests right now." + **Start a search**) and is
+      deleted about 24 hours later; the thread's Removed box shows "B —
+      cancelled".
+- [ ] **(A)** **Cancel search** (red) → "Search cancelled."; the thread
+      message turns grey with "Search cancelled." inside it, the thread is
+      locked and archived; B's card: "A's search was cancelled".
+- [ ] A now-search with no Accept → after 30 minutes: "Search expired." in
+      the thread message, locked and archived; B's card: "…search expired".
+
+**Busy rule**
+- [ ] B has his own open search AND a request on A's; A accepts B, both tap
+      I'm here → B's own search is cancelled (its thread locked and archived), his other
+      requests disappear; his card: "Your other requests were cancelled."
+
+**Closed DMs (notices)**
+- [ ] **(B)** Discord → Privacy → turn off DMs from server members. Join A's
+      search → still "…Updates come in your DMs." (the bot only learns that the
+      DMs are closed when a DM to B fails). A cancels → that card DM fails, so
+      B's next **/menu › Teammates** shows "📬 A's search was cancelled · …"
+      once; from then on a Join answers "…Your DMs are closed — check Menu ›
+      Teammates."
+- [ ] **(B)** Notifications → **Request updates by DM** Off → same path,
+      news only in the menu. Turn it back On.
+
+**Menu, officer, owner**
+- [ ] `/menu` → **Teammates · N open** → Browse lists the open searches →
+      pick one → "Request sent…".
+- [ ] Notifications: **New searches by DM** On → when A posts a `BASIC · SUP`
+      search, B gets a DM with a **Join** button. **GM pings** Off → B loses
+      `⚔ GM-PING`.
+- [ ] **(officer)** **Remove a search** → pick → removed; its requesters'
+      cards say it was cancelled. Removing a game that already **started**:
+      its thread is locked and archived at once, and nothing touches it
+      again 15 minutes later.
+- [ ] **(A, owner)** With a permission removed from the bot in the channel and
+      the bot restarted → the Teammates screen names the missing permission.
+
+**Self-repair**
+- [ ] Delete the bot's message by hand → within 30 s it is back (banner,
+      panel, board in one message). Post as an admin under it → within 30 s
+      it is re-posted below yours.
+- [ ] Upgrading from a build with separate block messages: after the restart
+      the old banner / panel / board messages are gone and ONE message stands
+      in their place.
+- [ ] Upgrading with a game waiting for I'm here (an old WAKEY welcome in
+      its thread): within 30 s of the restart the thread message shows the
+      Confirm box and the old welcome message is gone.
+
+**Phone**
+- [ ] Every box is readable at phone width; badges sit at the right of the
+      headers; **Join** / **Accept** / **I'm here** are easy to tap; the modal
+      fits.
+
+---
+
 ## What this can't cover by hand
 
 These are verified in code / at the host, not clickable here — listed so you know
